@@ -1,0 +1,147 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #1e1e2e;
+  color: #cdd6f4;
+  font-family: system-ui, 'Noto Sans CJK SC', sans-serif;
+  font-size: 13px;
+}
+
+.tabbar {
+  display: flex;
+  align-items: flex-end;
+  background: #181825;
+  padding: 6px 8px 0;
+  position: relative;
+  flex: none;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+}
+
+.tabs::-webkit-scrollbar {
+  height: 0;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #313244;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.tab.active {
+  background: #1e1e2e;
+  color: #fff;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.title {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.close {
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.5;
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.close:hover {
+  opacity: 1;
+}
+
+.newtab {
+  background: #313244;
+  color: #cdd6f4;
+  border: none;
+  border-radius: 6px 6px 0 0;
+  padding: 6px 12px;
+  margin-left: 4px;
+  cursor: pointer;
+  font-size: 15px;
+}
+
+.newtab:hover {
+  background: #45475a;
+}
+
+.menu {
+  position: absolute;
+  top: 100%;
+  right: 8px;
+  z-index: 10;
+  background: #313244;
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  min-width: 160px;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.menu-item:hover {
+  background: #45475a;
+}
+
+.menu-item.muted {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.tab input {
+  background: #11111b;
+  color: #fff;
+  border: 1px solid #89b4fa;
+  border-radius: 4px;
+  font-size: 12px;
+  padding: 1px 4px;
+  width: 120px;
+}
+
+.content {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+}
+
+.content > div {
+  position: absolute;
+  inset: 0;
+  padding: 4px;
+}
