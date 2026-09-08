@@ -8,16 +8,20 @@ interface Props {
   termId: string
   active: boolean
   onTitle: (title: string) => void
+  onTerminal: (id: string, t: Terminal | null) => void
 }
 
-export function TermView({ termId, active, onTitle }: Props) {
+export function TermView({ termId, active, onTitle, onTerminal }: Props) {
   const ref = useRef<HTMLDivElement>(null)
+  const titleRef = useRef(onTitle)
+  titleRef.current = onTitle
 
   useEffect(() => {
     const term = new Terminal({
       fontFamily: '"JetBrains Mono", "Noto Sans Mono CJK SC", monospace',
       fontSize: 13,
       cursorBlink: true,
+      scrollback: 2000,
       theme: { background: '#1e1e2e', foreground: '#cdd6f4' }
     })
     const fit = new FitAddon()
@@ -28,15 +32,11 @@ export function TermView({ termId, active, onTitle }: Props) {
     } catch {
       // 隐藏标签页尺寸为 0 时跳过，激活时 ResizeObserver 会再次 fit
     }
+    term.onTitleChange((t) => titleRef.current(t))
+    // 用户键盘输入：xterm 行编辑产出 → 写回后端 PTY
     term.onData((d) => api.write(termId, d))
-    term.onTitleChange(onTitle)
-
-    const offData = api.onData((id, data) => {
-      if (id === termId) term.write(data)
-    })
-    const offExit = api.onExit((id) => {
-      if (id === termId) term.write('\r\n\x1b[90m[会话已退出，可关闭此标签]\x1b[0m\r\n')
-    })
+    // 输出由 App 单点分发；这里注册实例本身
+    onTerminal(termId, term)
 
     const ro = new ResizeObserver(() => {
       try {
@@ -51,17 +51,11 @@ export function TermView({ termId, active, onTitle }: Props) {
 
     return () => {
       ro.disconnect()
-      offData()
-      offExit()
+      onTerminal(termId, null)
       term.dispose()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [termId])
 
-  return (
-    <div
-      ref={ref}
-      style={{ display: active ? 'block' : 'none', width: '100%', height: '100%' }}
-    />
-  )
+  return <div ref={ref} style={{ display: active ? 'block' : 'none', width: '100%', height: '100%' }} />
 }

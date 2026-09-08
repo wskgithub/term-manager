@@ -5,6 +5,7 @@ interface Props {
   tabs: TermInfo[]
   activeId: string
   profiles: Profile[]
+  exited: Set<string>
   onSelect: (id: string) => void
   onClose: (id: string) => void
   onRename: (id: string, title: string) => void
@@ -13,7 +14,7 @@ interface Props {
 }
 
 export function TabBar(props: Props) {
-  const { tabs, activeId, profiles, onSelect, onClose, onRename, onReorder, onNewTab } = props
+  const { tabs, activeId, profiles, exited, onSelect, onClose, onRename, onReorder, onNewTab } = props
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
@@ -31,7 +32,11 @@ export function TabBar(props: Props) {
         {tabs.map((t, i) => (
           <div
             key={t.id}
-            className={t.id === activeId ? 'tab active' : 'tab'}
+            className={
+              'tab' +
+              (t.id === activeId ? ' active' : '') +
+              (exited.has(t.id) ? ' exited' : '')
+            }
             draggable={editingId !== t.id}
             onDragStart={() => (dragFromRef.current = i)}
             onDragOver={(e) => e.preventDefault()}

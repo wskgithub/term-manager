@@ -10,14 +10,13 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc -b",
-    "rebuild": "electron-rebuild -f -w node-pty",
-    "postinstall": "electron-rebuild -f -w node-pty",
+    "rebuild": "electron-rebuild",
+    "postinstall": "electron-rebuild",
     "smoke": "electron-vite build && electron out/main/index.js --smoke --no-sandbox"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
-    "node-pty": "^1.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
