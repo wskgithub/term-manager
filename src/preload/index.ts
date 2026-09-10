@@ -2,6 +2,10 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 const api = {
   listProfiles: (): Promise<unknown> => ipcRenderer.invoke('profiles:list'),
+  getSettings: (): Promise<unknown> => ipcRenderer.invoke('settings:get'),
+  setSettings: (patch: Record<string, unknown>): Promise<unknown> =>
+    ipcRenderer.invoke('settings:set', patch),
+  listFonts: (): Promise<string[]> => ipcRenderer.invoke('settings:fonts'),
   createTerm: (profileId: string): Promise<unknown> =>
     ipcRenderer.invoke('term:create', profileId),
   write: (id: string, data: string): void => ipcRenderer.send('term:input', id, data),

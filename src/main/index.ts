@@ -4,9 +4,11 @@ import { randomUUID } from 'crypto'
 import { mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { ProfileRegistry } from './profiles'
+import { SettingsStore, listMonospaceFonts } from './settings'
 import { TmuxBackend, type TermInfo } from './tmux'
 
 const registry = new ProfileRegistry()
+const settingsStore = new SettingsStore()
 // hub：主进程内分发终端事件（基准测试监听），同时转发给渲染进程
 const hub = new EventEmitter()
 hub.setMaxListeners(200)
@@ -55,6 +57,10 @@ let inputEventsAtMain = 0
 
 function registerIpc(): void {
   ipcMain.handle('profiles:list', () => registry.list())
+
+  ipcMain.handle('settings:get', () => settingsStore.get())
+  ipcMain.handle('settings:set', (_e, patch: unknown) => settingsStore.set(patch))
+  ipcMain.handle('settings:fonts', () => listMonospaceFonts())
 
   ipcMain.handle('term:create', (_e, profileId: string) => {
     const profile = registry.get(profileId)
@@ -184,6 +190,14 @@ async function runE2ESequence(win: BrowserWindow, n: number): Promise<void> {
   hub.off('term:data', tap)
   await snap('04-after-typing')
 
+  // 设置页截图（--e2e-settings）：打开 → 截图 → 关闭
+  if (argvHas('--e2e-settings')) {
+    await win.webContents.executeJavaScript('window.__e2eSettings && window.__e2eSettings(true)', true)
+    await delay(500)
+    await snap('05-settings')
+    await win.webContents.executeJavaScript('window.__e2eSettings && window.__e2eSettings(false)', true)
+  }
+
   // 空闲态采样：全部标签就绪、无输入 3 秒后的 CPU/内存
   await delay(3000)
   const idleMetrics = snapshotMetrics()
@@ -263,6 +277,7 @@ async function runSmoke(): Promise<void> {
 
 app.whenReady().then(async () => {
   registry.load()
+  settingsStore.load()
   registerIpc()
 
   const smoke = argvHas('--smoke')

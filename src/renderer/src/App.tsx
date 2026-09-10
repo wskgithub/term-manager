@@ -1,14 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Terminal } from '@xterm/xterm'
-import { api, type Profile, type TermInfo } from './api'
+import { api, type AppSettings, type Profile, type TermInfo } from './api'
 import { TabBar } from './TabBar'
 import { TermView } from './TermView'
+import { SettingsPage } from './SettingsPage'
 import { setupE2E } from './e2e'
+
+// 与主进程 DEFAULT_SETTINGS 一致的初值，仅用于设置异步加载完成前，避免终端闪一下默认字体
+const DEFAULT_SETTINGS: AppSettings = { fontFamily: '', fontSize: 14 }
 
 export default function App() {
   const [tabs, setTabs] = useState<TermInfo[]>([])
   const [activeId, setActiveId] = useState('')
   const [profiles, setProfiles] = useState<Profile[]>([])
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const settingsOpenRef = useRef(false)
+  settingsOpenRef.current = settingsOpen
   const [exited, setExited] = useState<Set<string>>(() => new Set())
   // 用户手动重命名后，shell 上报的标题不再覆盖
   const renamed = useRef(new Set<string>())
@@ -22,7 +30,11 @@ export default function App() {
   profilesRef.current = profiles
 
   useEffect(() => {
+    let alive = true
     api.listProfiles().then(setProfiles)
+    api.getSettings().then((s) => {
+      if (alive) setSettings(s)
+    })
     const offData = api.onData((id, d) => terms.current.get(id)?.write(d))
     const offExit = api.onExit((id) => {
       terms.current.get(id)?.write('\r\n\x1b[90m[会话已退出]\x1b[0m\r\n')
@@ -33,6 +45,7 @@ export default function App() {
       })
     })
     return () => {
+      alive = false
       offData()
       offExit()
     }
@@ -45,7 +58,14 @@ export default function App() {
     const info = await api.createTerm(pid)
     setTabs((ts) => [...ts, info])
     setActiveId(info.id)
+    setSettingsOpen(false)
     return info
+  }
+
+  // 乐观更新即时生效，回包以主进程 sanitize 结果为准
+  const applySettings = (patch: Partial<AppSettings>) => {
+    setSettings((s) => ({ ...s, ...patch }))
+    void api.setSettings(patch).then(setSettings)
   }
 
   const closeTab = (id: string) => {
@@ -105,6 +125,11 @@ export default function App() {
         const i = ts.findIndex((t) => t.id === activeRef.current)
         const next = e.shiftKey ? (i - 1 + ts.length) % ts.length : (i + 1) % ts.length
         setActiveId(ts[next].id)
+      } else if (e.ctrlKey && !e.shiftKey && e.key === ',') {
+        e.preventDefault()
+        setSettingsOpen((open) => !open)
+      } else if (e.key === 'Escape' && settingsOpenRef.current) {
+        setSettingsOpen(false)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -125,11 +150,15 @@ export default function App() {
         activeId={activeId}
         profiles={profiles}
         exited={exited}
-        onSelect={setActiveId}
+        onSelect={(id) => {
+          setActiveId(id)
+          setSettingsOpen(false)
+        }}
         onClose={closeTab}
         onRename={renameTab}
         onReorder={reorder}
         onNewTab={(pid) => void newTab(pid)}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <div className="content">
         {tabs.map((t) => (
@@ -137,10 +166,19 @@ export default function App() {
             key={t.id}
             termId={t.id}
             active={t.id === activeId}
+            fontFamily={settings.fontFamily}
+            fontSize={settings.fontSize}
             onTitle={(title) => shellTitle(t.id, title)}
             onTerminal={registerTerminal}
           />
         ))}
+        {settingsOpen && (
+          <SettingsPage
+            settings={settings}
+            onChange={applySettings}
+            onClose={() => setSettingsOpen(false)}
+          />
+        )}
       </div>
     </div>
   )

@@ -100,6 +100,13 @@ export function setupE2E(ctx: E2ECtx): void {
     )
     return true
   }
+  // 设置页开关（主进程 E2E 截图用）：点齿轮打开、点 × 关闭
+  w.__e2eSettings = (open: boolean) => {
+    const btn = document.querySelector<HTMLButtonElement>(open ? '.settings-btn' : '.settings-close')
+    btn?.click()
+    return !!btn
+  }
+
   // GUI 层输入兜底：xterm 官方 paste API（onData→IPC→后端→shell→输出→渲染 全链路）。
   // 括号粘贴模式下粘贴的换行不执行，粘贴后补一个真实回车。
   w.__e2ePaste = (text: string) => {

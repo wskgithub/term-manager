@@ -10,7 +10,7 @@ PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会�
 - Vite（electron-vite）+ React
 - `@xterm/xterm` 仿真组件
 - 后端：`tmux -C` 控制模式（私有 socket，每标签一个 tmux 窗口，输入走 `send-keys`，输出走 `%output` 事件流）
-- profile 存储为 JSON（首次启动生成于 `~/.config/term-manager/profiles.json`）
+- profile 存储为 JSON（首次启动生成于 `~/.config/term-manager/profiles.json`），应用设置存于同目录 `settings.json`
 
 ## profile 模型
 
@@ -30,6 +30,15 @@ PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会�
 
 旧版（v1，无 `version` 字段）配置会被识别并重新生成 shell 默认值。
 
+## 设置
+
+标签栏右侧齿轮按钮或 `Ctrl+,` 打开设置页（结构仿 Windows Terminal，左侧分类导航，一期仅"外观"）：
+
+- **字体**：下拉列出本机等宽字体（主进程 `fc-list :mono` 枚举）。默认"自动"= Nerd Font 优先栈
+  （`JetBrainsMono Nerd Font` → `FiraCode Nerd Font` → … → CJK 等宽回退），显式选择纯拉丁字体时自动追加中文等宽回退。
+- **字号**：8–48 像素，步进器或直接输入。
+- 改动即时应用到所有已开终端并写入 `settings.json`，重启保持。
+
 ## 目录结构
 
 ```
@@ -37,12 +46,15 @@ src/
 ├── main/            # Electron 主进程
 │   ├── index.ts     # 入口、窗口、IPC、冒烟/E2E 编排
 │   ├── tmux.ts      # tmux Control Mode 后端（会话托管/输入/输出/尺寸）
-│   └── profiles.ts  # profile 注册表（JSON 持久化）
+│   ├── profiles.ts  # profile 注册表（JSON 持久化）
+│   └── settings.ts  # 应用设置（字体/字号）+ fc-list 字体枚举
 ├── preload/         # contextBridge API
 └── renderer/src/
-    ├── App.tsx      # 标签状态机 + 单点数据分发 + 快捷键
-    ├── TabBar.tsx   # 重命名/拖拽排序/profile 菜单
-    ├── TermView.tsx # xterm 实例（输出单点分发、自适应尺寸）
+    ├── App.tsx      # 标签状态机 + 单点数据分发 + 快捷键 + 设置状态
+    ├── TabBar.tsx   # 重命名/拖拽排序/profile 菜单/设置入口
+    ├── TermView.tsx # xterm 实例（输出单点分发、自适应尺寸、字体设置）
+    ├── SettingsPage.tsx # 设置页（外观 → 字体/字号 + 预览）
+    ├── fonts.ts     # 字体栈解析（自动模式 / CJK 回退）
     └── e2e.ts       # E2E 驱动钩子
 ```
 
@@ -86,6 +98,7 @@ npx electron out/main/index.js --e2e-tabs=20 --e2e-out=/tmp/e2e --e2e-quit --no-
 ```
 
 结果看 `E2E_RESULT` 日志行；截图落在 `--e2e-out` 目录（boot/tabs5/all-tabs/after-typing 四张）。
+加 `--e2e-settings` 会额外打开设置页并截 `05-settings.png`。
 
 ### 实测性能（20 标签托管，2026-09-09，i5/集成显卡）
 
@@ -101,6 +114,7 @@ npx electron out/main/index.js --e2e-tabs=20 --e2e-out=/tmp/e2e --e2e-quit --no-
 - `Ctrl+Shift+T` 新建标签（默认 profile）
 - `Ctrl+Shift+W` 关闭当前标签
 - `Ctrl+Tab` / `Ctrl+Shift+Tab` 切换标签
+- `Ctrl+,` 打开/关闭设置页（`Esc` 或点击标签关闭）
 - 双击标签重命名（手动重命名后 shell 上报的标题不再覆盖）
 
 ## 已实现 / 路线图
@@ -110,6 +124,7 @@ npx electron out/main/index.js --e2e-tabs=20 --e2e-out=/tmp/e2e --e2e-quit --no-
 - [x] 标签拖拽排序
 - [x] profile 系统：`+` 菜单列出本机 shell 类型（bash / zsh / fish / pwsh / Docker Shell，按 PATH 探测、未安装置灰），默认 profile 为用户登录 shell；ssh 等远程连接由用户在 profiles.json 自定义 profile 实现
 - [x] tmux Control Mode 后端：UTF-8、自适应尺寸、输入防抖合批（5ms/8KB）
+- [x] 设置页（外观：字体选择/字号，fc-list 枚举本机等宽字体，即时生效 + 持久化）
 - [x] E2E 测试设施（冒烟 + 20 标签基准 + 截图 + 键盘注入）
 - [ ] 标签分组（颜色组 + 侧栏树）与组内广播输入（按标签粒度，超越 Terminator）
 - [ ] 会话保持：应用重启附着既有 tmux 服务器（后端已隔离 socket，天然可做）
@@ -121,4 +136,5 @@ npx electron out/main/index.js --e2e-tabs=20 --e2e-out=/tmp/e2e --e2e-quit --no-
 
 - 原计划的 node-pty 直连后端因环境安全钩子（对 execvp 式 spawn 误报"命令注入"）无法落盘，
   改为 tmux 后端反而获得会话保持能力；接口层（TmuxBackend 与原 PtyManager 同构）未来可并存。
-- 终端内 powerline 字形显示为占位框属字体回退问题，可按需安装 Nerd Font。
+- powerline/Nerd 字形依赖字体覆盖：默认字体栈优先 Nerd Font，也可在设置页手动选择；
+  被选字体缺字形时 Chromium 会逐字形回退，缺 Nerd 字形的字体仍可能显示占位框。

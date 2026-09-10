@@ -10,6 +10,12 @@ export interface Profile {
   available?: boolean
 }
 
+export interface AppSettings {
+  // 空串 = 自动（Nerd Font 优先，见 fonts.ts）
+  fontFamily: string
+  fontSize: number
+}
+
 export interface TermInfo {
   id: string
   profileId: string
@@ -19,6 +25,9 @@ export interface TermInfo {
 
 export interface Api {
   listProfiles(): Promise<Profile[]>
+  getSettings(): Promise<AppSettings>
+  setSettings(patch: Partial<AppSettings>): Promise<AppSettings>
+  listFonts(): Promise<string[]>
   createTerm(profileId: string): Promise<TermInfo>
   write(id: string, data: string): void
   resize(id: string, cols: number, rows: number): void
