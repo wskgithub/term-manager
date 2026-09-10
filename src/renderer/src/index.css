@@ -47,9 +47,14 @@ body,
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
+  /* 标签数超出时按 flex 收缩压缩宽度；border-box 使 min-width 等于总宽 */
+  box-sizing: border-box;
+  min-width: 56px;
 }
 
+/* 浏览器式压缩：选中标签的收缩系数远低于其他标签，被压缩时始终最宽 */
 .tab.active {
+  flex-shrink: 0.25;
   background: #1e1e2e;
   color: #fff;
 }
@@ -67,7 +72,7 @@ body,
 }
 
 .title {
-  max-width: 160px;
+  max-width: 240px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -146,7 +151,9 @@ body,
   border-radius: 4px;
   font-size: 12px;
   padding: 1px 4px;
-  width: 120px;
+  width: 230px;
+  /* 允许在压缩的标签内收缩，不撑破标签宽度 */
+  min-width: 0;
 }
 
 .content {
