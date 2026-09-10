@@ -124,6 +124,13 @@ body,
   background: #45475a;
 }
 
+.menu-item.disabled,
+.menu-item.disabled:hover {
+  opacity: 0.4;
+  cursor: default;
+  background: none;
+}
+
 .menu-item.muted {
   opacity: 0.5;
   cursor: default;

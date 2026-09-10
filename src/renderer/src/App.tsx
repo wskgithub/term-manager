@@ -40,7 +40,7 @@ export default function App() {
 
   const newTab = async (profileId?: string): Promise<TermInfo | undefined> => {
     const ps = profilesRef.current
-    const pid = profileId ?? (ps.find((p) => p.id === 'local') ?? ps[0])?.id
+    const pid = profileId ?? (ps.find((p) => p.available !== false) ?? ps[0])?.id
     if (!pid) return undefined
     const info = await api.createTerm(pid)
     setTabs((ts) => [...ts, info])

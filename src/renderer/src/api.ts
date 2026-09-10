@@ -6,6 +6,8 @@ export interface Profile {
   env?: Record<string, string>
   cwd?: string
   color?: string
+  // PATH 探测结果：不可用的 shell 在 "+" 菜单里置灰
+  available?: boolean
 }
 
 export interface TermInfo {

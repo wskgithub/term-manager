@@ -12,6 +12,24 @@ PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会�
 - 后端：`tmux -C` 控制模式（私有 socket，每标签一个 tmux 窗口，输入走 `send-keys`，输出走 `%output` 事件流）
 - profile 存储为 JSON（首次启动生成于 `~/.config/term-manager/profiles.json`）
 
+## profile 模型
+
+`+` 下拉菜单模仿 Windows Terminal：列出的是** shell 类型**（bash、zsh、fish、pwsh、Docker Shell），
+而不是机器分类。首次启动时主进程按 `PATH` 探测候选 shell（用户登录 shell `$SHELL` 排最前），
+未安装的 shell 自动剔除；菜单里不可用项置灰。`profiles.json`（`{ "version": 2, "profiles": [...] }`）
+可自由新增任意 profile，例如 ssh 远程机器：
+
+```json
+{
+  "version": 2,
+  "profiles": [
+    { "id": "gpu-27", "name": "GPU 机器", "command": "ssh", "args": ["wsk@192.168.0.27"], "color": "#aed581" }
+  ]
+}
+```
+
+旧版（v1，无 `version` 字段）配置会被识别并重新生成 shell 默认值。
+
 ## 目录结构
 
 ```
@@ -90,7 +108,7 @@ npx electron out/main/index.js --e2e-tabs=20 --e2e-out=/tmp/e2e --e2e-quit --no-
 - [x] 多标签、点击切换、关闭、退出置灰提示
 - [x] 双击重命名（标题覆盖语义）
 - [x] 标签拖拽排序
-- [x] profile 系统：`+` 菜单按 profile 新建终端（本机 shell / ssh 主机等）
+- [x] profile 系统：`+` 菜单列出本机 shell 类型（bash / zsh / fish / pwsh / Docker Shell，按 PATH 探测、未安装置灰），默认 profile 为用户登录 shell；ssh 等远程连接由用户在 profiles.json 自定义 profile 实现
 - [x] tmux Control Mode 后端：UTF-8、自适应尺寸、输入防抖合批（5ms/8KB）
 - [x] E2E 测试设施（冒烟 + 20 标签基准 + 截图 + 键盘注入）
 - [ ] 标签分组（颜色组 + 侧栏树）与组内广播输入（按标签粒度，超越 Terminator）

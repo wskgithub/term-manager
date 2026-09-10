@@ -90,8 +90,10 @@ export function TabBar(props: Props) {
           {profiles.map((p) => (
             <div
               key={p.id}
-              className="menu-item"
+              className={'menu-item' + (p.available === false ? ' disabled' : '')}
+              title={p.available === false ? '本机未安装该 shell' : undefined}
               onClick={() => {
+                if (p.available === false) return
                 onNewTab(p.id)
                 setMenuOpen(false)
               }}

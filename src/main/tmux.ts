@@ -217,7 +217,10 @@ export class TmuxBackend {
   async create(profile: Profile): Promise<TermInfo> {
     if (!this.proc) await this.start()
 
-    const parts = ['exec']
+    // 注意：不要在命令前加 `exec`（tmux 会经 /bin/sh -c "exec …" 包装执行，
+    // 该 execvp 包装在受限环境/沙箱会被误杀导致 pane 秒退）；直接把命令 token
+    // 交给 tmux（sh -c 直接执行），带参数时避免引号歧义即可。
+    const parts: string[] = []
     if (profile.command) {
       parts.push(shQuote(profile.command), ...(profile.args ?? []).map((a) => shQuote(a)))
     }
