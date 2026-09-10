@@ -2,3 +2,5 @@ node_modules/
 out/
 dist/
 *.tsbuildinfo
+.npm-cache/
+.cache/

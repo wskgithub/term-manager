@@ -36,7 +36,29 @@ npm run build      # 构建到 out/
 npm run typecheck  # TS 检查（node + web 两个工程）
 npm run smoke      # 无窗口冒烟：真实 shell 回显往返验证后端链路
 npm run rebuild    # 重编译原生模块（当前无原生依赖，空操作）
+npm run dist       # 构建 deb 安装包（dist/term-manager_<version>_amd64.deb）
+npm run dist:dir   # 只产出 dist/linux-unpacked/（不打包，快速检查内容）
 ```
+
+## deb 打包
+
+```bash
+npm run dist        # dist/term-manager_0.1.0_amd64.deb
+sudo dpkg -i dist/term-manager_*.deb   # 安装（自动装 /opt + /usr/bin 链接 + 桌面入口）
+sudo dpkg -r term-manager              # 卸载
+```
+
+- 配置在 `package.json` 的 `build` 字段（electron-builder 26，deb target）。
+- 布局：应用装到 `/opt/term-manager/`；postinst 建 `/usr/bin/term-manager`（update-alternatives）、
+  处理 chrome-sandbox 权限（无 user namespace 时置 SUID）、注册桌面数据库，Ubuntu 24+ 会装 apparmor profile。
+- 桌面入口 `/usr/share/applications/term-manager.desktop`（Name=Term Manager，
+  Categories=Utility;TerminalEmulator），hicolor 图标集 24x24…512x512（源：`build/icons/`，脚本一次性生成）。
+- `Depends` 除 Electron 运行库外固定含 **tmux**（后端为 tmux Control Mode）。
+- Electron 二进制直接取 `node_modules/electron/dist`（`electronDist`），不重复下载；fpm 等构建工具经
+  `ELECTRON_BUILDER_BINARIES_MIRROR`（npmmirror）拉取，缓存落 `.cache/`（已 gitignore）。
+- 窗口关联已验证：`desktopName` 随 asar 进包，Electron 33 以其推导 app_id，
+  实测 `xprop WM_CLASS` = `"term-manager", "Term-manager"`，与 `StartupWMClass` 一致。
+- 分发前请替换占位元数据：package.json 的 `author` 邮箱与 `homepage`。
 
 ## E2E 测试
 
@@ -74,7 +96,8 @@ npx electron out/main/index.js --e2e-tabs=20 --e2e-out=/tmp/e2e --e2e-quit --no-
 - [ ] 标签分组（颜色组 + 侧栏树）与组内广播输入（按标签粒度，超越 Terminator）
 - [ ] 会话保持：应用重启附着既有 tmux 服务器（后端已隔离 socket，天然可做）
 - [ ] 命令面板、GPU 渲染（addon-webgl，硬渲染环境可选）
-- [ ] electron-builder 打包（AppImage/deb）
+- [x] electron-builder deb 打包（桌面入口/图标/依赖元数据齐全）
+- [ ] AppImage、rpm 等其他打包格式
 
 ## 备注
 

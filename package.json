@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "description": "Linux 终端管理器：标签页重命名/分组/排序 + 多 profile，类似 Windows Terminal",
   "main": "./out/main/index.js",
-  "author": "wsk",
+  "author": "wsk <wsk@localhost>",
+  "homepage": "https://github.com/wsk/term-manager",
+  "desktopName": "term-manager.desktop",
   "license": "MIT",
   "scripts": {
     "dev": "electron-vite dev",
@@ -12,7 +14,48 @@
     "typecheck": "tsc -b",
     "rebuild": "electron-rebuild",
     "postinstall": "electron-rebuild",
-    "smoke": "electron-vite build && electron out/main/index.js --smoke --no-sandbox"
+    "smoke": "electron-vite build && electron out/main/index.js --smoke --no-sandbox",
+    "dist": "electron-vite build && ELECTRON_BUILDER_CACHE=\"$PWD/.cache/electron-builder\" ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --linux deb",
+    "dist:dir": "electron-vite build && ELECTRON_BUILDER_CACHE=\"$PWD/.cache/electron-builder\" ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --linux deb --dir"
+  },
+  "build": {
+    "appId": "io.github.wsk.term-manager",
+    "productName": "term-manager",
+    "directories": {
+      "output": "dist"
+    },
+    "electronDist": "node_modules/electron/dist",
+    "files": [
+      "out/**"
+    ],
+    "linux": {
+      "target": [
+        "deb"
+      ],
+      "category": "Utility;TerminalEmulator;",
+      "syncDesktopName": true,
+      "desktop": {
+        "entry": {
+          "Name": "Term Manager",
+          "GenericName": "终端管理器",
+          "Keywords": "terminal;tmux;shell;console;"
+        }
+      }
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "tmux"
+      ]
+    }
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
@@ -27,6 +70,7 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^33.2.0",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^2.3.0",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
