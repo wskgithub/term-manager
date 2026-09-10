@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -14,15 +14,45 @@ interface Props {
   onTerminal: (id: string, t: Terminal | null) => void
 }
 
+interface Thumb {
+  top: number
+  height: number
+}
+
 export function TermView({ termId, active, fontFamily, fontSize, onTitle, onTerminal }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  const viewportRef = useRef<HTMLDivElement | null>(null)
+  const [thumb, setThumb] = useState<Thumb | null>(null)
+  const rafRef = useRef(0)
   const titleRef = useRef(onTitle)
   titleRef.current = onTitle
   // 设置是异步加载的：建实例时用最新值，晚到的变化由下面的 effect 补齐
   const latest = useRef({ fontFamily, fontSize })
   latest.current = { fontFamily, fontSize }
+
+  // 浮层滚动条：原生滚动条在 Linux/Chromium 下不能自定义外观（自绘样式不渲染），
+  // 故隐藏原生滚动条，按 xterm 视口的 DOM 滚动几何自绘细圆角滑块（见 index.css）。
+  // 用 DOM 滚动量而不是 buffer 行号：滚轮/拖拽/程序滚动都会更新它，且必然触发 scroll 事件
+  const syncScrollbar = () => {
+    if (rafRef.current) return
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = 0
+      const vp = viewportRef.current
+      const el = ref.current
+      if (!vp || !el) return
+      const track = el.clientHeight
+      const range = vp.scrollHeight - vp.clientHeight
+      if (track === 0 || range < 2) {
+        setThumb((t) => (t === null ? t : null))
+        return
+      }
+      const height = Math.max(20, Math.round((vp.clientHeight / vp.scrollHeight) * track))
+      const top = Math.round((vp.scrollTop / range) * (track - height))
+      setThumb((t) => (t && t.top === top && t.height === height ? t : { top, height }))
+    })
+  }
 
   // 隐藏标签（display:none）尺寸为 0，FitAddon 会算出最小 2×1 并把 tmux 窗口缩掉，
   // 所以只在容器真实可见时才 fit + 上报尺寸
@@ -31,13 +61,43 @@ export function TermView({ termId, active, fontFamily, fontSize, onTitle, onTerm
     const term = termRef.current
     const fit = fitRef.current
     if (!el || !term || !fit) return
-    if (el.clientWidth === 0 || el.clientHeight === 0) return
-    try {
-      fit.fit()
-      api.resize(termId, term.cols, term.rows)
-    } catch {
-      // 尺寸无效时忽略
+    if (el.clientWidth > 0 && el.clientHeight > 0) {
+      try {
+        fit.fit()
+        api.resize(termId, term.cols, term.rows)
+      } catch {
+        // 尺寸无效时忽略
+      }
     }
+    syncScrollbar()
+  }
+
+  // 拖动滑块：指针位移映射为视口 scrollTop（与拖动原生滚动条等价，xterm 会同步 buffer）
+  const dragThumb = (e: React.PointerEvent<HTMLDivElement>) => {
+    const vp = viewportRef.current
+    const el = ref.current
+    if (!vp || !el || !thumb) return
+    e.preventDefault()
+    const handle = e.currentTarget
+    handle.setPointerCapture(e.pointerId)
+    const travel = el.clientHeight - thumb.height
+    const maxScroll = vp.scrollHeight - vp.clientHeight
+    const startY = e.clientY
+    const startTop = vp.scrollTop
+    const onMove = (ev: PointerEvent) => {
+      if (travel <= 0 || maxScroll <= 0) return
+      const next = startTop + ((ev.clientY - startY) / travel) * maxScroll
+      vp.scrollTop = Math.max(0, Math.min(maxScroll, next))
+      syncScrollbar()
+    }
+    const stop = () => {
+      handle.removeEventListener('pointermove', onMove)
+      handle.removeEventListener('pointerup', stop)
+      handle.removeEventListener('pointercancel', stop)
+    }
+    handle.addEventListener('pointermove', onMove)
+    handle.addEventListener('pointerup', stop)
+    handle.addEventListener('pointercancel', stop)
   }
 
   useEffect(() => {
@@ -57,6 +117,12 @@ export function TermView({ termId, active, fontFamily, fontSize, onTitle, onTerm
     term.onTitleChange((t) => titleRef.current(t))
     // 用户键盘输入：xterm 行编辑产出 → 写回后端 PTY
     term.onData((d) => api.write(termId, d))
+    // 滚动条跟随：新输出撑出 scrollback / 尺寸变化；滚动本身由视口 scroll 事件捕获
+    term.onWriteParsed(syncScrollbar)
+    term.onResize(syncScrollbar)
+    const viewport = term.element?.querySelector<HTMLDivElement>('.xterm-viewport') ?? null
+    viewportRef.current = viewport
+    viewport?.addEventListener('scroll', syncScrollbar, { passive: true })
     // 输出由 App 单点分发；这里注册实例本身
     onTerminal(termId, term)
 
@@ -66,6 +132,9 @@ export function TermView({ termId, active, fontFamily, fontSize, onTitle, onTerm
 
     return () => {
       ro.disconnect()
+      viewport?.removeEventListener('scroll', syncScrollbar)
+      viewportRef.current = null
+      cancelAnimationFrame(rafRef.current)
       onTerminal(termId, null)
       termRef.current = null
       fitRef.current = null
@@ -85,5 +154,18 @@ export function TermView({ termId, active, fontFamily, fontSize, onTitle, onTerm
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [termId, fontFamily, fontSize])
 
-  return <div ref={ref} style={{ display: active ? 'block' : 'none', width: '100%', height: '100%' }} />
+  return (
+    <div className="term-pane" style={{ display: active ? 'block' : 'none' }}>
+      <div className="term-mount" ref={ref} />
+      {thumb && (
+        <div className="term-scrollbar">
+          <div
+            className="term-scrollbar-thumb"
+            style={{ top: thumb.top, height: thumb.height }}
+            onPointerDown={dragThumb}
+          />
+        </div>
+      )}
+    </div>
+  )
 }
