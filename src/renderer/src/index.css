@@ -47,8 +47,10 @@ body,
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
-  /* 标签数超出时按 flex 收缩压缩宽度；border-box 使 min-width 等于总宽 */
+  /* 统一宽度：不随标题内容变化，标题超出省略；
+     标签数超出时按 flex 收缩压缩；border-box 使 min-width 等于总宽 */
   box-sizing: border-box;
+  width: 180px;
   min-width: 56px;
 }
 
@@ -72,7 +74,9 @@ body,
 }
 
 .title {
-  max-width: 240px;
+  /* 占满固定宽度标签内的剩余空间，超长省略 */
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -151,8 +155,8 @@ body,
   border-radius: 4px;
   font-size: 12px;
   padding: 1px 4px;
-  width: 230px;
-  /* 允许在压缩的标签内收缩，不撑破标签宽度 */
+  /* 占满标题所在空间（重命名时标签宽度不跳动）；压缩时允许收缩 */
+  flex: 1;
   min-width: 0;
 }
 
