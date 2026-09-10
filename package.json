@@ -54,6 +54,13 @@
         "libuuid1",
         "libsecret-1-0",
         "tmux"
+      ],
+      "recommends": [
+        "libappindicator3-1",
+        "python3-nautilus"
+      ],
+      "fpm": [
+        "build/nautilus-python/term_manager_nautilus.py=/usr/share/nautilus-python/extensions/term_manager_nautilus.py"
       ]
     }
   },

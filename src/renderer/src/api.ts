@@ -28,7 +28,9 @@ export interface Api {
   getSettings(): Promise<AppSettings>
   setSettings(patch: Partial<AppSettings>): Promise<AppSettings>
   listFonts(): Promise<string[]>
-  createTerm(profileId: string): Promise<TermInfo>
+  createTerm(profileId: string, cwd?: string): Promise<TermInfo>
+  cliReady(): Promise<string[]>
+  onOpenDir(cb: (dir: string) => void): () => void
   write(id: string, data: string): void
   resize(id: string, cols: number, rows: number): void
   kill(id: string): void

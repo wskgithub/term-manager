@@ -6,8 +6,14 @@ const api = {
   setSettings: (patch: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke('settings:set', patch),
   listFonts: (): Promise<string[]> => ipcRenderer.invoke('settings:fonts'),
-  createTerm: (profileId: string): Promise<unknown> =>
-    ipcRenderer.invoke('term:create', profileId),
+  createTerm: (profileId: string, cwd?: string): Promise<unknown> =>
+    ipcRenderer.invoke('term:create', profileId, cwd),
+  cliReady: (): Promise<string[]> => ipcRenderer.invoke('cli:ready'),
+  onOpenDir: (cb: (dir: string) => void): (() => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, dir: string): void => cb(dir)
+    ipcRenderer.on('cli:open-dir', handler)
+    return () => ipcRenderer.removeListener('cli:open-dir', handler)
+  },
   write: (id: string, data: string): void => ipcRenderer.send('term:input', id, data),
   resize: (id: string, cols: number, rows: number): void =>
     ipcRenderer.send('term:resize', id, cols, rows),

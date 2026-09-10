@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { randomUUID } from 'crypto'
 import os from 'os'
+import { basename } from 'path'
 import type { Profile } from './profiles'
 
 export interface TermInfo {
@@ -214,7 +215,7 @@ export class TmuxBackend {
     })
   }
 
-  async create(profile: Profile): Promise<TermInfo> {
+  async create(profile: Profile, cwdOverride?: string): Promise<TermInfo> {
     if (!this.proc) await this.start()
 
     // 注意：不要在命令前加 `exec`（tmux 会经 /bin/sh -c "exec …" 包装执行，
@@ -228,7 +229,8 @@ export class TmuxBackend {
     const envArgs = Object.entries(profile.env ?? {})
       .map(([k, v]) => `-e ${tmuxToken(`${k}=${v}`)}`)
       .join(' ')
-    const cwd = profile.cwd || os.homedir()
+    // cwdOverride 来自 CLI/文件管理器右键传入的目录，优先于 profile 自身的 cwd
+    const cwd = cwdOverride || profile.cwd || os.homedir()
     const line =
       `new-window -d -P -F '#{pane_id} #{window_id}' -c ${tmuxToken(cwd)} ${envArgs} ${cmdline}`.trim()
     const reply = await this.send(line)
@@ -243,7 +245,7 @@ export class TmuxBackend {
     const info: TermInfo = {
       id,
       profileId: profile.id,
-      title: profile.name,
+      title: cwdOverride ? basename(cwdOverride) : profile.name,
       color: profile.color
     }
     this.tabs.set(id, { info, pane, window, alive: true })

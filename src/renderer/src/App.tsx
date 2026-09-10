@@ -31,7 +31,19 @@ export default function App() {
 
   useEffect(() => {
     let alive = true
-    api.listProfiles().then(setProfiles)
+    // 先订阅外部目录请求（Nautilus 右键 / CLI），再做 ready 握手取走排队项
+    const offOpenDir = api.onOpenDir((dir) => {
+      if (alive) void newTab(undefined, dir)
+    })
+    void api.listProfiles().then((ps) => {
+      if (!alive) return
+      // 同步刷 ref：下面 drain 时 newTab 需要据此选默认 profile
+      profilesRef.current = ps
+      setProfiles(ps)
+      void api.cliReady().then((dirs) => {
+        if (alive) for (const d of dirs) void newTab(undefined, d)
+      })
+    })
     api.getSettings().then((s) => {
       if (alive) setSettings(s)
     })
@@ -48,14 +60,15 @@ export default function App() {
       alive = false
       offData()
       offExit()
+      offOpenDir()
     }
   }, [])
 
-  const newTab = async (profileId?: string): Promise<TermInfo | undefined> => {
+  const newTab = async (profileId?: string, cwd?: string): Promise<TermInfo | undefined> => {
     const ps = profilesRef.current
     const pid = profileId ?? (ps.find((p) => p.available !== false) ?? ps[0])?.id
     if (!pid) return undefined
-    const info = await api.createTerm(pid)
+    const info = await api.createTerm(pid, cwd)
     setTabs((ts) => [...ts, info])
     setActiveId(info.id)
     setSettingsOpen(false)

@@ -1,8 +1,8 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
-import { mkdirSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { mkdirSync, statSync, writeFileSync } from 'fs'
+import { join, resolve } from 'path'
 import { ProfileRegistry } from './profiles'
 import { SettingsStore, listMonospaceFonts } from './settings'
 import { TmuxBackend, type TermInfo } from './tmux'
@@ -20,6 +20,47 @@ const backend = new TmuxBackend((channel, ...args) => {
 })
 
 let mainWindow: BrowserWindow | null = null
+
+// 外部目录请求（CLI --open-dir= / 第二次启动）的排队区：
+// 渲染层 cli:ready 之前先入队，之后就绪后直接推送，避免事件丢失
+const pendingOpenDirs: string[] = []
+let rendererReady = false
+
+/** 校验外部传入的目录：必须是已存在的本地目录，否则无效（回退 profile.cwd/homedir） */
+function existingDir(p: unknown): string | undefined {
+  if (typeof p !== 'string' || !p || /[\r\n]/.test(p)) return undefined
+  const abs = resolve(p)
+  try {
+    return statSync(abs).isDirectory() ? abs : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function focusMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const win = mainWindow
+  if (win.isMinimized()) win.restore()
+  if (win.webContents.isLoading()) {
+    win.once('ready-to-show', () => {
+      win.show()
+      win.focus()
+    })
+  } else {
+    win.show()
+    win.focus()
+  }
+}
+
+function enqueueOpenDir(raw: string | undefined): void {
+  const dir = existingDir(raw)
+  if (!dir) return
+  if (rendererReady && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('cli:open-dir', dir)
+  } else {
+    pendingOpenDirs.push(dir)
+  }
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -62,10 +103,16 @@ function registerIpc(): void {
   ipcMain.handle('settings:set', (_e, patch: unknown) => settingsStore.set(patch))
   ipcMain.handle('settings:fonts', () => listMonospaceFonts())
 
-  ipcMain.handle('term:create', (_e, profileId: string) => {
+  ipcMain.handle('term:create', (_e, profileId: string, cwd?: unknown) => {
     const profile = registry.get(profileId)
     if (!profile) throw new Error(`profile not found: ${profileId}`)
-    return backend.create(profile)
+    return backend.create(profile, existingDir(cwd))
+  })
+
+  // 渲染层完成 onOpenDir 订阅后调用：取走排队中的目录并放开后续推送
+  ipcMain.handle('cli:ready', (): string[] => {
+    rendererReady = true
+    return pendingOpenDirs.splice(0)
   })
 
   ipcMain.on('term:input', (_e, id: string, data: string) => {
@@ -94,6 +141,19 @@ function snapshotMetrics(): { cpuPercent: number; memMb: number; processes: numb
 function argvFlag(name: string): string | undefined {
   const a = process.argv.find((x) => x.startsWith(name + '='))
   return a ? a.split('=').slice(1).join('=') : undefined
+}
+
+/** 外部目录参数：优先 --open-dir=<path>，否则第一个非选项位置参数（dev 下 argv[1] 是脚本路径） */
+function extractOpenDir(argv: string[]): string | undefined {
+  const flag = argv.find((a) => a.startsWith('--open-dir='))
+  if (flag) {
+    const p = flag.slice('--open-dir='.length)
+    if (p) return p
+  }
+  for (const a of argv.slice(app.isPackaged ? 1 : 2)) {
+    if (!a.startsWith('-')) return a
+  }
+  return undefined
 }
 
 async function waitUntil(
@@ -275,46 +335,64 @@ async function runSmoke(): Promise<void> {
   }
 }
 
-app.whenReady().then(async () => {
-  registry.load()
-  settingsStore.load()
-  registerIpc()
+// smoke / e2e 属于独立测试进程，不能和正在运行的 GUI 实例抢单实例锁
+const isolatedRun = argvHas('--smoke') || argvFlag('--e2e-tabs') !== undefined
+const cliOpenDir = extractOpenDir(process.argv)
 
-  const smoke = argvHas('--smoke')
-  const e2eTabs = argvFlag('--e2e-tabs')
-
-  try {
-    if (smoke) {
-      await backend.start()
-      await runSmoke()
-      return
-    }
-
-    createWindow()
-    const started = backend.start()
-
-    if (e2eTabs && mainWindow) {
-      const n = Math.max(1, Number(e2eTabs) || 20)
-      const win = mainWindow
-      win.webContents.once('did-finish-load', () => {
-        void delay(800)
-          .then(async () => {
-            await started
-            await runE2ESequence(win, n)
-          })
-          .catch(async (e) => {
-            console.error('E2E_FAIL:', e)
-            await backend.dispose().catch(() => undefined)
-            app.exit(1)
-          })
-      })
-    }
-  } catch (e) {
-    console.error('BOOT_FAIL:', e)
-    await backend.dispose().catch(() => undefined)
-    app.exit(1)
+if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null })) {
+  // 第二实例：目录已通过 additionalData 带给首实例，自己直接退出
+  app.quit()
+} else {
+  if (!isolatedRun) {
+    app.on('second-instance', (_e, argv, _wd, additionalData) => {
+      const data = additionalData as { openDir?: string | null } | undefined
+      enqueueOpenDir(data?.openDir ?? extractOpenDir(argv))
+      focusMainWindow()
+    })
   }
-})
+
+  app.whenReady().then(async () => {
+    registry.load()
+    settingsStore.load()
+    registerIpc()
+
+    const smoke = argvHas('--smoke')
+    const e2eTabs = argvFlag('--e2e-tabs')
+
+    try {
+      if (smoke) {
+        await backend.start()
+        await runSmoke()
+        return
+      }
+
+      createWindow()
+      enqueueOpenDir(cliOpenDir)
+      const started = backend.start()
+
+      if (e2eTabs && mainWindow) {
+        const n = Math.max(1, Number(e2eTabs) || 20)
+        const win = mainWindow
+        win.webContents.once('did-finish-load', () => {
+          void delay(800)
+            .then(async () => {
+              await started
+              await runE2ESequence(win, n)
+            })
+            .catch(async (e) => {
+              console.error('E2E_FAIL:', e)
+              await backend.dispose().catch(() => undefined)
+              app.exit(1)
+            })
+        })
+      }
+    } catch (e) {
+      console.error('BOOT_FAIL:', e)
+      await backend.dispose().catch(() => undefined)
+      app.exit(1)
+    }
+  })
+}
 
 process.on('unhandledRejection', (e) => console.error('UNHANDLED_REJECTION:', e))
 

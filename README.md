@@ -39,6 +39,17 @@ PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会�
 - **字号**：8–48 像素，步进器或直接输入。
 - 改动即时应用到所有已开终端并写入 `settings.json`，重启保持。
 
+## Nautilus 右键集成
+
+文件管理器右键（目录上或目录空白处）有「在 Term Manager 中打开」：在该目录开一个标签。
+应用已在运行时复用现有窗口并聚焦（单实例）；命令行同样支持 `term-manager --open-dir=<dir>` 或 `term-manager <dir>`。
+
+- deb 将扩展装到 `/usr/share/nautilus-python/extensions/term_manager_nautilus.py`，并 Recommends
+  `python3-nautilus`：`apt install ./*.deb` 会自动装上，`dpkg -i` 需手动 `sudo apt install python3-nautilus`。
+  缺该依赖时扩展静默不生效（应用功能不受影响）。
+- 装完执行 `nautilus -q`（或注销重登）让文件管理器重新加载扩展。
+- 调试时可用环境变量 `TERM_MANAGER_BIN` 指向本地构建产物。
+
 ## 目录结构
 
 ```
@@ -130,6 +141,7 @@ npx electron out/main/index.js --e2e-tabs=20 --e2e-out=/tmp/e2e --e2e-quit --no-
 - [ ] 会话保持：应用重启附着既有 tmux 服务器（后端已隔离 socket，天然可做）
 - [ ] 命令面板、GPU 渲染（addon-webgl，硬渲染环境可选）
 - [x] electron-builder deb 打包（桌面入口/图标/依赖元数据齐全）
+- [x] Nautilus 右键菜单集成（在目录中打开 + 单实例复用窗口，随 deb 分发）
 - [ ] AppImage、rpm 等其他打包格式
 
 ## 备注
