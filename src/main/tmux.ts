@@ -78,6 +78,8 @@ export class TmuxBackend {
   private inputBuffers = new Map<string, string>()
   private inputTimers = new Map<string, NodeJS.Timeout>()
   private resizeTimers = new Map<string, NodeJS.Timeout>()
+  // \ek 标题序列跨 %output 事件分片时的残片缓存（pane id → 残片）
+  private titleHold = new Map<string, string>()
   private disposed = false
 
   constructor(private emit: (channel: string, ...args: unknown[]) => void) {}
@@ -163,7 +165,7 @@ export class TmuxBackend {
       const pane = sp === -1 ? rest : rest.slice(0, sp)
       const payload = sp === -1 ? '' : unescape(rest.slice(sp + 1))
       const id = this.paneToTerm.get(pane)
-      if (id && payload) this.emit('term:data', id, payload)
+      if (id && payload) this.emit('term:data', id, this.convertTmuxTitle(pane, payload))
       return
     }
     if (line.startsWith('%window-close ')) {
@@ -260,6 +262,41 @@ export class TmuxBackend {
     return info
   }
 
+  /**
+   * tmux 在 automatic-rename 时会把自家标题序列 \ek<名>\e\\ 混进 pane 输出流
+   * （如 ssh 时窗口名变成 "oem@1.2.3.4"）。xterm.js 不认识 \ek，会把负载当普通
+   * 文本打印——正好落在 MOTD 第一行前，出现"ssh 后多出一串主机名"。
+   * 这里把它转成等价的 OSC 2 序列：xterm 触发标题事件而非打印，标签名还能跟随。
+   * 序列可能被 tmux 按 write 边界拆到多个 %output 事件里，需按 pane 留存残片。
+   */
+  private convertTmuxTitle(pane: string, data: string): string {
+    let buf = (this.titleHold.get(pane) ?? '') + data
+    let out = ''
+    for (;;) {
+      const start = buf.indexOf('\x1bk')
+      if (start === -1) {
+        out += buf
+        buf = ''
+        break
+      }
+      out += buf.slice(0, start)
+      const end = buf.indexOf('\x1b\\', start + 2)
+      if (end === -1) {
+        buf = buf.slice(start)
+        break
+      }
+      out += `\x1b]2;${buf.slice(start + 2, end)}\x1b\\`
+      buf = buf.slice(end + 2)
+    }
+    // 残片过长视为序列损坏，直接放行避免无限滞留
+    if (buf.length > 4096) {
+      out += buf
+      buf = ''
+    }
+    this.titleHold.set(pane, buf)
+    return out
+  }
+
   write(id: string, data: string): void {
     const tab = this.tabs.get(id)
     if (!tab?.alive) return
@@ -323,6 +360,7 @@ export class TmuxBackend {
     if (tab) {
       this.paneToTerm.delete(tab.pane)
       this.windowToTerm.delete(tab.window)
+      this.titleHold.delete(tab.pane)
     }
     this.tabs.delete(id)
     const t = this.inputTimers.get(id)
