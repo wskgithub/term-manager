@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, type AppSettings } from './api'
+import { api, type AppSettings, type Profile } from './api'
 import { resolveFontStack } from './fonts'
 
 const FONT_SIZE_MIN = 8
@@ -9,14 +9,23 @@ const PREVIEW_TEXT = '❯ ls -la 中文测试 AaBbC 0123'
 // 用转义字面量表示 Nerd Font 私用区字形（powerline / 图标），避免源码出现不可见字符
 const PREVIEW_GLYPHS = '\ue0b0\ue0b2 \uf015 \uf07b \u250c\u2500\u252c\u2500\u2510 \u2514\u2500\u2534\u2500\u2518'
 
+const NAV_ITEMS = [
+  { key: 'appearance', label: '外观' },
+  { key: 'terminal', label: '终端' }
+] as const
+
+type SectionKey = (typeof NAV_ITEMS)[number]['key']
+
 interface Props {
   settings: AppSettings
+  profiles: Profile[]
   onChange: (patch: Partial<AppSettings>) => void
   onClose: () => void
 }
 
-/** 设置页（一期：外观 → 字体 / 字号），结构对齐 Windows Terminal，左侧导航便于后续扩展 */
-export function SettingsPage({ settings, onChange, onClose }: Props) {
+/** 设置页（外观 → 字体/字号；终端 → 默认终端），结构对齐 Windows Terminal，左侧导航便于后续扩展 */
+export function SettingsPage({ settings, profiles, onChange, onClose }: Props) {
+  const [section, setSection] = useState<SectionKey>('appearance')
   const [fonts, setFonts] = useState<string[]>([])
   const [sizeDraft, setSizeDraft] = useState(String(settings.fontSize))
   const rootRef = useRef<HTMLDivElement>(null)
@@ -64,6 +73,13 @@ export function SettingsPage({ settings, onChange, onClose }: Props) {
     if (next !== settings.fontSize) onChange({ fontSize: next })
   }
 
+  // 未安装的 shell 不能选为默认（选了 + 也只会回退开菜单），置灰防误选；
+  // 手改 settings.json 指向已删除的 profile 时，补一个同名项保证已存值可见
+  const profileOptions =
+    settings.defaultProfileId && !profiles.some((p) => p.id === settings.defaultProfileId)
+      ? [{ id: settings.defaultProfileId, name: settings.defaultProfileId, available: false } as Profile, ...profiles]
+      : profiles
+
   return (
     <div className="settings" ref={rootRef} tabIndex={-1}>
       <div className="settings-header">
@@ -74,72 +90,108 @@ export function SettingsPage({ settings, onChange, onClose }: Props) {
       </div>
       <div className="settings-body">
         <nav className="settings-nav">
-          <div className="settings-nav-item active">外观</div>
-        </nav>
-        <div className="settings-panel">
-          <div className="settings-section">外观</div>
-          <div className="settings-row">
-            <label className="settings-label">字体</label>
-            <select
-              className="settings-select"
-              value={settings.fontFamily}
-              onChange={(e) => onChange({ fontFamily: e.target.value })}
-            >
-              <option value="">自动（Nerd Font 优先）</option>
-              {fontOptions.map((f) => (
-                <option key={f} value={f}>
-                  {f}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="settings-row">
-            <label className="settings-label">字号</label>
-            <div className="stepper">
-              <button
-                onClick={() => stepSize(-1)}
-                disabled={settings.fontSize <= FONT_SIZE_MIN}
-                title="减小"
-              >
-                −
-              </button>
-              <input
-                type="number"
-                min={FONT_SIZE_MIN}
-                max={FONT_SIZE_MAX}
-                value={sizeDraft}
-                onChange={(e) => setSizeDraft(e.target.value)}
-                onBlur={commitSize}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-                }}
-              />
-              <button
-                onClick={() => stepSize(1)}
-                disabled={settings.fontSize >= FONT_SIZE_MAX}
-                title="增大"
-              >
-                +
-              </button>
-            </div>
-            <span className="settings-hint">
-              像素（{FONT_SIZE_MIN}–{FONT_SIZE_MAX}）
-            </span>
-          </div>
-          <div className="settings-row preview-row">
-            <label className="settings-label">预览</label>
+          {NAV_ITEMS.map((item) => (
             <div
-              className="preview"
-              style={{
-                fontFamily: resolveFontStack(settings.fontFamily),
-                fontSize: settings.fontSize
-              }}
+              key={item.key}
+              className={'settings-nav-item' + (section === item.key ? ' active' : '')}
+              onClick={() => setSection(item.key)}
             >
-              <div>{PREVIEW_TEXT}</div>
-              <div>{PREVIEW_GLYPHS}</div>
+              {item.label}
+            </div>
+          ))}
+        </nav>
+        {section === 'appearance' && (
+          <div className="settings-panel">
+            <div className="settings-section">外观</div>
+            <div className="settings-row">
+              <label className="settings-label">字体</label>
+              <select
+                className="settings-select"
+                value={settings.fontFamily}
+                onChange={(e) => onChange({ fontFamily: e.target.value })}
+              >
+                <option value="">自动（Nerd Font 优先）</option>
+                {fontOptions.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="settings-row">
+              <label className="settings-label">字号</label>
+              <div className="stepper">
+                <button
+                  onClick={() => stepSize(-1)}
+                  disabled={settings.fontSize <= FONT_SIZE_MIN}
+                  title="减小"
+                >
+                  −
+                </button>
+                <input
+                  type="number"
+                  min={FONT_SIZE_MIN}
+                  max={FONT_SIZE_MAX}
+                  value={sizeDraft}
+                  onChange={(e) => setSizeDraft(e.target.value)}
+                  onBlur={commitSize}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                  }}
+                />
+                <button
+                  onClick={() => stepSize(1)}
+                  disabled={settings.fontSize >= FONT_SIZE_MAX}
+                  title="增大"
+                >
+                  +
+                </button>
+              </div>
+              <span className="settings-hint">
+                像素（{FONT_SIZE_MIN}–{FONT_SIZE_MAX}）
+              </span>
+            </div>
+            <div className="settings-row preview-row">
+              <label className="settings-label">预览</label>
+              <div
+                className="preview"
+                style={{
+                  fontFamily: resolveFontStack(settings.fontFamily),
+                  fontSize: settings.fontSize
+                }}
+              >
+                <div>{PREVIEW_TEXT}</div>
+                <div>{PREVIEW_GLYPHS}</div>
+              </div>
             </div>
           </div>
-        </div>
+        )}
+        {section === 'terminal' && (
+          <div className="settings-panel">
+            <div className="settings-section">默认终端</div>
+            <div className="settings-row">
+              <label className="settings-label">默认终端</label>
+              <select
+                className="settings-select"
+                value={settings.defaultProfileId}
+                onChange={(e) => onChange({ defaultProfileId: e.target.value })}
+              >
+                <option value="">未设置</option>
+                {profileOptions.map((p) => (
+                  <option key={p.id} value={p.id} disabled={p.available === false}>
+                    {p.name}
+                    {p.available === false ? '（未安装）' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="settings-row">
+              <span className="settings-hint">
+                设置后点击 + 直接以此新建标签页，+ 旁的箭头仍可选择其他 shell；未设置时 + 打开菜单
+              </span>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

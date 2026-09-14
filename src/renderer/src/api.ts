@@ -14,6 +14,8 @@ export interface AppSettings {
   // 空串 = 自动（Nerd Font 优先，见 fonts.ts）
   fontFamily: string
   fontSize: number
+  // 默认 profile id（对应 + 号直建），空串 = 未设置（+ 打开菜单）
+  defaultProfileId: string
 }
 
 export interface TermInfo {

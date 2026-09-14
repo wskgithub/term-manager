@@ -7,13 +7,18 @@ export interface AppSettings {
   // 空串 = 自动（渲染层解析为 Nerd Font 优先栈，见 renderer/fonts.ts）
   fontFamily: string
   fontSize: number
+  // 默认 profile id（对应 profiles.json），空串 = 未设置（+ 打开菜单）。
+  // 只做字符串清洗，不校验存在性：profile 列表归 ProfileRegistry 管，
+  // 消费方（渲染层）拿不到时自行回退，避免两份配置互相锁死
+  defaultProfileId: string
 }
 
-export const DEFAULT_SETTINGS: AppSettings = { fontFamily: '', fontSize: 14 }
+export const DEFAULT_SETTINGS: AppSettings = { fontFamily: '', fontSize: 14, defaultProfileId: '' }
 
 const FONT_SIZE_MIN = 8
 const FONT_SIZE_MAX = 48
 const FONT_FAMILY_MAX = 200
+const DEFAULT_PROFILE_MAX = 100
 const CONFIG_VERSION = 1
 
 interface ConfigFile extends AppSettings {
@@ -41,6 +46,12 @@ function sanitize(input: unknown, base: AppSettings): AppSettings {
       .replace(/[\u0000-\u001f\u007f]/g, '')
       .trim()
       .slice(0, FONT_FAMILY_MAX)
+  }
+  if (typeof raw.defaultProfileId === 'string') {
+    out.defaultProfileId = raw.defaultProfileId
+      .replace(/[\u0000-\u001f\u007f]/g, '')
+      .trim()
+      .slice(0, DEFAULT_PROFILE_MAX)
   }
   if (raw.fontSize !== undefined) {
     const n = Math.round(Number(raw.fontSize))

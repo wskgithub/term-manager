@@ -7,7 +7,7 @@ import { SettingsPage } from './SettingsPage'
 import { setupE2E } from './e2e'
 
 // 与主进程 DEFAULT_SETTINGS 一致的初值，仅用于设置异步加载完成前，避免终端闪一下默认字体
-const DEFAULT_SETTINGS: AppSettings = { fontFamily: '', fontSize: 14 }
+const DEFAULT_SETTINGS: AppSettings = { fontFamily: '', fontSize: 14, defaultProfileId: '' }
 
 export default function App() {
   const [tabs, setTabs] = useState<TermInfo[]>([])
@@ -28,6 +28,9 @@ export default function App() {
   activeRef.current = activeId
   const profilesRef = useRef<Profile[]>([])
   profilesRef.current = profiles
+  // newTab 会被挂载时的闭包（快捷键/onOpenDir）长期持有，设置走 ref 避免拿到过期值
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
 
   useEffect(() => {
     let alive = true
@@ -41,7 +44,19 @@ export default function App() {
       profilesRef.current = ps
       setProfiles(ps)
       void api.cliReady().then((dirs) => {
-        if (alive) for (const d of dirs) void newTab(undefined, d)
+        if (!alive) return
+        for (const d of dirs) void newTab(undefined, d)
+        // 裸启动（应用菜单/命令行，无右键或 CLI 目录请求）也开一个默认终端；
+        // cwd 不传，后端回退 ~（profile.cwd 优先），有目录请求时不重复开
+        if (!dirs.length && !tabsRef.current.length) {
+          void api.getSettings().then((s) => {
+            if (!alive) return
+            // 同步刷 ref：newTab 要读到最新 defaultProfileId，不等 React 重渲染
+            settingsRef.current = s
+            setSettings(s)
+            if (!tabsRef.current.length) void newTab()
+          })
+        }
       })
     })
     api.getSettings().then((s) => {
@@ -66,7 +81,15 @@ export default function App() {
 
   const newTab = async (profileId?: string, cwd?: string): Promise<TermInfo | undefined> => {
     const ps = profilesRef.current
-    const pid = profileId ?? (ps.find((p) => p.available !== false) ?? ps[0])?.id
+    let pid = profileId
+    if (!pid) {
+      // 无显式 profile 的新建（+ 直建、Ctrl+Shift+T、Nautilus/CLI 打开目录）优先用默认终端；
+      // 默认未设置、已删除或未安装时回退原有规则（首个可用 profile）
+      const def = settingsRef.current.defaultProfileId
+      pid =
+        (def ? ps.find((p) => p.id === def && p.available !== false) : undefined)?.id ??
+        (ps.find((p) => p.available !== false) ?? ps[0])?.id
+    }
     if (!pid) return undefined
     const info = await api.createTerm(pid, cwd)
     setTabs((ts) => [...ts, info])
@@ -74,6 +97,13 @@ export default function App() {
     setSettingsOpen(false)
     return info
   }
+
+  // 给 TabBar 的默认终端：设置了且本机可用才生效，否则视为未设置（+ 打开菜单）
+  const defaultProfileId =
+    settings.defaultProfileId &&
+    profiles.some((p) => p.id === settings.defaultProfileId && p.available !== false)
+      ? settings.defaultProfileId
+      : ''
 
   // 乐观更新即时生效，回包以主进程 sanitize 结果为准
   const applySettings = (patch: Partial<AppSettings>) => {
@@ -163,6 +193,7 @@ export default function App() {
         activeId={activeId}
         profiles={profiles}
         exited={exited}
+        defaultProfileId={defaultProfileId}
         onSelect={(id) => {
           setActiveId(id)
           setSettingsOpen(false)
@@ -188,6 +219,7 @@ export default function App() {
         {settingsOpen && (
           <SettingsPage
             settings={settings}
+            profiles={profiles}
             onChange={applySettings}
             onClose={() => setSettingsOpen(false)}
           />

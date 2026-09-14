@@ -250,12 +250,37 @@ async function runE2ESequence(win: BrowserWindow, n: number): Promise<void> {
   hub.off('term:data', tap)
   await snap('04-after-typing')
 
-  // 设置页截图（--e2e-settings）：打开 → 截图 → 关闭
+  // 设置页截图（--e2e-settings）：打开 → 外观/终端两页截图 → 关闭
   if (argvHas('--e2e-settings')) {
     await win.webContents.executeJavaScript('window.__e2eSettings && window.__e2eSettings(true)', true)
     await delay(500)
     await snap('05-settings')
+    await win.webContents.executeJavaScript(
+      `document.querySelectorAll('.settings-nav-item')[1]?.click()`,
+      true
+    )
+    await delay(300)
+    await snap('06-settings-terminal')
     await win.webContents.executeJavaScript('window.__e2eSettings && window.__e2eSettings(false)', true)
+  }
+
+  // 新建按钮的弹出菜单截图（--e2e-newtab-menu）：有默认终端时点箭头，否则点 + 本体
+  if (argvHas('--e2e-newtab-menu')) {
+    const clicked = (await win.webContents.executeJavaScript(
+      `(() => {
+        const b = document.querySelector('.newtab-caret') ?? document.querySelector('.newtab-split > .newtab')
+        if (b) { b.click(); return b.className }
+        return 'no-button'
+      })()`,
+      true
+    )) as string
+    console.log(`E2E_NEWTAB_MENU ${clicked}`)
+    await delay(300)
+    await snap('07-newtab-menu')
+    await win.webContents.executeJavaScript(
+      `document.querySelector('.menu')?.dispatchEvent(new MouseEvent('mouseleave'))`,
+      true
+    )
   }
 
   // 空闲态采样：全部标签就绪、无输入 3 秒后的 CPU/内存

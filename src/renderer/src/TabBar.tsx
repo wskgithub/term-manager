@@ -6,6 +6,8 @@ interface Props {
   activeId: string
   profiles: Profile[]
   exited: Set<string>
+  // 已校验可用的默认终端 profile id；空串 = 未设置（+ 即菜单开关）
+  defaultProfileId: string
   onSelect: (id: string) => void
   onClose: (id: string) => void
   onRename: (id: string, title: string) => void
@@ -15,11 +17,14 @@ interface Props {
 }
 
 export function TabBar(props: Props) {
-  const { tabs, activeId, profiles, exited, onSelect, onClose, onRename, onReorder, onNewTab, onOpenSettings } = props
+  const { tabs, activeId, profiles, exited, defaultProfileId, onSelect, onClose, onRename, onReorder, onNewTab, onOpenSettings } = props
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const dragFromRef = useRef<number | null>(null)
+  const defaultProfile = defaultProfileId
+    ? profiles.find((p) => p.id === defaultProfileId)
+    : undefined
 
   const commitRename = (id: string) => {
     const t = tabs.find((x) => x.id === id)
@@ -83,29 +88,64 @@ export function TabBar(props: Props) {
         ))}
       </div>
 
-      <button className="newtab" onClick={() => setMenuOpen(!menuOpen)} title="新建终端">
-        +
-      </button>
-      {menuOpen && (
-        <div className="menu" onMouseLeave={() => setMenuOpen(false)}>
-          {profiles.map((p) => (
-            <div
-              key={p.id}
-              className={'menu-item' + (p.available === false ? ' disabled' : '')}
-              title={p.available === false ? '本机未安装该 shell' : undefined}
-              onClick={() => {
-                if (p.available === false) return
-                onNewTab(p.id)
-                setMenuOpen(false)
-              }}
+      {/* 设置了默认终端时 + 为分体按钮：本体直接创建，箭头才开菜单；未设置时 + 仍是菜单开关 */}
+      <div className="newtab-split">
+        <button
+          className="newtab"
+          title={defaultProfile ? `新建 ${defaultProfile.name} 终端` : '新建终端'}
+          onClick={() => {
+            if (defaultProfile) {
+              onNewTab(defaultProfile.id)
+              setMenuOpen(false)
+            } else {
+              setMenuOpen(!menuOpen)
+            }
+          }}
+        >
+          +
+        </button>
+        {defaultProfile && (
+          <button
+            className="newtab-caret"
+            title="选择其他 shell"
+            onClick={() => setMenuOpen(!menuOpen)}
+          >
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
             >
-              <span className="dot" style={{ background: p.color ?? '#888' }} />
-              {p.name}
-            </div>
-          ))}
-          {profiles.length === 0 && <div className="menu-item muted">加载中…</div>}
-        </div>
-      )}
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+        )}
+        {menuOpen && (
+          <div className="menu" onMouseLeave={() => setMenuOpen(false)}>
+            {profiles.map((p) => (
+              <div
+                key={p.id}
+                className={'menu-item' + (p.available === false ? ' disabled' : '')}
+                title={p.available === false ? '本机未安装该 shell' : undefined}
+                onClick={() => {
+                  if (p.available === false) return
+                  onNewTab(p.id)
+                  setMenuOpen(false)
+                }}
+              >
+                <span className="dot" style={{ background: p.color ?? '#888' }} />
+                {p.name}
+                {p.id === defaultProfileId && <span className="menu-badge">默认</span>}
+              </div>
+            ))}
+            {profiles.length === 0 && <div className="menu-item muted">加载中…</div>}
+          </div>
+        )}
+      </div>
 
       <button className="newtab settings-btn" onClick={onOpenSettings} title="设置 (Ctrl+,)">
         <svg
