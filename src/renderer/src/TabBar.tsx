@@ -11,13 +11,16 @@ interface Props {
   onSelect: (id: string) => void
   onClose: (id: string) => void
   onRename: (id: string, title: string) => void
+  // 提交/取消重命名后把焦点归还该终端：否则输入框卸载、焦点落 body，
+  // 用户继续打字会静默漏进终端（ssh raw 模式下直达远端，无本地回显）
+  onRenameEnd: (id: string) => void
   onReorder: (from: number, to: number) => void
   onNewTab: (profileId: string) => void
   onOpenSettings: () => void
 }
 
 export function TabBar(props: Props) {
-  const { tabs, activeId, profiles, exited, defaultProfileId, onSelect, onClose, onRename, onReorder, onNewTab, onOpenSettings } = props
+  const { tabs, activeId, profiles, exited, defaultProfileId, onSelect, onClose, onRename, onRenameEnd, onReorder, onNewTab, onOpenSettings } = props
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
@@ -30,6 +33,7 @@ export function TabBar(props: Props) {
     const t = tabs.find((x) => x.id === id)
     onRename(id, draft.trim() || t?.title || '')
     setEditingId(null)
+    onRenameEnd(id)
   }
 
   return (
@@ -68,7 +72,10 @@ export function TabBar(props: Props) {
                 onBlur={() => commitRename(t.id)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-                  if (e.key === 'Escape') setEditingId(null)
+                  if (e.key === 'Escape') {
+                    setEditingId(null)
+                    onRenameEnd(t.id)
+                  }
                 }}
                 onClick={(e) => e.stopPropagation()}
               />

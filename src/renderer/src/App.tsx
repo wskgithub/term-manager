@@ -200,6 +200,7 @@ export default function App() {
         }}
         onClose={closeTab}
         onRename={renameTab}
+        onRenameEnd={(id) => terms.current.get(id)?.focus()}
         onReorder={reorder}
         onNewTab={(pid) => void newTab(pid)}
         onOpenSettings={() => setSettingsOpen(true)}
