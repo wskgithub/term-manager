@@ -4,6 +4,7 @@ import { api, type AppSettings, type Profile, type TermInfo } from './api'
 import { TabBar } from './TabBar'
 import { TermView } from './TermView'
 import { SettingsPage } from './SettingsPage'
+import { ContextMenu, CopyIcon, PasteIcon } from './ContextMenu'
 import { setupE2E } from './e2e'
 
 // 与主进程 DEFAULT_SETTINGS 一致的初值，仅用于设置异步加载完成前，避免终端闪一下默认字体
@@ -18,6 +19,8 @@ export default function App() {
   const settingsOpenRef = useRef(false)
   settingsOpenRef.current = settingsOpen
   const [exited, setExited] = useState<Set<string>>(() => new Set())
+  // 终端右键菜单：坐标 + 打开瞬间的可复制状态（随打开冻结，避免后续选择变化影响已开菜单）
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; canCopy: boolean } | null>(null)
   // 用户手动重命名后，shell 上报的标题不再覆盖
   const renamed = useRef(new Set<string>())
   // 单点分发：所有终端实例注册在这里，一个 onData 订阅服务全部标签
@@ -151,6 +154,30 @@ export default function App() {
     else terms.current.delete(id)
   }
 
+  // 右键菜单动作：目标始终是当前活跃终端（可见的那个 pane）。
+  // 点击菜单项会把 DOM 焦点从 xterm 的 textarea 挪走（原生 Menu 无此问题），
+  // 动作完成后必须把焦点还给终端，否则后续按键全部丢失
+  const openTermContextMenu = (x: number, y: number) => {
+    setCtxMenu({ x, y, canCopy: !!terms.current.get(activeRef.current)?.hasSelection() })
+  }
+
+  const focusActiveTerm = () => {
+    terms.current.get(activeRef.current)?.focus()
+  }
+
+  const copySelection = () => {
+    const t = terms.current.get(activeRef.current)
+    if (t?.hasSelection()) api.writeClipboard(t.getSelection())
+    focusActiveTerm()
+  }
+
+  const pasteClipboard = () => {
+    focusActiveTerm()
+    void api.readClipboard().then((text) => {
+      if (text) terms.current.get(activeRef.current)?.paste(text)
+    })
+  }
+
   // 快捷键：Ctrl+Shift+T 新建 / Ctrl+Shift+W 关闭 / Ctrl+Tab、Ctrl+Shift+Tab 切换
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -215,6 +242,7 @@ export default function App() {
             fontSize={settings.fontSize}
             onTitle={(title) => shellTitle(t.id, title)}
             onTerminal={registerTerminal}
+            onContextMenu={openTermContextMenu}
           />
         ))}
         {settingsOpen && (
@@ -226,6 +254,30 @@ export default function App() {
           />
         )}
       </div>
+      {ctxMenu && (
+        <ContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          onClose={() => setCtxMenu(null)}
+          items={[
+            {
+              key: 'copy',
+              label: '复制',
+              shortcut: 'Ctrl+Shift+C',
+              icon: CopyIcon,
+              disabled: !ctxMenu.canCopy,
+              action: copySelection
+            },
+            {
+              key: 'paste',
+              label: '粘贴',
+              shortcut: 'Ctrl+Shift+V',
+              icon: PasteIcon,
+              action: pasteClipboard
+            }
+          ]}
+        />
+      )}
     </div>
   )
 }

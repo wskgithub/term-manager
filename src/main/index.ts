@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, ipcMain, shell } from 'electron'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
 import { mkdirSync, statSync, writeFileSync } from 'fs'
@@ -119,6 +119,13 @@ function registerIpc(): void {
     inputEventsAtMain++
     backend.write(id, data)
   })
+
+  // 终端复制/粘贴的剪贴板通道：渲染层 navigator.clipboard 在 X11 下不可靠，统一走主进程
+  ipcMain.on('clipboard:write', (_e, text: unknown) => {
+    if (typeof text === 'string') clipboard.writeText(text)
+  })
+  ipcMain.handle('clipboard:read', () => clipboard.readText())
+
   ipcMain.on('term:resize', (_e, id: string, cols: number, rows: number) =>
     backend.resize(id, cols, rows)
   )

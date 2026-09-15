@@ -12,6 +12,8 @@ interface Props {
   fontSize: number
   onTitle: (title: string) => void
   onTerminal: (id: string, t: Terminal | null) => void
+  // 右键菜单由 App 统一渲染（自绘浮层），这里只上报光标坐标
+  onContextMenu: (x: number, y: number) => void
 }
 
 interface Thumb {
@@ -19,7 +21,7 @@ interface Thumb {
   height: number
 }
 
-export function TermView({ termId, active, fontFamily, fontSize, onTitle, onTerminal }: Props) {
+export function TermView({ termId, active, fontFamily, fontSize, onTitle, onTerminal, onContextMenu }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -117,6 +119,34 @@ export function TermView({ termId, active, fontFamily, fontSize, onTitle, onTerm
     term.onTitleChange((t) => titleRef.current(t))
     // 用户键盘输入：xterm 行编辑产出 → 写回后端 PTY
     term.onData((d) => api.write(termId, d))
+    // 复制/粘贴快捷键，拦在 xterm 键盘处理之前（返回 false 不再发给 shell）：
+    // Ctrl+Shift+C/V 是 Linux 终端惯例，Ctrl+C 必须保持 SIGINT 语义不能劫持；
+    // Ctrl+Insert / Shift+Insert 是同义的传统键位
+    term.attachCustomKeyEventHandler((ev) => {
+      if (ev.type !== 'keydown') return true
+      if (!ev.ctrlKey && !ev.shiftKey) return true
+      const copy =
+        (ev.ctrlKey && ev.shiftKey && !ev.altKey && ev.code === 'KeyC') ||
+        (ev.ctrlKey && !ev.shiftKey && ev.code === 'Insert')
+      const paste =
+        (ev.ctrlKey && ev.shiftKey && !ev.altKey && ev.code === 'KeyV') ||
+        (!ev.ctrlKey && ev.shiftKey && ev.code === 'Insert')
+      if (copy) {
+        if (term.hasSelection()) api.writeClipboard(term.getSelection())
+        // xterm 对 customKeyEventHandler 返回 false 并不 preventDefault（_bindKeys 丢弃返回值），
+        // 不拦的话 Chromium 会把 Ctrl+Shift+V/Shift+Insert 当原生粘贴再往 textarea 塞一份 → 双份
+        ev.preventDefault()
+        return false
+      }
+      if (paste) {
+        void api.readClipboard().then((text) => {
+          if (text) term.paste(text)
+        })
+        ev.preventDefault()
+        return false
+      }
+      return true
+    })
     // 滚动条跟随：新输出撑出 scrollback / 尺寸变化；滚动本身由视口 scroll 事件捕获
     term.onWriteParsed(syncScrollbar)
     term.onResize(syncScrollbar)
@@ -155,7 +185,14 @@ export function TermView({ termId, active, fontFamily, fontSize, onTitle, onTerm
   }, [termId, fontFamily, fontSize])
 
   return (
-    <div className="term-pane" style={{ display: active ? 'block' : 'none' }}>
+    <div
+      className="term-pane"
+      style={{ display: active ? 'block' : 'none' }}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        onContextMenu(e.clientX, e.clientY)
+      }}
+    >
       <div className="term-mount" ref={ref} />
       {thumb && (
         <div className="term-scrollbar">

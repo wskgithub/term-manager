@@ -18,6 +18,8 @@ const api = {
   resize: (id: string, cols: number, rows: number): void =>
     ipcRenderer.send('term:resize', id, cols, rows),
   kill: (id: string): void => ipcRenderer.send('term:kill', id),
+  writeClipboard: (text: string): void => ipcRenderer.send('clipboard:write', text),
+  readClipboard: (): Promise<string> => ipcRenderer.invoke('clipboard:read'),
   onData: (cb: (id: string, data: string) => void): (() => void) => {
     const handler = (_e: Electron.IpcRendererEvent, id: string, data: string): void => cb(id, data)
     ipcRenderer.on('term:data', handler)

@@ -36,6 +36,8 @@ export interface Api {
   write(id: string, data: string): void
   resize(id: string, cols: number, rows: number): void
   kill(id: string): void
+  writeClipboard(text: string): void
+  readClipboard(): Promise<string>
   onData(cb: (id: string, data: string) => void): () => void
   onExit(cb: (id: string, code: number) => void): () => void
 }
