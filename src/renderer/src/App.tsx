@@ -1,14 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { Terminal } from '@xterm/xterm'
 import { api, type AppSettings, type Profile, type TermInfo } from './api'
 import { TabBar } from './TabBar'
 import { TermView } from './TermView'
 import { SettingsPage } from './SettingsPage'
 import { ContextMenu, CopyIcon, PasteIcon } from './ContextMenu'
+import { resolveDark, subscribeScheme, xtermTheme, rememberTheme } from './theme'
 import { setupE2E } from './e2e'
 
 // 与主进程 DEFAULT_SETTINGS 一致的初值，仅用于设置异步加载完成前，避免终端闪一下默认字体
-const DEFAULT_SETTINGS: AppSettings = { fontFamily: '', fontSize: 14, defaultProfileId: '' }
+const DEFAULT_SETTINGS: AppSettings = { fontFamily: '', fontSize: 14, defaultProfileId: '', theme: 'dark' }
 
 export default function App() {
   const [tabs, setTabs] = useState<TermInfo[]>([])
@@ -34,6 +35,20 @@ export default function App() {
   // newTab 会被挂载时的闭包（快捷键/onOpenDir）长期持有，设置走 ref 避免拿到过期值
   const settingsRef = useRef(settings)
   settingsRef.current = settings
+
+  // 主题三态 → 实际深浅：显式深/浅是常量；system 跟随 prefers-color-scheme
+  // （主进程 themeSource 驱动，含运行中的系统深浅切换），订阅同一通路即可全覆盖
+  const theme = settings.theme
+  const dark = useSyncExternalStore(subscribeScheme, () => resolveDark(theme))
+  // 深浅落到 <html data-theme>（CSS 变量组挂这里），并记 localStorage 供下次启动预应用
+  useEffect(() => {
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+    rememberTheme(theme)
+  }, [dark, theme])
+  // xterm 画布不走 CSS：所有已开终端随深浅整体换调色板
+  useEffect(() => {
+    for (const t of terms.current.values()) t.options.theme = xtermTheme(dark)
+  }, [dark])
 
   useEffect(() => {
     let alive = true
@@ -240,6 +255,7 @@ export default function App() {
             active={t.id === activeId}
             fontFamily={settings.fontFamily}
             fontSize={settings.fontSize}
+            dark={dark}
             onTitle={(title) => shellTitle(t.id, title)}
             onTerminal={registerTerminal}
             onContextMenu={openTermContextMenu}

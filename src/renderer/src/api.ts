@@ -16,6 +16,8 @@ export interface AppSettings {
   fontSize: number
   // 默认 profile id（对应 + 号直建），空串 = 未设置（+ 打开菜单）
   defaultProfileId: string
+  // 界面主题：深/浅/跟随系统（跟随系统时由 prefers-color-scheme 决定实际深浅）
+  theme: 'dark' | 'light' | 'system'
 }
 
 export interface TermInfo {

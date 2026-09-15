@@ -1,4 +1,5 @@
-import { app, BrowserWindow, clipboard, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, ipcMain, nativeTheme, shell } from 'electron'
+import { execFile } from 'child_process'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
 import { mkdirSync, statSync, writeFileSync } from 'fs'
@@ -52,6 +53,24 @@ function focusMainWindow(): void {
   }
 }
 
+// Linux(X11) 原生标题栏的深浅由 mutter 按客户窗口的 _GTK_THEME_VARIANT 属性绘制，
+// Electron 只在创建窗口时（darkTheme）写它，运行中切主题装饰不会跟随；
+// 实测 mutter 对该属性热生效，这里在主题变化时用 xprop 补写。
+// xprop 缺失 / Wayland 等场景静默跳过，标题栏退化为随下次启动生效
+function syncTitleBarVariant(win: BrowserWindow, dark: boolean): void {
+  if (process.platform !== 'linux' || !process.env.DISPLAY) return
+  try {
+    const xid = win.getNativeWindowHandle().readUInt32LE(0)
+    execFile(
+      'xprop',
+      ['-id', String(xid), '-f', '_GTK_THEME_VARIANT', '8u', '-set', '_GTK_THEME_VARIANT', dark ? 'dark' : 'light'],
+      () => undefined
+    )
+  } catch {
+    // 句柄不可用时放弃，装饰随下次启动
+  }
+}
+
 function enqueueOpenDir(raw: string | undefined): void {
   const dir = existingDir(raw)
   if (!dir) return
@@ -63,12 +82,14 @@ function enqueueOpenDir(raw: string | undefined): void {
 }
 
 function createWindow(): void {
+  const dark = nativeTheme.shouldUseDarkColors
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 720,
     minHeight: 480,
-    backgroundColor: '#1e1e2e',
+    backgroundColor: dark ? '#1e1e2e' : '#eff1f5',
+    darkTheme: dark, // Linux 原生标题栏随深浅主题，避免亮暗错配（创建时定死，随 themeSource 走）
     autoHideMenuBar: true,
     show: false,
     webPreferences: {
@@ -79,6 +100,12 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
   mainWindow.on('closed', () => (mainWindow = null))
+  // 有效深浅变化（设置切换或系统深浅切换）时同步标题栏装饰
+  nativeTheme.on('updated', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      syncTitleBarVariant(mainWindow, nativeTheme.shouldUseDarkColors)
+    }
+  })
   mainWindow.webContents.on('console-message', (_e, _level, message) => {
     if (process.env.E2E_DEBUG) console.log('[renderer]', message)
   })
@@ -100,7 +127,13 @@ function registerIpc(): void {
   ipcMain.handle('profiles:list', () => registry.list())
 
   ipcMain.handle('settings:get', () => settingsStore.get())
-  ipcMain.handle('settings:set', (_e, patch: unknown) => settingsStore.set(patch))
+  ipcMain.handle('settings:set', (_e, patch: unknown) => {
+    const prev = settingsStore.get().theme
+    const next = settingsStore.set(patch)
+    // 主题变化同步到 nativeTheme：渲染层 prefers-color-scheme（matchMedia）随之联动
+    if (next.theme !== prev) nativeTheme.themeSource = next.theme
+    return next
+  })
   ipcMain.handle('settings:fonts', () => listMonospaceFonts())
 
   ipcMain.handle('term:create', (_e, profileId: string, cwd?: unknown) => {
@@ -386,6 +419,9 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
   app.whenReady().then(async () => {
     registry.load()
     settingsStore.load()
+    // 启动即按存档主题定向：dark/light 覆盖，system 交给系统偏好；
+    // 必须在 createWindow 之前，窗口装饰（darkTheme）取的是此刻的有效值
+    nativeTheme.themeSource = settingsStore.get().theme
     registerIpc()
 
     const smoke = argvHas('--smoke')

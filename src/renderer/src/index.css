@@ -1,3 +1,51 @@
+/* ── 主题变量：深色 = Catppuccin Mocha（默认），浅色 = Catppuccin Latte。
+   变量挂在 <html data-theme> 上，由渲染层随设置（深/浅/跟随系统）切换，见 theme.ts ── */
+:root {
+  --bg: #1e1e2e; /* base：应用底/选中标签/设置页 */
+  --bg-deep: #181825; /* mantle：顶栏/设置头/导航 */
+  --bg-inset: #11111b; /* crust：输入框/预览等凹陷面 */
+  --surface: #313244;
+  --surface-hover: #45475a;
+  --text: #cdd6f4;
+  --text-bright: #fff;
+  --accent: #89b4fa;
+  --hairline: rgba(205, 214, 244, 0.09);
+  --hover-wash: rgba(137, 180, 250, 0.14);
+  --menu-bg: rgba(24, 24, 37, 0.92);
+  --kbd: rgba(205, 214, 244, 0.38);
+  --kbd-strong: rgba(205, 214, 244, 0.6);
+  --thumb: rgba(205, 214, 244, 0.16);
+  --thumb-hover: rgba(205, 214, 244, 0.32);
+  --thumb-active: rgba(205, 214, 244, 0.45);
+  --shadow-lg:
+    0 16px 40px rgba(0, 0, 0, 0.5),
+    0 4px 12px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg: #eff1f5;
+  --bg-deep: #e6e9ef;
+  --bg-inset: #dce0e8;
+  --surface: #ccd0da;
+  --surface-hover: #bcc0cc;
+  --text: #4c4f69;
+  --text-bright: #4c4f69; /* Latte 无更亮的中性色，亮暗差异由底色对比承担 */
+  --accent: #1e66f5;
+  --hairline: rgba(76, 79, 105, 0.12);
+  --hover-wash: rgba(30, 102, 245, 0.1);
+  --menu-bg: rgba(230, 233, 239, 0.94);
+  --kbd: rgba(76, 79, 105, 0.45);
+  --kbd-strong: rgba(76, 79, 105, 0.7);
+  --thumb: rgba(76, 79, 105, 0.22);
+  --thumb-hover: rgba(76, 79, 105, 0.4);
+  --thumb-active: rgba(76, 79, 105, 0.55);
+  --shadow-lg:
+    0 16px 40px rgba(76, 79, 105, 0.28),
+    0 4px 12px rgba(76, 79, 105, 0.16);
+  color-scheme: light;
+}
+
 html,
 body,
 #root {
@@ -11,17 +59,16 @@ body,
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #1e1e2e;
-  color: #cdd6f4;
+  background: var(--bg);
+  color: var(--text);
   font-family: system-ui, 'Noto Sans CJK SC', sans-serif;
   font-size: 13px;
-  color-scheme: dark;
 }
 
 .tabbar {
   display: flex;
   align-items: flex-end;
-  background: #181825;
+  background: var(--bg-deep);
   padding: 6px 8px 0;
   position: relative;
   flex: none;
@@ -47,7 +94,7 @@ body,
   /* 高度钉死在 --bar-h，垂直居中交给 align-items，padding 只留水平 */
   height: var(--bar-h);
   padding: 0 10px;
-  background: #313244;
+  background: var(--surface);
   border-radius: 6px 6px 0 0;
   cursor: pointer;
   user-select: none;
@@ -62,8 +109,8 @@ body,
 /* 浏览器式压缩：选中标签的收缩系数远低于其他标签，被压缩时始终最宽 */
 .tab.active {
   flex-shrink: 0.25;
-  background: #1e1e2e;
-  color: #fff;
+  background: var(--bg);
+  color: var(--text-bright);
 }
 
 .tab.exited .title {
@@ -106,8 +153,8 @@ body,
   align-items: center;
   justify-content: center;
   height: var(--bar-h);
-  background: #313244;
-  color: #cdd6f4;
+  background: var(--surface);
+  color: var(--text);
   border: none;
   border-radius: 6px 6px 0 0;
   padding: 0 12px;
@@ -117,7 +164,7 @@ body,
 }
 
 .newtab:hover {
-  background: #45475a;
+  background: var(--surface-hover);
 }
 
 /* 分体新建按钮：设置了默认终端时 = [+][▾]，+ 直接创建、箭头开菜单；
@@ -142,8 +189,8 @@ body,
 .newtab-caret {
   display: flex;
   align-items: center;
-  background: #313244;
-  color: #cdd6f4;
+  background: var(--surface);
+  color: var(--text);
   border: none;
   border-radius: 0 6px 0 0;
   margin-left: 1px;
@@ -152,7 +199,7 @@ body,
 }
 
 .newtab-caret:hover {
-  background: #45475a;
+  background: var(--surface-hover);
 }
 
 .menu-badge {
@@ -168,13 +215,11 @@ body,
   top: 100%;
   right: 0;
   z-index: 10;
-  background: rgba(24, 24, 37, 0.92);
-  border: 1px solid rgba(205, 214, 244, 0.09);
+  background: var(--menu-bg);
+  border: 1px solid var(--hairline);
   border-radius: 10px;
   padding: 5px;
-  box-shadow:
-    0 16px 40px rgba(0, 0, 0, 0.5),
-    0 4px 12px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-lg);
   backdrop-filter: blur(18px);
   min-width: 160px;
   transform-origin: top right;
@@ -203,8 +248,8 @@ body,
 }
 
 .menu-item:hover {
-  background: rgba(137, 180, 250, 0.14);
-  color: #fff;
+  background: var(--hover-wash);
+  color: var(--text-bright);
 }
 
 .menu-item.disabled,
@@ -223,7 +268,7 @@ body,
 .menu-sep {
   height: 1px;
   margin: 4px -5px;
-  background: rgba(205, 214, 244, 0.09);
+  background: var(--hairline);
 }
 
 .menu-icon {
@@ -233,18 +278,18 @@ body,
 
 .menu-item:hover .menu-icon {
   opacity: 1;
-  color: #89b4fa;
+  color: var(--accent);
 }
 
 .menu-kbd {
   margin-left: auto;
   font-size: 11px;
-  color: rgba(205, 214, 244, 0.38);
+  color: var(--kbd);
   letter-spacing: 0.3px;
 }
 
 .menu-item:hover .menu-kbd {
-  color: rgba(205, 214, 244, 0.6);
+  color: var(--kbd-strong);
 }
 
 /* ── 终端右键菜单：渲染层自绘（原生 Menu 无法定制外观），portal 到 body 跟随光标 ── */
@@ -253,12 +298,10 @@ body,
   z-index: 100;
   min-width: 208px;
   padding: 5px;
-  background: rgba(24, 24, 37, 0.92);
-  border: 1px solid rgba(205, 214, 244, 0.09);
+  background: var(--menu-bg);
+  border: 1px solid var(--hairline);
   border-radius: 10px;
-  box-shadow:
-    0 16px 40px rgba(0, 0, 0, 0.5),
-    0 4px 12px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-lg);
   backdrop-filter: blur(18px);
   animation: pop-in 0.14s cubic-bezier(0.16, 1, 0.3, 1);
   user-select: none;
@@ -272,13 +315,13 @@ body,
   padding: 7px 10px;
   border-radius: 6px;
   cursor: pointer;
-  color: #cdd6f4;
+  color: var(--text);
   transition: background 0.08s ease;
 }
 
 .ctx-item.active {
-  background: rgba(137, 180, 250, 0.14);
-  color: #fff;
+  background: var(--hover-wash);
+  color: var(--text-bright);
 }
 
 .ctx-item.disabled,
@@ -286,7 +329,7 @@ body,
   opacity: 0.38;
   cursor: default;
   background: none;
-  color: #cdd6f4;
+  color: var(--text);
 }
 
 .ctx-icon {
@@ -296,7 +339,7 @@ body,
 
 .ctx-item.active .ctx-icon {
   opacity: 1;
-  color: #89b4fa;
+  color: var(--accent);
 }
 
 .ctx-label {
@@ -306,18 +349,18 @@ body,
 /* 快捷键提示：小号弱化，让菜单自带可发现性 */
 .ctx-kbd {
   font-size: 11px;
-  color: rgba(205, 214, 244, 0.38);
+  color: var(--kbd);
   letter-spacing: 0.3px;
 }
 
 .ctx-item.active .ctx-kbd {
-  color: rgba(205, 214, 244, 0.6);
+  color: var(--kbd-strong);
 }
 
 .tab input {
-  background: #11111b;
-  color: #fff;
-  border: 1px solid #89b4fa;
+  background: var(--bg-inset);
+  color: var(--text-bright);
+  border: 1px solid var(--accent);
   border-radius: 4px;
   font-size: 12px;
   padding: 1px 4px;
@@ -370,16 +413,16 @@ body,
   right: 0;
   width: 6px;
   border-radius: 3px;
-  background: rgba(205, 214, 244, 0.16);
+  background: var(--thumb);
   pointer-events: auto;
 }
 
 .term-scrollbar-thumb:hover {
-  background: rgba(205, 214, 244, 0.32);
+  background: var(--thumb-hover);
 }
 
 .term-scrollbar-thumb:active {
-  background: rgba(205, 214, 244, 0.45);
+  background: var(--thumb-active);
 }
 
 /* xterm 视口的 #000 默认底色会透进滚动条槽，改为透明以贴合终端主题 */
@@ -393,7 +436,7 @@ body,
   display: flex;
   flex-direction: column;
   padding: 0;
-  background: #1e1e2e;
+  background: var(--bg);
   outline: none;
 }
 
@@ -402,7 +445,7 @@ body,
   align-items: center;
   justify-content: space-between;
   padding: 8px 14px;
-  background: #181825;
+  background: var(--bg-deep);
 }
 
 .settings-title {
@@ -423,7 +466,7 @@ body,
 
 .settings-close:hover {
   opacity: 1;
-  background: #313244;
+  background: var(--surface);
 }
 
 .settings-body {
@@ -436,7 +479,7 @@ body,
   flex: none;
   width: 180px;
   padding: 10px 8px;
-  background: #181825;
+  background: var(--bg-deep);
 }
 
 .settings-nav-item {
@@ -451,8 +494,8 @@ body,
 }
 
 .settings-nav-item.active {
-  background: #313244;
-  color: #fff;
+  background: var(--surface);
+  color: var(--text-bright);
   opacity: 1;
 }
 
@@ -465,7 +508,7 @@ body,
 
 .settings-section {
   font-weight: 600;
-  color: #89b4fa;
+  color: var(--accent);
   margin-bottom: 16px;
 }
 
@@ -485,9 +528,9 @@ body,
 .settings-select {
   min-width: 320px;
   max-width: 100%;
-  background: #313244;
-  color: #cdd6f4;
-  border: 1px solid #45475a;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--surface-hover);
   border-radius: 6px;
   padding: 6px 8px;
   font-size: 13px;
@@ -495,7 +538,7 @@ body,
 
 .settings-select:focus,
 .stepper input:focus {
-  outline: 1px solid #89b4fa;
+  outline: 1px solid var(--accent);
 }
 
 .stepper {
@@ -505,9 +548,9 @@ body,
 
 .stepper button {
   width: 30px;
-  background: #313244;
-  color: #cdd6f4;
-  border: 1px solid #45475a;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--surface-hover);
   font-size: 15px;
   line-height: 1;
   cursor: pointer;
@@ -522,7 +565,7 @@ body,
 }
 
 .stepper button:hover:not(:disabled) {
-  background: #45475a;
+  background: var(--surface-hover);
 }
 
 .stepper button:disabled {
@@ -533,9 +576,9 @@ body,
 .stepper input {
   width: 58px;
   text-align: center;
-  background: #11111b;
-  color: #fff;
-  border: 1px solid #45475a;
+  background: var(--bg-inset);
+  color: var(--text-bright);
+  border: 1px solid var(--surface-hover);
   border-left: none;
   border-right: none;
   font-size: 13px;
@@ -557,8 +600,8 @@ body,
 .preview {
   flex: 1;
   min-width: 0;
-  background: #11111b;
-  border: 1px solid #313244;
+  background: var(--bg-inset);
+  border: 1px solid var(--surface);
   border-radius: 6px;
   padding: 10px 12px;
   line-height: 1.4;

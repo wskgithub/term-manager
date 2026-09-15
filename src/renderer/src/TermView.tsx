@@ -4,12 +4,15 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { api } from './api'
 import { resolveFontStack } from './fonts'
+import { xtermTheme } from './theme'
 
 interface Props {
   termId: string
   active: boolean
   fontFamily: string
   fontSize: number
+  // 创建实例时的深浅（决定初始调色板）；运行中切换由 App 的全局主题 effect 统一下发
+  dark: boolean
   onTitle: (title: string) => void
   onTerminal: (id: string, t: Terminal | null) => void
   // 右键菜单由 App 统一渲染（自绘浮层），这里只上报光标坐标
@@ -21,7 +24,7 @@ interface Thumb {
   height: number
 }
 
-export function TermView({ termId, active, fontFamily, fontSize, onTitle, onTerminal, onContextMenu }: Props) {
+export function TermView({ termId, active, fontFamily, fontSize, dark, onTitle, onTerminal, onContextMenu }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -108,7 +111,7 @@ export function TermView({ termId, active, fontFamily, fontSize, onTitle, onTerm
       fontSize: latest.current.fontSize,
       cursorBlink: true,
       scrollback: 2000,
-      theme: { background: '#1e1e2e', foreground: '#cdd6f4' }
+      theme: xtermTheme(dark)
     })
     const fit = new FitAddon()
     term.loadAddon(fit)

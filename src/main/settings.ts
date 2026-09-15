@@ -3,6 +3,8 @@ import { execFile } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
+export type ThemeOption = 'dark' | 'light' | 'system'
+
 export interface AppSettings {
   // 空串 = 自动（渲染层解析为 Nerd Font 优先栈，见 renderer/fonts.ts）
   fontFamily: string
@@ -11,9 +13,17 @@ export interface AppSettings {
   // 只做字符串清洗，不校验存在性：profile 列表归 ProfileRegistry 管，
   // 消费方（渲染层）拿不到时自行回退，避免两份配置互相锁死
   defaultProfileId: string
+  // 界面主题三态：深/浅/跟随系统。主进程把它映射到 nativeTheme.themeSource，
+  // 同时驱动 Linux 窗口装饰（darkTheme）与渲染层 prefers-color-scheme
+  theme: ThemeOption
 }
 
-export const DEFAULT_SETTINGS: AppSettings = { fontFamily: '', fontSize: 14, defaultProfileId: '' }
+export const DEFAULT_SETTINGS: AppSettings = {
+  fontFamily: '',
+  fontSize: 14,
+  defaultProfileId: '',
+  theme: 'dark'
+}
 
 const FONT_SIZE_MIN = 8
 const FONT_SIZE_MAX = 48
@@ -52,6 +62,9 @@ function sanitize(input: unknown, base: AppSettings): AppSettings {
       .replace(/[\u0000-\u001f\u007f]/g, '')
       .trim()
       .slice(0, DEFAULT_PROFILE_MAX)
+  }
+  if (raw.theme === 'dark' || raw.theme === 'light' || raw.theme === 'system') {
+    out.theme = raw.theme
   }
   if (raw.fontSize !== undefined) {
     const n = Math.round(Number(raw.fontSize))

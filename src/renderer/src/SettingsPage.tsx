@@ -104,6 +104,19 @@ export function SettingsPage({ settings, profiles, onChange, onClose }: Props) {
           <div className="settings-panel">
             <div className="settings-section">外观</div>
             <div className="settings-row">
+              <label className="settings-label">主题</label>
+              <select
+                className="settings-select"
+                value={settings.theme}
+                onChange={(e) => onChange({ theme: e.target.value as AppSettings['theme'] })}
+              >
+                <option value="dark">深色</option>
+                <option value="light">浅色</option>
+                <option value="system">跟随系统</option>
+              </select>
+              <span className="settings-hint">跟随系统时随系统深色模式自动切换</span>
+            </div>
+            <div className="settings-row">
               <label className="settings-label">字体</label>
               <select
                 className="settings-select"

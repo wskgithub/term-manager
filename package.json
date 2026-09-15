@@ -50,6 +50,7 @@
         "libxss1",
         "libxtst6",
         "xdg-utils",
+        "x11-utils",
         "libatspi2.0-0",
         "libuuid1",
         "libsecret-1-0",

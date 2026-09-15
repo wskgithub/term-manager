@@ -130,4 +130,14 @@ export function setupE2E(ctx: E2ECtx): void {
     api.write(state.activeId, '\r')
     return true
   }
+
+  // 主题切换（配合 __e2eSettings(true) 使用）：改真实设置页下拉并派发 change，
+  // 走 onChange → applySettings → settings:set → nativeTheme 全链路
+  w.__e2eTheme = (theme: string) => {
+    const sel = document.querySelector<HTMLSelectElement>('.settings-panel .settings-select')
+    if (!sel) return false
+    sel.value = theme
+    sel.dispatchEvent(new Event('change', { bubbles: true }))
+    return true
+  }
 }
