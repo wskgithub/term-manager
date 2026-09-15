@@ -100,11 +100,25 @@ export function setupE2E(ctx: E2ECtx): void {
     )
     return true
   }
-  // 设置页开关（主进程 E2E 截图用）：点齿轮打开、点 × 关闭
+  // 设置页开关（主进程 E2E 截图用）：点 × 关闭；打开走下拉菜单（点箭头/＋开菜单 → 点设置项）
   w.__e2eSettings = (open: boolean) => {
-    const btn = document.querySelector<HTMLButtonElement>(open ? '.settings-btn' : '.settings-close')
-    btn?.click()
-    return !!btn
+    if (!open) {
+      const btn = document.querySelector<HTMLButtonElement>('.settings-close')
+      btn?.click()
+      return !!btn
+    }
+    const toggle = document.querySelector<HTMLButtonElement>('.newtab-caret') ??
+      document.querySelector<HTMLButtonElement>('.newtab-split > .newtab')
+    if (!toggle) return false
+    toggle.click()
+    // 等 React 把菜单渲染出来再点设置项
+    return new Promise<boolean>((resolve) => {
+      setTimeout(() => {
+        const item = document.querySelector<HTMLElement>('.menu-settings')
+        item?.click()
+        resolve(!!item)
+      }, 100)
+    })
   }
 
   // GUI 层输入兜底：xterm 官方 paste API（onData→IPC→后端→shell→输出→渲染 全链路）。

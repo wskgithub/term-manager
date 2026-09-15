@@ -25,6 +25,9 @@ body,
   padding: 6px 8px 0;
   position: relative;
   flex: none;
+  /* 顶栏控件（标签/新建/箭头）统一高度：各元素内容不同，
+     行高差异会让自然高度互不齐平，必须钉死同一高度 */
+  --bar-h: 30px;
 }
 
 .tabs {
@@ -41,7 +44,9 @@ body,
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
+  /* 高度钉死在 --bar-h，垂直居中交给 align-items，padding 只留水平 */
+  height: var(--bar-h);
+  padding: 0 10px;
   background: #313244;
   border-radius: 6px 6px 0 0;
   cursor: pointer;
@@ -97,11 +102,15 @@ body,
 }
 
 .newtab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--bar-h);
   background: #313244;
   color: #cdd6f4;
   border: none;
   border-radius: 6px 6px 0 0;
-  padding: 6px 12px;
+  padding: 0 12px;
   margin-left: 4px;
   cursor: pointer;
   font-size: 15px;
@@ -208,6 +217,34 @@ body,
 .menu-item.muted {
   opacity: 0.5;
   cursor: default;
+}
+
+/* 菜单内分隔线：负 margin 抵消面板 padding，让线贯穿整行 */
+.menu-sep {
+  height: 1px;
+  margin: 4px -5px;
+  background: rgba(205, 214, 244, 0.09);
+}
+
+.menu-icon {
+  display: flex;
+  opacity: 0.78;
+}
+
+.menu-item:hover .menu-icon {
+  opacity: 1;
+  color: #89b4fa;
+}
+
+.menu-kbd {
+  margin-left: auto;
+  font-size: 11px;
+  color: rgba(205, 214, 244, 0.38);
+  letter-spacing: 0.3px;
+}
+
+.menu-item:hover .menu-kbd {
+  color: rgba(205, 214, 244, 0.6);
 }
 
 /* ── 终端右键菜单：渲染层自绘（原生 Menu 无法定制外观），portal 到 body 跟随光标 ── */
@@ -348,16 +385,6 @@ body,
 /* xterm 视口的 #000 默认底色会透进滚动条槽，改为透明以贴合终端主题 */
 .app .xterm .xterm-viewport {
   background-color: transparent;
-}
-
-.settings-btn {
-  display: flex;
-  align-items: center;
-  padding: 6px 9px;
-}
-
-.settings-btn svg {
-  display: block;
 }
 
 /* 设置页：覆盖内容区（标签栏仍可用），左侧导航为后续分类预留 */
