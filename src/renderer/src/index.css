@@ -79,6 +79,8 @@ body,
 
 .tabs {
   display: flex;
+  /* 组容器比裸标签高 2px（组色顶边），所有子项底对齐才不悬空 */
+  align-items: flex-end;
   gap: 4px;
   overflow-x: auto;
 }
@@ -116,6 +118,85 @@ body,
 .tab.exited .title {
   opacity: 0.45;
   text-decoration: line-through;
+}
+
+/* ── 固定标签：窄（标题省略，tooltip 看全名）、不收缩、不渲染关闭钮（防误关），
+   pin 图标替代 profile 色点作为固定标识 ── */
+.tab.pinned {
+  width: 104px;
+  flex-shrink: 0;
+  gap: 5px;
+}
+
+.pin-mark {
+  display: flex;
+  flex: none;
+  color: var(--accent);
+}
+
+/* ── 标签分组：组色顶边 + 组色浅底把同组标签围成一块（--g-color 由组容器 inline 注入）── */
+.tabgroup {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 0 2px;
+  border-top: 2px solid var(--g-color);
+  border-radius: 8px 8px 0 0;
+  background: color-mix(in srgb, var(--g-color) 10%, transparent);
+  /* 允许整组被压缩：组内标签沿用 .tab 的 flex-shrink 逐个收缩 */
+  min-width: 0;
+}
+
+/* 组头：色点 + 组名 + 折叠箭头；单击折叠/展开，右键重命名/换色/解散 */
+.tabgroup-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--bar-h);
+  padding: 0 10px;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.tabgroup-head:hover,
+.tabgroup.collapsed .tabgroup-head {
+  background: color-mix(in srgb, var(--g-color) 18%, transparent);
+  color: var(--text-bright);
+}
+
+.tabgroup-head .dot {
+  background: var(--g-color);
+}
+
+.g-name {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.g-chev {
+  flex: none;
+  opacity: 0.6;
+  transition: transform 0.15s ease;
+}
+
+.tabgroup.collapsed .g-chev {
+  transform: rotate(-90deg);
+}
+
+/* 组头重命名输入框：视觉语言对照 .tab input（固定宽度即可，组头本身不收缩） */
+.tabgroup-head input {
+  background: var(--bg-inset);
+  color: var(--text-bright);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  font-size: 12px;
+  padding: 1px 4px;
+  width: 96px;
 }
 
 .dot {
@@ -355,6 +436,13 @@ body,
 
 .ctx-item.active .ctx-kbd {
   color: var(--kbd-strong);
+}
+
+/* 右键菜单分隔线（与 .menu-sep 同语言：负 margin 抵消面板 padding 让线贯穿整行） */
+.ctx-sep {
+  height: 1px;
+  margin: 4px -5px;
+  background: var(--hairline);
 }
 
 .tab input {

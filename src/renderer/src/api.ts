@@ -25,6 +25,48 @@ export interface TermInfo {
   profileId: string
   title: string
   color?: string
+  // 以下为渲染层 UI 态（固定/分组），主进程不感知，创建后由渲染层补充
+  pinned?: boolean
+  groupId?: string
+}
+
+export interface TabGroup {
+  id: string
+  name: string
+  color: string
+  collapsed?: boolean
+}
+
+// 组调色板（Catppuccin 八色）：作为组头圆点/容器色边使用，深浅主题下均可读
+export const GROUP_COLORS = [
+  '#f38ba8', // 红
+  '#fab387', // 橙
+  '#f9e2af', // 黄
+  '#a6e3a1', // 绿
+  '#94e2d5', // 青
+  '#89b4fa', // 蓝
+  '#cba6f7', // 紫
+  '#f5c2e7', // 粉
+]
+
+export const GROUP_COLOR_NAMES = ['红色', '橙色', '黄色', '绿色', '青色', '蓝色', '紫色', '粉色']
+
+// 新组默认名「组 N」：跳过与现有组重名的序号，避免出现两个「组 1」
+export function nextGroupName(groups: TabGroup[]): string {
+  const names = new Set(groups.map((g) => g.name))
+  for (let i = groups.length + 1; ; i++) {
+    const name = `组 ${i}`
+    if (!names.has(name)) return name
+  }
+}
+
+// 建组选色：取当前被占用最少的颜色（并列取调色板顺序靠前的）
+export function nextGroupColor(groups: TabGroup[]): string {
+  const counts = new Map<string, number>()
+  for (const g of groups) counts.set(g.color, (counts.get(g.color) ?? 0) + 1)
+  return GROUP_COLORS.reduce((best, c) =>
+    (counts.get(c) ?? 0) < (counts.get(best) ?? 0) ? c : best
+  )
 }
 
 export interface Api {

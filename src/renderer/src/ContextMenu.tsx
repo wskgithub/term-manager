@@ -5,15 +5,28 @@ export interface MenuItem {
   key: string
   label: string
   shortcut?: string
-  icon: ReactNode
+  icon?: ReactNode
   disabled?: boolean
   action: () => void
+}
+
+/** 分隔线条目：不占键盘焦点，方向键/回车都会跳过 */
+export interface MenuSep {
+  key: string
+  sep: true
+}
+
+export type MenuEntry = MenuItem | MenuSep
+
+// 可选中 = 非分隔线且未禁用（键盘导航与回车的判定基准）
+function selectable(e: MenuEntry): e is MenuItem {
+  return !('sep' in e) && !e.disabled
 }
 
 interface Props {
   x: number
   y: number
-  items: MenuItem[]
+  items: MenuEntry[]
   onClose: () => void
 }
 
@@ -32,6 +45,36 @@ export const PasteIcon = (
   </svg>
 )
 
+/** 标签右键菜单用图标（lucide 风格，stroke 跟随文字颜色） */
+export const PinIcon = (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="12" y1="17" x2="12" y2="22" />
+    <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" />
+  </svg>
+)
+
+export const FolderPlusIcon = (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 10v6" />
+    <path d="M9 13h6" />
+    <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+  </svg>
+)
+
+export const XIcon = (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M18 6 6 18" />
+    <path d="m6 6 12 12" />
+  </svg>
+)
+
+export const PencilIcon = (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" />
+    <path d="m15 5 4 4" />
+  </svg>
+)
+
 /**
  * 终端右键菜单：portal 到 body 的自绘浮层。
  * 弹出前用 useLayoutEffect 量自身尺寸并钳到视口内（贴边时向反方向翻转），
@@ -41,7 +84,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ x, y, flipX: false, flipY: false })
   // 键盘高亮项：默认落在首个可用项上
-  const [active, setActive] = useState(() => Math.max(0, items.findIndex((i) => !i.disabled)))
+  const [active, setActive] = useState(() => Math.max(0, items.findIndex(selectable)))
 
   useLayoutEffect(() => {
     const el = ref.current
@@ -83,7 +126,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
         setActive((cur) => {
           for (let step = 1; step <= items.length; step++) {
             const idx = (cur + dir * step + items.length * step) % items.length
-            if (!items[idx].disabled) return idx
+            if (selectable(items[idx])) return idx
           }
           return cur
         })
@@ -93,7 +136,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
         e.preventDefault()
         e.stopPropagation()
         const item = items[active]
-        if (item && !item.disabled) {
+        if (item && selectable(item)) {
           item.action()
           onClose()
         }
@@ -126,26 +169,31 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
       style={{ left: pos.x, top: pos.y, transformOrigin: origin }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {items.map((item, i) => (
-        <div
-          key={item.key}
-          className={
-            'ctx-item' +
-            (i === active ? ' active' : '') +
-            (item.disabled ? ' disabled' : '')
-          }
-          onMouseEnter={() => setActive(i)}
-          onClick={() => {
-            if (item.disabled) return
-            item.action()
-            onClose()
-          }}
-        >
-          <span className="ctx-icon">{item.icon}</span>
-          <span className="ctx-label">{item.label}</span>
-          {item.shortcut && <span className="ctx-kbd">{item.shortcut}</span>}
-        </div>
-      ))}
+      {items.map((item, i) =>
+        'sep' in item ? (
+          <div key={item.key} className="ctx-sep" />
+        ) : (
+          <div
+            key={item.key}
+            data-key={item.key}
+            className={
+              'ctx-item' +
+              (i === active ? ' active' : '') +
+              (item.disabled ? ' disabled' : '')
+            }
+            onMouseEnter={() => setActive(i)}
+            onClick={() => {
+              if (item.disabled) return
+              item.action()
+              onClose()
+            }}
+          >
+            {item.icon !== undefined && <span className="ctx-icon">{item.icon}</span>}
+            <span className="ctx-label">{item.label}</span>
+            {item.shortcut && <span className="ctx-kbd">{item.shortcut}</span>}
+          </div>
+        )
+      )}
     </div>,
     document.body
   )

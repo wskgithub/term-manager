@@ -123,10 +123,11 @@ npx electron out/main/index.js --e2e-tabs=20 --e2e-out=/tmp/e2e --e2e-quit --no-
 ## 快捷键
 
 - `Ctrl+Shift+T` 新建标签（默认 profile）
-- `Ctrl+Shift+W` 关闭当前标签
+- `Ctrl+Shift+W` 关闭当前标签（固定标签上不生效，防误关）
 - `Ctrl+Tab` / `Ctrl+Shift+Tab` 切换标签
 - `Ctrl+,` 打开/关闭设置页（`Esc` 或点击标签关闭）
 - 双击标签重命名（手动重命名后 shell 上报的标题不再覆盖）
+- 标签右键菜单：固定/取消固定（常驻左端、窄化、无关闭钮）、添加到新组/移入既有组/移出组、关闭
 
 ## 已实现 / 路线图
 
@@ -137,7 +138,8 @@ npx electron out/main/index.js --e2e-tabs=20 --e2e-out=/tmp/e2e --e2e-quit --no-
 - [x] tmux Control Mode 后端：UTF-8、自适应尺寸、输入防抖合批（5ms/8KB）
 - [x] 设置页（外观：字体选择/字号，fc-list 枚举本机等宽字体，即时生效 + 持久化）
 - [x] E2E 测试设施（冒烟 + 20 标签基准 + 截图 + 键盘注入）
-- [ ] 标签分组（颜色组 + 侧栏树）与组内广播输入（按标签粒度，超越 Terminator）
+- [x] 固定标签页 + 标签分组（标签栏内颜色组：组头单击折叠、右键重命名/换色/解散；固定与分组互斥）
+- [ ] 标签分组侧栏树视图与组内广播输入（按标签粒度，超越 Terminator）
 - [ ] 会话保持：应用重启附着既有 tmux 服务器（后端已隔离 socket，天然可做）
 - [ ] 命令面板、GPU 渲染（addon-webgl，硬渲染环境可选）
 - [x] electron-builder deb 打包（桌面入口/图标/依赖元数据齐全）

@@ -323,6 +323,32 @@ async function runE2ESequence(win: BrowserWindow, n: number): Promise<void> {
     )
   }
 
+  // 标签右键菜单（--e2e-tab-menu）：固定/取消固定 → 建组（截组头命名编辑态）→
+  // 提交组名 → 移入组 → 折叠/展开，每步走真实右键 + 菜单点击链路
+  if (argvHas('--e2e-tab-menu')) {
+    const drive = async (idx: number, action: string, what: string) => {
+      const ok = (await win.webContents.executeJavaScript(
+        `window.__e2eTabMenu && window.__e2eTabMenu(${idx}, '${action}')`,
+        true
+      )) as boolean
+      console.log(`E2E_TAB_MENU ${what} ${ok ? 'ok' : 'FAIL'}`)
+      await delay(300)
+      return ok
+    }
+    await drive(0, 'pin', 'pin-tab0')
+    await snap('05-tab-pinned')
+    await drive(0, 'pin', 'unpin-tab0')
+    await drive(1, 'new-group', 'new-group-tab1')
+    await snap('06-group-editing')
+    await drive(0, 'commit-name', 'commit-group-name')
+    await snap('07-group-named')
+    await drive(2, 'move', 'move-tab2-into-group')
+    await snap('08-group-two-tabs')
+    await drive(0, 'group-head', 'collapse-group')
+    await snap('09-group-collapsed')
+    await drive(0, 'group-head', 'expand-group')
+  }
+
   // 空闲态采样：全部标签就绪、无输入 3 秒后的 CPU/内存
   await delay(3000)
   const idleMetrics = snapshotMetrics()

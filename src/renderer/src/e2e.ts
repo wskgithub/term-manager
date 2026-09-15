@@ -140,4 +140,43 @@ export function setupE2E(ctx: E2ECtx): void {
     sel.dispatchEvent(new Event('change', { bubbles: true }))
     return true
   }
+
+  // 标签右键菜单驱动（--e2e-tab-menu）：对第 tabIndex 个 .tab 派发真实 contextmenu，
+  // 等 React 渲染出浮层后按 data-key 点菜单项，走 onContextMenu → ContextMenu action 全链路。
+  // action 特例：'move' 点第一个「移入」项（组 id 动态，data-key 前缀匹配）；
+  // 'group-head' 点第一个组头（折叠/展开）；'commit-name' 在组头输入框按 Enter 提交
+  w.__e2eTabMenu = (tabIndex: number, action: string) => {
+    if (action === 'group-head') {
+      const head = document.querySelector<HTMLElement>('.tabgroup-head')
+      head?.click()
+      return !!head
+    }
+    if (action === 'commit-name') {
+      const input = document.querySelector<HTMLInputElement>('.tabgroup-head input')
+      if (!input) return false
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      return true
+    }
+    const tab = document.querySelectorAll<HTMLElement>('.tab')[tabIndex]
+    if (!tab) return false
+    const r = tab.getBoundingClientRect()
+    tab.dispatchEvent(
+      new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        clientX: Math.round(r.left + 30),
+        clientY: Math.round(r.bottom + 4),
+      })
+    )
+    return new Promise<boolean>((resolve) => {
+      setTimeout(() => {
+        const item =
+          action === 'move'
+            ? document.querySelector<HTMLElement>('.ctx-item[data-key^="move-"]')
+            : document.querySelector<HTMLElement>(`.ctx-item[data-key="${action}"]`)
+        item?.click()
+        resolve(!!item)
+      }, 150)
+    })
+  }
 }
