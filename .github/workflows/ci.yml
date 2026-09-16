@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # smoke 走真实 tmux 控制模式后端做 shell 回显往返，必须有 tmux；
+      # smoke 本身不建窗口，xvfb 兜底防 Electron 在无显示环境初始化失败
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y tmux xvfb
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Smoke (windowless backend round-trip)
+        run: xvfb-run -a npm run smoke
