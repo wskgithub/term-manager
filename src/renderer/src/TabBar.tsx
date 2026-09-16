@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import {
+  BroadcastIcon,
   ContextMenu,
   FolderPlusIcon,
   PencilIcon,
@@ -23,6 +24,10 @@ interface Props {
   // 已校验可用的默认终端 profile id；空串 = 未设置（+ 即菜单开关）
   defaultProfileId: string
   groups: TabGroup[]
+  // 组内广播输入（设置总开关开启时才有 UI）：广播中的组 id 集合与切换回调
+  broadcastEnabled: boolean
+  broadcastGroups: Set<string>
+  onGroupBroadcast: (groupId: string) => void
   onSelect: (id: string) => void
   onClose: (id: string) => void
   onRename: (id: string, title: string) => void
@@ -81,6 +86,9 @@ export function TabBar(props: Props) {
     exited,
     defaultProfileId,
     groups,
+    broadcastEnabled,
+    broadcastGroups,
+    onGroupBroadcast,
     onSelect,
     onClose,
     onRename,
@@ -282,6 +290,18 @@ export function TabBar(props: Props) {
         setGroupDraft(g.name)
       },
     },
+    // 广播入口之二（组头开关是之一）：总开关开启时才出现
+    ...(broadcastEnabled
+      ? [
+          {
+            key: 'broadcast',
+            label: broadcastGroups.has(g.id) ? '停止广播输入' : '广播输入到全组',
+            icon: BroadcastIcon,
+            shortcut: broadcastGroups.has(g.id) ? '✓' : undefined,
+            action: () => onGroupBroadcast(g.id),
+          } as MenuEntry,
+        ]
+      : []),
     { key: 'sep-rename', sep: true },
     ...GROUP_COLORS.map<MenuEntry>((c, i) => ({
       key: `color-${i}`,
@@ -303,7 +323,11 @@ export function TabBar(props: Props) {
           ) : (
             <div
               key={seg.group.id}
-              className={'tabgroup' + (seg.group.collapsed ? ' collapsed' : '')}
+              className={
+                'tabgroup' +
+                (seg.group.collapsed ? ' collapsed' : '') +
+                (broadcastEnabled && broadcastGroups.has(seg.group.id) ? ' broadcasting' : '')
+              }
               style={{ '--g-color': seg.group.color } as CSSProperties}
             >
               {/* 组头：单击折叠/展开（点击即意图明确，重命名走右键，避免双击先触两次折叠）。
@@ -336,6 +360,27 @@ export function TabBar(props: Props) {
                   />
                 ) : (
                   <span className="g-name">{seg.group.name}</span>
+                )}
+                {/* 广播开关（设置总开关开启时渲染）：输入复制到全组属高危操作，
+                    常驻可见 + 开启态高亮，杜绝"忘了广播还开着"。stopPropagation
+                    阻断组头的折叠单击；mousedown preventDefault 同组头，点击后
+                    焦点保持在终端 */}
+                {broadcastEnabled && (
+                  <button
+                    className={'g-broadcast' + (broadcastGroups.has(seg.group.id) ? ' on' : '')}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onGroupBroadcast(seg.group.id)
+                    }}
+                    title={
+                      broadcastGroups.has(seg.group.id)
+                        ? '广播输入中：键盘输入发往本组全部终端，点击停止'
+                        : '广播输入：本组全部终端同步接收键盘输入'
+                    }
+                  >
+                    {BroadcastIcon}
+                  </button>
                 )}
                 <svg
                   className="g-chev"

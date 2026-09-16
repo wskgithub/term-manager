@@ -525,7 +525,9 @@ function percentile(sorted: number[], p: number): number {
 // el.click()/dispatchEvent 不触发焦点转移，测不出这类回归）。覆盖三处历史缺陷：
 // 真实点击标签后焦点应落在终端（曾甩到 body，键盘输入丢失）、Ctrl+Tab 应切换
 // 标签且不向 shell 注入 \t（曾整族 Tab 被 xterm cancel() stopPropagation 吞掉）、
-// 大流量中文输出不应因 %output 跨 chunk 解码出现 U+FFFD
+// 大流量中文输出不应因 %output 跨 chunk 解码出现 U+FFFD；
+// 另覆盖组内广播输入路由：设置门控与 UI 出现、组内双 pane 同达、组外不收、
+// 关广播恢复独立输入
 
 interface InputPaneState {
   panes: number
@@ -634,6 +636,81 @@ async function runInputSequence(win: BrowserWindow): Promise<void> {
   await delay(2500)
   const bad = await json<Array<{ pane: number; line: string }>>('window.__e2eUtf8Bad()')
   check('utf8-clean', bad.length === 0, JSON.stringify(bad))
+
+  // 5) 组内广播：先建组（设置仍关，组头不应有广播开关）→ 真实勾选设置 →
+  //    开关出现 → 开广播 → 打字同段输入双达组内两 pane、组外不收 → 关广播恢复独立。
+  //    --e2e-input 走真实 userData：先记录原值，结束时还原，不把测试态留进用户配置
+  const menu = async (idx: number, action: string) =>
+    (await js<boolean>(`window.__e2eTabMenu && window.__e2eTabMenu(${idx}, '${action}')`)) === true
+  // 标签0+1 入同一组（真实右键菜单链路），标签2 留组外作对照
+  check(
+    'broadcast-group-setup',
+    (await menu(0, 'new-group')) && (await menu(0, 'commit-name')) && (await menu(1, 'move'))
+  )
+  await delay(300)
+
+  const hasBtn = () => js<boolean>('!!document.querySelector(".tabgroup-head .g-broadcast")')
+  const setViaSettingsPage = async (on: boolean): Promise<boolean> => {
+    await js('window.__e2eSettings && window.__e2eSettings(true)')
+    await delay(300)
+    await js(`document.querySelectorAll('.settings-nav-item')[1]?.click()`)
+    await delay(200)
+    const ok = await js<boolean>(
+      `(() => { const cb = document.querySelector('[data-setting="groupBroadcast"]'); ` +
+        `if (!cb) return false; if (cb.checked !== ${on}) cb.click(); return cb.checked === ${on} })()`
+    )
+    await delay(150)
+    await js('window.__e2eSettings && window.__e2eSettings(false)')
+    await delay(150)
+    return ok
+  }
+  // getSettings 返回 Promise：须由 executeJavaScript 解析，JSON.stringify(Promise) 是 {}
+  const prevBroadcast = (await js<{ groupBroadcast: boolean }>('window.api.getSettings()'))
+    .groupBroadcast
+  if (prevBroadcast) await setViaSettingsPage(false)
+  check('broadcast-hidden-when-off', !(await hasBtn()))
+  check('broadcast-setting-on', (await setViaSettingsPage(true)) && (await hasBtn()))
+
+  // 开广播：组头开关点亮 + 活跃标签（0，在组内）触发常驻警示徽标。
+  // __e2eBroadcastToggle 返回 Promise，须由 executeJavaScript 解析（json 包
+  // JSON.stringify 会把 Promise 序列化成 {}）
+  const t1 = await js<{ ok: boolean; on: boolean }>('window.__e2eBroadcastToggle()')
+  const bs = await json<{ groups: number; badge: boolean }>('window.__e2eBroadcastState()')
+  check('broadcast-on', t1.ok && t1.on && bs.groups === 1 && bs.badge, JSON.stringify({ t1, bs }))
+
+  // 真实点击标签0 后打字：sendInputEvent → xterm onData → 广播路由 → 全组
+  const r0 = await json<{ x: number; y: number; width: number; height: number }>(
+    'document.querySelectorAll(".tab")[0].getBoundingClientRect()'
+  )
+  const tx = Math.round(r0.x + r0.width / 2)
+  const ty = Math.round(r0.y + r0.height / 2)
+  win.webContents.sendInputEvent({ type: 'mouseDown', x: tx, y: ty, button: 'left', clickCount: 1 })
+  win.webContents.sendInputEvent({ type: 'mouseUp', x: tx, y: ty, button: 'left', clickCount: 1 })
+  await delay(400)
+  const bm = `bc${randomUUID().slice(0, 5)}`
+  await typeChars(win, bm)
+  await pressKey(win, 'Enter')
+  check(
+    'broadcast-fanout',
+    await waitUntil(async () => (await paneHas(0, bm)) && (await paneHas(1, bm)), 6000)
+  )
+  check('broadcast-no-leak', !(await waitUntil(() => paneHas(2, bm), 800)), '组外 pane 不应收到广播')
+
+  // 关广播：打字恢复只进自己的 pane
+  const t2 = await js<{ ok: boolean; on: boolean }>('window.__e2eBroadcastToggle()')
+  const sm = `sm${randomUUID().slice(0, 5)}`
+  await typeChars(win, sm)
+  await pressKey(win, 'Enter')
+  check(
+    'broadcast-off-restore',
+    t2.ok &&
+      !t2.on &&
+      (await waitUntil(() => paneHas(0, sm), 6000)) &&
+      !(await waitUntil(() => paneHas(1, sm), 800)),
+    JSON.stringify(t2)
+  )
+  // 还原用户原设置（主进程 store 直写即可；应用即将退出，渲染层态无需回灌）
+  await js(`window.api.setSettings && window.api.setSettings({ groupBroadcast: ${!!prevBroadcast} })`)
 
   const allOk = !results.some((r) => r.startsWith('FAIL:'))
   console.log('E2E_INPUT_RESULT ' + JSON.stringify({ ok: allOk, results }))

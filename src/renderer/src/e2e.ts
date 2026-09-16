@@ -17,6 +17,8 @@ interface E2ECtx {
   getTabs: () => TermInfo[]
   getGroups: () => TabGroup[]
   getRenamed: () => string[]
+  // 组内广播回归（--e2e-input 断言用）：广播中的组 id
+  getBroadcast: () => string[]
 }
 
 /**
@@ -219,6 +221,23 @@ export function setupE2E(ctx: E2ECtx): void {
       titles: tabs.map((t) => t.title),
     }
   }
+
+  // ── 组内广播回归（--e2e-input）：点击第一个组头的广播开关（真实 onClick 链路），
+  // 返回点击后按钮是否点亮；getBroadcast 取实时广播组数 ──
+  w.__e2eBroadcastToggle = () => {
+    const btn = document.querySelector<HTMLButtonElement>('.tabgroup-head .g-broadcast')
+    if (!btn) return { ok: false, on: false }
+    btn.click()
+    return new Promise<{ ok: boolean; on: boolean }>((resolve) => {
+      setTimeout(() => resolve({ ok: true, on: btn.className.includes('on') }), 120)
+    })
+  }
+
+  w.__e2eBroadcastState = () => ({
+    groups: ctx.getBroadcast().length,
+    // 活跃标签处于广播组时的常驻警示徽标（应为 true）
+    badge: !!document.querySelector('.broadcast-badge')
+  })
 
   // ── 真实输入回归探针（--e2e-input，主进程用 sendInputEvent 派可信事件驱动）──
 

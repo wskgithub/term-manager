@@ -75,6 +75,17 @@ export const PencilIcon = (
   </svg>
 )
 
+/** 组广播开关用图标（lucide radio 风格：中点 + 两侧弧段） */
+export const BroadcastIcon = (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="2" />
+    <path d="M7.9 16.1a6 6 0 0 1 0-8.2" />
+    <path d="M16.1 7.9a6 6 0 0 1 0 8.2" />
+    <path d="M5 19a10 10 0 0 1 0-14" />
+    <path d="M19 5a10 10 0 0 1 0 14" />
+  </svg>
+)
+
 /**
  * 终端右键菜单：portal 到 body 的自绘浮层。
  * 弹出前用 useLayoutEffect 量自身尺寸并钳到视口内（贴边时向反方向翻转），

@@ -17,6 +17,9 @@ interface Props {
   onTerminal: (id: string, t: Terminal | null) => void
   // 右键菜单由 App 统一渲染（自绘浮层），这里只上报光标坐标
   onContextMenu: (x: number, y: number) => void
+  // 键盘输入上交 App 路由：所属组开启广播时 App 会把同一段输入发往全组
+  //（渲染层持有权威的标签/分组实时态，比主进程 debounce 后的 sync 快照可靠）
+  onInput: (data: string) => void
   // Ctrl+Tab / Ctrl+Shift+Tab 循环切标签：焦点在终端内时必须由这里拦截
   //（Tab 族按键被 xterm 键位表认领，见下方 customKeyEventHandler 注释），
   // window 层监听收不到；焦点在终端外时走 App 的兜底通路
@@ -28,7 +31,7 @@ interface Thumb {
   height: number
 }
 
-export function TermView({ termId, active, fontFamily, fontSize, dark, onTitle, onTerminal, onContextMenu, onCycleTab }: Props) {
+export function TermView({ termId, active, fontFamily, fontSize, dark, onTitle, onTerminal, onContextMenu, onInput, onCycleTab }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -40,6 +43,9 @@ export function TermView({ termId, active, fontFamily, fontSize, dark, onTitle, 
   // customKeyEventHandler 挂在 mount-once 的 effect 里，回调经 ref 拿最新闭包
   const cycleTabRef = useRef(onCycleTab)
   cycleTabRef.current = onCycleTab
+  // onData 同理：广播路由依赖 App 的实时分组态，必须每次按键都拿到最新闭包
+  const inputRef = useRef(onInput)
+  inputRef.current = onInput
   // 设置是异步加载的：建实例时用最新值，晚到的变化由下面的 effect 补齐
   const latest = useRef({ fontFamily, fontSize })
   latest.current = { fontFamily, fontSize }
@@ -127,8 +133,8 @@ export function TermView({ termId, active, fontFamily, fontSize, dark, onTitle, 
     fitRef.current = fit
     fitIfVisible()
     term.onTitleChange((t) => titleRef.current(t))
-    // 用户键盘输入：xterm 行编辑产出 → 写回后端 PTY
-    term.onData((d) => api.write(termId, d))
+    // 用户键盘输入：xterm 行编辑产出 → 交 App 路由（广播组内复制到全组）
+    term.onData((d) => inputRef.current(d))
     // 键盘拦截都在 xterm 自身处理之前（customKeyEventHandler 返回 false 会直接
     // 跳过 xterm 的键位评估与 cancel，见 xterm Terminal._keyDown）：
     // 1) Ctrl+Tab / Ctrl+Shift+Tab 切标签——Tab 族在 xterm 键位表里被认领

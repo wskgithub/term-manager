@@ -51,6 +51,9 @@ function sanitize(input: unknown, base: AppSettings): AppSettings {
   if (typeof raw.keepSessionOnExit === 'boolean') {
     out.keepSessionOnExit = raw.keepSessionOnExit
   }
+  if (typeof raw.groupBroadcast === 'boolean') {
+    out.groupBroadcast = raw.groupBroadcast
+  }
   if (raw.fontSize !== undefined) {
     const n = Math.round(Number(raw.fontSize))
     if (Number.isFinite(n)) out.fontSize = Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, n))

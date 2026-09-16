@@ -43,6 +43,11 @@ export default function App() {
   const [exited, setExited] = useState<Set<string>>(() => new Set())
   // 标签分组：UI 态由渲染层维护，经 session:sync 上报主进程随会话持久化（跨重启恢复）
   const [groups, setGroups] = useState<TabGroup[]>([])
+  // 广播中的组 id：纯运行时态，刻意不进 session:sync——重启/重开应用后广播一律
+  // 复位为关，避免用户忘记广播仍开着而把密码敲进多台机器
+  const [broadcastGroups, setBroadcastGroups] = useState<Set<string>>(() => new Set())
+  const broadcastRef = useRef(new Set<string>())
+  broadcastRef.current = broadcastGroups
   // 终端右键菜单：坐标 + 打开瞬间的可复制状态（随打开冻结，避免后续选择变化影响已开菜单）
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; canCopy: boolean } | null>(null)
   // 新建终端失败提示（tmux 死了/profile 失效等），下次成功即清除
@@ -76,6 +81,12 @@ export default function App() {
   useEffect(() => {
     for (const t of terms.current.values()) t.options.theme = xtermTheme(dark)
   }, [dark])
+
+  // 总开关关闭时广播态全部撤下（设置页即时生效）：组头开关随 UI 消失，
+  // 残留的广播组会让输入悄悄复制，必须显式清空
+  useEffect(() => {
+    if (!settings.groupBroadcast) setBroadcastGroups(new Set())
+  }, [settings.groupBroadcast])
 
   // 激活标签变化后把焦点交给它：真实点击标签（mousedown 已 preventDefault 保住
   // 原焦点，但目标终端此刻还 display:none、focus() 无效）与 Ctrl+Tab 切换
@@ -315,6 +326,35 @@ export default function App() {
   const dissolveGroup = (gid: string) => {
     setTabs(tabsRef.current.map((t) => (t.groupId === gid ? { ...t, groupId: undefined } : t)))
     setGroups((gs) => gs.filter((g) => g.id !== gid))
+    setBroadcastGroups((bs) => {
+      if (!bs.has(gid)) return bs
+      const next = new Set(bs)
+      next.delete(gid)
+      return next
+    })
+  }
+
+  // 组内广播开关（总开关 groupBroadcast 开启时组头/组菜单可见）
+  const toggleGroupBroadcast = (gid: string) => {
+    setBroadcastGroups((bs) => {
+      const next = new Set(bs)
+      if (next.has(gid)) next.delete(gid)
+      else next.add(gid)
+      return next
+    })
+  }
+
+  // 键盘输入路由：普通标签直达自己的 pane；广播组内的标签则同段输入发往全组
+  //（含自身）。粘贴走 xterm paste → onData，同样被广播——向多机贴同一段命令
+  // 正是广播的用途，属用户显式动作
+  const sendInput = (id: string, data: string) => {
+    const ts = tabsRef.current
+    const gid = ts.find((t) => t.id === id)?.groupId
+    if (gid && settingsRef.current.groupBroadcast && broadcastRef.current.has(gid)) {
+      for (const t of ts) if (t.groupId === gid) api.write(t.id, data)
+    } else {
+      api.write(id, data)
+    }
   }
 
   const renameGroup = (gid: string, name: string) => {
@@ -425,11 +465,20 @@ export default function App() {
         terms,
         getTabs: () => tabsRef.current,
         getGroups: () => groupsRef.current,
-        getRenamed: () => [...renamed.current]
+        getRenamed: () => [...renamed.current],
+        getBroadcast: () => [...broadcastRef.current]
       })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // 广播警示徽标：活跃标签处于广播中的组时，内容区右上角常驻提示——误向
+  // 多台机器输入（密码/rm）代价极高，键盘落点必须时刻可见
+  const activeGid = tabs.find((t) => t.id === activeId)?.groupId
+  const broadcastTargets =
+    activeGid && settings.groupBroadcast && broadcastGroups.has(activeGid)
+      ? tabs.filter((t) => t.groupId === activeGid).length
+      : 0
 
   return (
     <div className="app">
@@ -440,6 +489,8 @@ export default function App() {
         exited={exited}
         defaultProfileId={defaultProfileId}
         groups={groups}
+        broadcastEnabled={settings.groupBroadcast}
+        broadcastGroups={broadcastGroups}
         onSelect={activateTab}
         onClose={closeTab}
         onRename={renameTab}
@@ -454,6 +505,7 @@ export default function App() {
         onGroupRename={renameGroup}
         onGroupColor={setGroupColor}
         onGroupDissolve={dissolveGroup}
+        onGroupBroadcast={toggleGroupBroadcast}
         onGroupToggle={toggleGroupCollapse}
         // 组头重命名提交/取消后归还焦点（同标签重命名：焦点丢失会漏按键进终端）
         onGroupRenameEnd={focusActiveTerm}
@@ -472,9 +524,15 @@ export default function App() {
             onTitle={(title) => shellTitle(t.id, title)}
             onTerminal={registerTerminal}
             onContextMenu={openTermContextMenu}
+            onInput={(d) => sendInput(t.id, d)}
             onCycleTab={cycleTab}
           />
         ))}
+        {broadcastTargets > 1 && (
+          <div className="broadcast-badge" title="关闭广播：组头广播开关或组右键菜单">
+            ⩕ 广播输入中 · 本组 {broadcastTargets} 个终端同步接收
+          </div>
+        )}
         {createError && <div className="create-error">新建终端失败：{createError}</div>}
         {settingsOpen && (
           <SettingsPage
