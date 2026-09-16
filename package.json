@@ -3,8 +3,15 @@
   "version": "0.1.0",
   "description": "Linux 终端管理器：标签页重命名/分组/排序 + 多 profile，类似 Windows Terminal",
   "main": "./out/main/index.js",
-  "author": "wsk <wsk@localhost>",
-  "homepage": "https://github.com/wsk/term-manager",
+  "author": "wskgithub <wskgithub@users.noreply.github.com>",
+  "homepage": "https://github.com/wskgithub/term-manager",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wskgithub/term-manager.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wskgithub/term-manager/issues"
+  },
   "desktopName": "term-manager.desktop",
   "license": "MIT",
   "scripts": {
@@ -19,7 +26,7 @@
     "dist:dir": "TERM_MGR_E2E=0 electron-vite build && ELECTRON_BUILDER_CACHE=\"$PWD/.cache/electron-builder\" ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --linux deb --dir"
   },
   "build": {
-    "appId": "io.github.wsk.term-manager",
+    "appId": "io.github.wskgithub.term-manager",
     "productName": "term-manager",
     "directories": {
       "output": "dist"

@@ -1,12 +1,24 @@
 # Term Manager
 
-Linux 桌面终端管理器：多标签 + 重命名 + 拖拽排序 + 多 profile（定位类似 Windows Terminal）。
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+Linux 桌面终端管理器（tabbed terminal manager for Linux）：多标签 + 重命名 + 拖拽排序 + 多 profile（定位类似 Windows Terminal）。
 管理器负责标签/profile/进程生命周期；终端仿真复用 [xterm.js](https://github.com/xtermjs/xterm.js)（VS Code 同款组件）；
 PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会话保持是天然红利）。
 
+## 界面
+
+![主视图：多标签 + 重命名 + profile 混用](docs/screenshots/main-dark.png)
+
+![标签分组与固定](docs/screenshots/tab-groups.png) ![＋ 下拉菜单：shell profile 选择](docs/screenshots/newtab-menu.png)
+
+![设置页（浅色主题）](docs/screenshots/settings-light.png) ![主视图（浅色主题）](docs/screenshots/main-light.png)
+
+截图由 E2E 基础设施真实驱动 UI 生成（CDP 点击菜单/重命名/粘贴命令，非摆拍拼图）。
+
 ## 技术栈
 
-- Electron 33 + TypeScript（主进程管后端/配置，渲染进程管 UI）
+- Electron 44 + TypeScript（主进程管后端/配置，渲染进程管 UI）
 - Vite（electron-vite）+ React
 - `@xterm/xterm` 仿真组件
 - 后端：`tmux -C` 控制模式（私有 socket，每标签一个 tmux 窗口，输入走 `send-keys`，输出走 `%output` 事件流）
@@ -23,7 +35,7 @@ PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会�
 {
   "version": 2,
   "profiles": [
-    { "id": "gpu-27", "name": "GPU 机器", "command": "ssh", "args": ["wsk@192.168.0.27"], "color": "#aed581" }
+    { "id": "gpu-27", "name": "GPU 机器", "command": "ssh", "args": ["user@192.168.1.100"], "color": "#aed581" }
   ]
 }
 ```
@@ -32,8 +44,9 @@ PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会�
 
 ## 设置
 
-标签栏右侧齿轮按钮或 `Ctrl+,` 打开设置页（结构仿 Windows Terminal，左侧分类导航，一期仅"外观"）：
+`＋` 下拉菜单底部的设置项或 `Ctrl+,` 打开设置页（结构仿 Windows Terminal，左侧分类导航，一期仅"外观"）：
 
+- **主题**：深色 / 浅色 / 跟随系统三态，实时切换（含原生标题栏跟随，X11 下经 `_GTK_THEME_VARIANT` 热生效）。
 - **字体**：下拉列出本机等宽字体（主进程 `fc-list :mono` 枚举）。默认"自动"= Nerd Font 优先栈
   （`JetBrainsMono Nerd Font` → `FiraCode Nerd Font` → … → CJK 等宽回退），显式选择纯拉丁字体时自动追加中文等宽回退。
 - **字号**：8–48 像素，步进器或直接输入。
@@ -97,9 +110,8 @@ sudo dpkg -r term-manager              # 卸载
 - `Depends` 除 Electron 运行库外固定含 **tmux**（后端为 tmux Control Mode）。
 - Electron 二进制直接取 `node_modules/electron/dist`（`electronDist`），不重复下载；fpm 等构建工具经
   `ELECTRON_BUILDER_BINARIES_MIRROR`（npmmirror）拉取，缓存落 `.cache/`（已 gitignore）。
-- 窗口关联已验证：`desktopName` 随 asar 进包，Electron 33 以其推导 app_id，
+- 窗口关联已验证：`desktopName` 随 asar 进包，Electron 以其推导 app_id，
   实测 `xprop WM_CLASS` = `"term-manager", "Term-manager"`，与 `StartupWMClass` 一致。
-- 分发前请替换占位元数据：package.json 的 `author` 邮箱与 `homepage`。
 
 ## E2E 测试
 
