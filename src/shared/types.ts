@@ -33,6 +33,9 @@ export interface AppSettings {
   // 任一标签的键盘输入会同时发往全组。广播态本身不持久化——重启即复位，
   // 避免用户忘记广播开着而误向多台机器输入
   groupBroadcast: boolean
+  // 标签分组侧栏树视图（默认关）：开启后左侧显示「组→标签」树形面板并
+  // 隐藏顶部标签栏（侧栏承担全部管理）。仅布局偏好，不涉会话数据
+  sidebarVisible: boolean
 }
 
 // 主进程 settings.ts 的兜底值，渲染层 App 也用它做异步加载前的初值
@@ -43,7 +46,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultProfileId: '',
   theme: 'dark',
   keepSessionOnExit: true,
-  groupBroadcast: false
+  groupBroadcast: false,
+  sidebarVisible: false
 }
 
 export interface TermInfo {

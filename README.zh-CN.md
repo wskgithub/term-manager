@@ -15,7 +15,7 @@ PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会�
 
 ![标签分组与固定](docs/screenshots/tab-groups.png) ![＋ 下拉菜单：shell profile 选择](docs/screenshots/newtab-menu.png)
 
-![设置页（浅色主题）](docs/screenshots/settings-light.png) ![主视图（浅色主题）](docs/screenshots/main-light.png)
+![分组侧栏树视图](docs/screenshots/sidebar-tree.png) ![设置页（浅色主题）](docs/screenshots/settings-light.png)
 
 截图由 E2E 基础设施真实驱动 UI 生成（CDP 点击菜单/重命名/粘贴命令，非摆拍拼图）。
 
@@ -53,6 +53,8 @@ PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会�
 - **字体**：下拉列出本机等宽字体（主进程 `fc-list :mono` 枚举）。默认"自动"= Nerd Font 优先栈
   （`JetBrainsMono Nerd Font` → `FiraCode Nerd Font` → … → CJK 等宽回退），显式选择纯拉丁字体时自动追加中文等宽回退。
 - **字号**：8–48 像素，步进器或直接输入。
+- **分组侧栏**（外观页）：左侧显示「组 → 标签」树形面板并取代顶部标签栏
+  （**默认关闭**，随时 `Ctrl+Shift+B` 切换，见下文[分组侧栏](#分组侧栏)）。
 - **会话**（终端页）：「退出时保留会话」开关（默认开，见下节[会话保持](#会话保持)）。
 - **组内广播**（终端页）：「广播输入到全组」开关（**默认关**，开启后见[组内广播](#组内广播)）。
 - 改动即时应用到所有已开终端并写入 `settings.json`，重启保持。
@@ -82,8 +84,12 @@ src/
 └── renderer/src/
     ├── App.tsx      # 标签状态机 + 单点数据分发 + 快捷键 + 设置状态
     ├── TabBar.tsx   # 重命名/拖拽排序/profile 菜单/设置入口
+    ├── Sidebar.tsx  # 分组侧栏树视图（开启时取代标签栏）
+    ├── NewTabMenu.tsx # ＋分体按钮/profile 下拉（标签栏与侧栏共用）
+    ├── menus.tsx    # 标签/组右键菜单条目构建（data-key 即 e2e 选择器）
+    ├── segs.ts      # 标签列表分段（连续同组合并），两视图共用模型
     ├── TermView.tsx # xterm 实例（输出单点分发、自适应尺寸、字体设置）
-    ├── SettingsPage.tsx # 设置页（外观 → 字体/字号 + 预览）
+    ├── SettingsPage.tsx # 设置页（外观 → 字体/字号 + 预览；终端 → 默认终端等）
     ├── fonts.ts     # 字体栈解析（自动模式 / CJK 回退）
     └── e2e.ts       # E2E 驱动钩子
 ```
@@ -146,6 +152,13 @@ M=$(npx electron out/main/index.js --e2e-session=phase1 --e2e-user-data=$U --no-
 npx electron out/main/index.js --e2e-session=phase2 --e2e-user-data=$U --e2e-sess-marker=$M --no-sandbox
 ```
 
+```bash
+# 分组侧栏回归：三条开关通路（标签栏按钮/侧栏✕/真实输入管线的 Ctrl+Shift+B）、
+# 树结构与标签数组一致性、菜单建组+改名、合成拖拽入组/出组/同父重排、折叠、
+# 点选激活焦点归属、侧栏开合的终端实时重排
+npx electron out/main/index.js --e2e-sidebar --e2e-quit --no-sandbox
+```
+
 ### 实测性能（20 标签托管，2026-09-09，i5/集成显卡）
 
 | 指标 | 数值 |
@@ -162,6 +175,7 @@ npx electron out/main/index.js --e2e-session=phase2 --e2e-user-data=$U --e2e-ses
 - `Ctrl+Tab` / `Ctrl+Shift+Tab` 切换标签（终端聚焦时由 xterm 键盘钩子拦截处理，
   焦点在终端外时由 window 级监听兜底——Tab 族按键被 xterm 认领后不会冒泡）
 - `Ctrl+Shift+Q` 退出并终结全部会话（tmux 服务器与其上的 shell 一并结束）
+- `Ctrl+Shift+B` 开关分组侧栏（终端聚焦与否都生效）
 - `Ctrl+,` 打开/关闭设置页（`Esc` 或点击标签关闭）
 - 双击标签重命名（手动重命名后 shell 上报的标题不再覆盖）
 - 标签右键菜单：固定/取消固定（常驻左端、窄化、无关闭钮）、添加到新组/移入既有组/移出组、关闭
@@ -191,6 +205,20 @@ npx electron out/main/index.js --e2e-session=phase2 --e2e-user-data=$U --e2e-ses
 - 广播中持续可见：组头开关点亮警示色、组容器加深、终端区右上角常驻
   「广播输入中 · 本组 N 个终端」徽标（活跃标签在广播组内时）
 
+## 分组侧栏
+
+标签一多，横向标签栏就不够用。**分组侧栏**（设置 → 外观，默认关；`Ctrl+Shift+B`
+或标签栏左缘按钮随时切换）用左侧纵向树面板取代标签栏：固定标签在顶部、分组为
+可折叠树节点（色点 + 组名 + 成员数）、未分组标签散布根级——顺序与标签栏一致，
+只是竖了过来。
+
+- 与标签栏管理能力对等：点击切换、双击改名、右键菜单（固定/建组/移入/关闭、
+  重命名/换色/解散/广播），侧栏头部有 ＋ 新建下拉与设置入口
+- **树内拖拽**：同父重排、拖到组节点入组、拖成员到未分组行出组（固定块/同组
+  连续等排序不变量由应用状态单点维护）
+- 侧栏开合时终端区实时重排（tmux 面板随之 resize）；组折叠态与标签栏共享、
+  随会话跨重启保留
+
 ## 已实现 / 路线图
 
 - [x] 多标签、点击切换、关闭、退出置灰提示
@@ -206,7 +234,7 @@ npx electron out/main/index.js --e2e-session=phase2 --e2e-user-data=$U --e2e-ses
 - [x] 组内广播输入（按标签粒度，超越 Terminator；设置开关默认关，广播态不跨重启，`--e2e-input` 覆盖）
 - [x] electron-builder deb 打包（桌面入口/图标/依赖元数据齐全）
 - [x] Nautilus 右键菜单集成（在目录中打开 + 单实例复用窗口，随 deb 分发）
-- [ ] 标签分组侧栏树视图
+- [x] 标签分组侧栏树视图（纵向「组 → 标签」面板取代标签栏；树内拖拽重排/入组/出组，`--e2e-sidebar` 覆盖）
 - [ ] 命令面板、GPU 渲染（addon-webgl，硬渲染环境可选）
 - [ ] AppImage、rpm 等其他打包格式
 

@@ -57,14 +57,22 @@ body,
   overflow: hidden;
 }
 
+/* 行向：左为可选的分组侧栏（.sidebar，设置开启时取代标签栏），右为主体列 */
 .app {
   display: flex;
-  flex-direction: column;
   height: 100%;
   background: var(--bg);
   color: var(--text);
   font-family: system-ui, 'Noto Sans CJK SC', sans-serif;
   font-size: 13px;
+}
+
+/* 主体列（标签栏 + 内容区）：侧栏开启时只渲染本列与侧栏 */
+.app-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .tabbar {
@@ -77,6 +85,28 @@ body,
   /* 顶栏控件（标签/新建/箭头）统一高度：各元素内容不同，
      行高差异会让自然高度互不齐平，必须钉死同一高度 */
   --bar-h: 30px;
+}
+
+/* 分组侧栏入口（标签栏左缘）：侧栏开启时标签栏整体隐藏 */
+.side-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: var(--bar-h);
+  padding: 0;
+  margin-right: 4px;
+  background: none;
+  border: none;
+  border-radius: 6px 6px 0 0;
+  color: var(--text);
+  opacity: 0.55;
+  cursor: pointer;
+}
+
+.side-toggle:hover {
+  opacity: 1;
+  background: var(--hover-wash);
 }
 
 .tabs {
@@ -408,6 +438,246 @@ body,
 
 .menu-item:hover .menu-kbd {
   color: var(--kbd-strong);
+}
+
+/* ── 分组侧栏（设置开启后取代标签栏的左列树视图）：结构与 .settings-nav
+   同一视觉语言（bg-deep 底 + surface 行），组节点 = 组色左边 + 浅底 ── */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 220px;
+  flex: none;
+  background: var(--bg-deep);
+  border-right: 1px solid var(--hairline);
+}
+
+.side-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  flex: none;
+  border-bottom: 1px solid var(--hairline);
+  /* ＋按钮在标签栏有 margin-left:4px（与标签拉开距离），头部行首不需要 */
+  --bar-h: 26px;
+}
+
+.side-head .newtab-split {
+  margin-left: 0;
+}
+
+/* 头部按钮统一方形圆角（标签栏的 ＋ 是上圆角贴底造型，侧栏行内不适用） */
+.side-head .newtab,
+.side-head .newtab-caret {
+  border-radius: 6px;
+}
+
+.side-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: var(--surface);
+  color: var(--text);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.side-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text-bright);
+}
+
+/* 设置/收起按钮靠右，＋留在行首 */
+.side-head .side-btn {
+  margin-left: auto;
+}
+
+.side-head .side-btn + .side-btn {
+  margin-left: 0;
+}
+
+/* ＋下拉在侧栏内改从左缘弹出（标签栏语境是右缘对齐） */
+.sidebar .menu {
+  right: auto;
+  left: 0;
+  transform-origin: top left;
+}
+
+.side-tree {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+}
+
+.side-tree::-webkit-scrollbar {
+  width: 8px;
+}
+
+.side-tree::-webkit-scrollbar-thumb {
+  background: var(--thumb);
+  border-radius: 4px;
+}
+
+.side-tree::-webkit-scrollbar-thumb:hover {
+  background: var(--thumb-hover);
+}
+
+.side-tree::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 标签行：色点/固定标记 + 标题 + 悬停显现的关闭钮（固定标签不渲染关闭钮） */
+.side-tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.side-tab:hover {
+  background: var(--hover-wash);
+}
+
+.side-tab.active {
+  background: var(--surface);
+  color: var(--text-bright);
+}
+
+/* 组成员行缩进（组节点本身有组色左边，缩进 + 组底色已能区分层级） */
+.side-tab.in-group {
+  margin-left: 16px;
+}
+
+.side-tab.exited .title {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+.side-tab .title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 关闭钮悬停行时才显现：树形行距密，常显 × 视觉噪音大 */
+.side-tab .close {
+  opacity: 0;
+}
+
+.side-tab:hover .close,
+.side-tab.active .close {
+  opacity: 0.5;
+}
+
+.side-tab .close:hover {
+  opacity: 1;
+}
+
+.side-tab input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-inset);
+  color: var(--text-bright);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  font-size: 12px;
+  padding: 1px 4px;
+}
+
+/* 组节点：组色左边 + 组色浅底包住成员（--g-color 由组容器 inline 注入） */
+.side-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0 2px 4px;
+  border-left: 2px solid var(--g-color);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--g-color) 8%, transparent);
+}
+
+.side-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.side-group-head:hover,
+.side-group.collapsed .side-group-head {
+  background: color-mix(in srgb, var(--g-color) 18%, transparent);
+  color: var(--text-bright);
+}
+
+.side-group-head .dot {
+  background: var(--g-color);
+}
+
+.side-group-head .g-name {
+  max-width: 120px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.side-group.collapsed .g-chev {
+  transform: rotate(-90deg);
+}
+
+/* 成员数徽标把自身与广播开关推到行尾 */
+.g-count {
+  margin-left: auto;
+  font-size: 11px;
+  opacity: 0.55;
+}
+
+.side-group-head .g-broadcast {
+  margin-left: 0;
+}
+
+.side-group-head input {
+  background: var(--bg-inset);
+  color: var(--text-bright);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  font-size: 12px;
+  padding: 1px 4px;
+  width: 96px;
+}
+
+.side-group.broadcasting {
+  background: color-mix(in srgb, var(--g-color) 18%, transparent);
+}
+
+/* 折叠时成员不可见，广播仍在生效：组头整条点亮警示 */
+.side-group.collapsed.broadcasting {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 45%, transparent);
+}
+
+/* 拖拽落点高亮（拖拽期间直接操作 DOM class，无重渲染） */
+.side-tab.drop-on,
+.side-group-head.drop-on {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
 }
 
 /* ── 终端右键菜单：渲染层自绘（原生 Menu 无法定制外观），portal 到 body 跟随光标 ── */

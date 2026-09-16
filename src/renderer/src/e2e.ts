@@ -19,6 +19,8 @@ interface E2ECtx {
   getRenamed: () => string[]
   // 组内广播回归（--e2e-input 断言用）：广播中的组 id
   getBroadcast: () => string[]
+  // 分组侧栏回归（--e2e-sidebar 断言用）：设置开关实时值
+  getSidebarVisible: () => boolean
 }
 
 /**
@@ -238,6 +240,157 @@ export function setupE2E(ctx: E2ECtx): void {
     // 活跃标签处于广播组时的常驻警示徽标（应为 true）
     badge: !!document.querySelector('.broadcast-badge')
   })
+
+  // ── 分组侧栏回归（--e2e-sidebar）：全部走真实 DOM 事件驱动 ──
+
+  /** 开关侧栏（点击标签栏左缘按钮 / 侧栏头部收起按钮），返回两侧栏可见性 */
+  w.__e2eSidebarToggle = (on: boolean) => {
+    const btn = on
+      ? document.querySelector<HTMLButtonElement>('.tabbar .side-toggle')
+      : document.querySelector<HTMLButtonElement>('.sidebar .side-close')
+    if (!btn) return { sidebar: !!document.querySelector('.sidebar'), tabbar: !!document.querySelector('.tabbar') }
+    btn.click()
+    return new Promise<{ sidebar: boolean; tabbar: boolean }>((resolve) => {
+      setTimeout(() => {
+        resolve({
+          sidebar: !!document.querySelector('.sidebar'),
+          tabbar: !!document.querySelector('.tabbar'),
+        })
+      }, 150)
+    })
+  }
+
+  /** 侧栏树结构快照（DOM 顺序 = 标签数组顺序）：根级行 + 组节点（含折叠态/成员行）；
+      termCols = 各终端当前列数（开关侧栏断言 resize 生效用） */
+  w.__e2eSidebarState = () => ({
+    setting: ctx.getSidebarVisible(),
+    sidebar: !!document.querySelector('.sidebar'),
+    tabbar: !!document.querySelector('.tabbar'),
+    termCols: [...ctx.terms.current.values()].map((t) => t.cols),
+    rows: [...document.querySelectorAll<HTMLElement>('.sidebar .side-tree > *')].map((el) =>
+      el.classList.contains('side-group')
+        ? {
+            kind: 'group' as const,
+            name: el.querySelector('.g-name')?.textContent ?? '',
+            count: Number(el.querySelector('.g-count')?.textContent ?? 0),
+            collapsed: el.classList.contains('collapsed'),
+            members: [...el.querySelectorAll<HTMLElement>('.side-tab')].map((m) => ({
+              title: m.querySelector('.title')?.textContent ?? '',
+              active: m.classList.contains('active'),
+            })),
+          }
+        : {
+            kind: 'tab' as const,
+            title: el.querySelector('.title')?.textContent ?? '',
+            active: el.classList.contains('active'),
+          }
+    ),
+  })
+
+  /** 侧栏标签行驱动（index = 全侧栏 .side-tab 的 DOM 序）：与 __e2eTabMenu 同构，
+      'rename' 双击进编辑后填新名提交，其余 = 右键菜单 data-key（'move' 前缀匹配首个移入项） */
+  w.__e2eSidebarTab = (index: number, action: string) => {
+    const row = document.querySelectorAll<HTMLElement>('.sidebar .side-tab')[index]
+    if (!row) return Promise.resolve(false)
+    if (action === 'rename') {
+      row.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }))
+      return new Promise<boolean>((resolve) => {
+        setTimeout(() => {
+          const input = row.querySelector<HTMLInputElement>('input')
+          if (!input) return resolve(false)
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+          setter?.call(input, '侧栏改名')
+          input.dispatchEvent(new Event('input', { bubbles: true }))
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+          resolve(true)
+        }, 150)
+      })
+    }
+    if (action === 'click') {
+      row.click()
+      return Promise.resolve(true)
+    }
+    const r = row.getBoundingClientRect()
+    row.dispatchEvent(
+      new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        clientX: Math.round(r.left + 30),
+        clientY: Math.round(r.bottom + 4),
+      })
+    )
+    return new Promise<boolean>((resolve) => {
+      setTimeout(() => {
+        const item =
+          action === 'move'
+            ? document.querySelector<HTMLElement>('.ctx-item[data-key^="move-"]')
+            : document.querySelector<HTMLElement>(`.ctx-item[data-key="${action}"]`)
+        item?.click()
+        resolve(!!item)
+      }, 150)
+    })
+  }
+
+  /** 侧栏组节点驱动：'toggle' 单击折叠/展开；'broadcast' 点组头广播开关；
+      'commit-name' 在组名输入框按 Enter；'menu-<data-key>' 右键后点菜单项 */
+  w.__e2eSidebarGroup = (action: string) => {
+    const head = document.querySelector<HTMLElement>('.sidebar .side-group-head')
+    if (!head) return Promise.resolve(false)
+    if (action === 'toggle' || action === 'broadcast') {
+      const btn =
+        action === 'broadcast'
+          ? head.querySelector<HTMLButtonElement>('.g-broadcast')
+          : null
+      if (action === 'broadcast' && !btn) return Promise.resolve(false)
+      ;(btn ?? head).click()
+      return new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 120))
+    }
+    if (action === 'commit-name') {
+      const input = head.querySelector<HTMLInputElement>('input')
+      if (!input) return Promise.resolve(false)
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      return Promise.resolve(true)
+    }
+    if (action.startsWith('menu-')) {
+      const r = head.getBoundingClientRect()
+      head.dispatchEvent(
+        new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          clientX: Math.round(r.left + 30),
+          clientY: Math.round(r.bottom + 4),
+        })
+      )
+      const key = action.slice(5)
+      return new Promise<boolean>((resolve) => {
+        setTimeout(() => {
+          const item = document.querySelector<HTMLElement>(`.ctx-item[data-key="${key}"]`)
+          item?.click()
+          resolve(!!item)
+        }, 150)
+      })
+    }
+    return Promise.resolve(false)
+  }
+
+  /** 合成 HTML5 拖拽（组件用 ref 存源、不读 dataTransfer，DragEvent 可直接派发）：
+      fromIdx = .side-tab DOM 序；target = 'group'（第 gIdx 个组头，入组）或
+      'tab'（第 tIdx 个标签行，重排/出组） */
+  w.__e2eSidebarDrag = (fromIdx: number, target: 'tab' | 'group', targetIdx: number) => {
+    const rows = document.querySelectorAll<HTMLElement>('.sidebar .side-tab')
+    const src = rows[fromIdx]
+    if (!src) return false
+    src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true }))
+    const el =
+      target === 'group'
+        ? document.querySelectorAll<HTMLElement>('.sidebar .side-group-head')[targetIdx]
+        : rows[targetIdx]
+    if (!el) return false
+    el.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true }))
+    el.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true }))
+    return true
+  }
+
 
   // ── 真实输入回归探针（--e2e-input，主进程用 sendInputEvent 派可信事件驱动）──
 
