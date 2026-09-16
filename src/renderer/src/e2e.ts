@@ -1,5 +1,5 @@
 import type { Terminal } from '@xterm/xterm'
-import { api, type Profile, type TermInfo } from './api'
+import { api, type Profile, type TabGroup, type TermInfo } from './api'
 
 interface E2EState {
   created: number
@@ -13,6 +13,10 @@ interface E2ECtx {
   getProfiles: () => Profile[]
   createTab: () => Promise<unknown>
   terms: { current: Map<string, Terminal> }
+  // 会话恢复回归（--e2e-session phase2 断言用）
+  getTabs: () => TermInfo[]
+  getGroups: () => TabGroup[]
+  getRenamed: () => string[]
 }
 
 /**
@@ -144,7 +148,8 @@ export function setupE2E(ctx: E2ECtx): void {
   // 标签右键菜单驱动（--e2e-tab-menu）：对第 tabIndex 个 .tab 派发真实 contextmenu，
   // 等 React 渲染出浮层后按 data-key 点菜单项，走 onContextMenu → ContextMenu action 全链路。
   // action 特例：'move' 点第一个「移入」项（组 id 动态，data-key 前缀匹配）；
-  // 'group-head' 点第一个组头（折叠/展开）；'commit-name' 在组头输入框按 Enter 提交
+  // 'group-head' 点第一个组头（折叠/展开）；'commit-name' 在组头输入框按 Enter 提交；
+  // 'rename' 双击标签进内联编辑、以 React 受控方式填新名后 Enter 提交（会话改名态回归用）
   w.__e2eTabMenu = (tabIndex: number, action: string) => {
     if (action === 'group-head') {
       const head = document.querySelector<HTMLElement>('.tabgroup-head')
@@ -159,6 +164,22 @@ export function setupE2E(ctx: E2ECtx): void {
     }
     const tab = document.querySelectorAll<HTMLElement>('.tab')[tabIndex]
     if (!tab) return false
+    if (action === 'rename') {
+      tab.dispatchEvent(
+        new MouseEvent('dblclick', { bubbles: true, cancelable: true })
+      )
+      return new Promise<boolean>((resolve) => {
+        setTimeout(() => {
+          const input = tab.querySelector<HTMLInputElement>('input')
+          if (!input) return resolve(false)
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+          setter?.call(input, '已改名')
+          input.dispatchEvent(new Event('input', { bubbles: true }))
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+          resolve(true)
+        }, 150)
+      })
+    }
     const r = tab.getBoundingClientRect()
     tab.dispatchEvent(
       new MouseEvent('contextmenu', {
@@ -178,6 +199,25 @@ export function setupE2E(ctx: E2ECtx): void {
         resolve(!!item)
       }, 150)
     })
+  }
+
+  // ── 会话恢复回归（--e2e-session phase2）：恢复态快照，主进程轮询断言 ──
+  w.__e2eSessionState = () => {
+    const tabs = ctx.getTabs()
+    const groups = ctx.getGroups()
+    const renamed = new Set(ctx.getRenamed())
+    return {
+      count: tabs.length,
+      pinned: tabs.filter((t) => t.pinned).length,
+      renamed: tabs.filter((t) => renamed.has(t.id)).length,
+      groups: groups.map((g) => ({
+        name: g.name,
+        color: g.color,
+        collapsed: !!g.collapsed,
+        members: tabs.filter((t) => t.groupId === g.id).length,
+      })),
+      titles: tabs.map((t) => t.title),
+    }
   }
 
   // ── 真实输入回归探针（--e2e-input，主进程用 sendInputEvent 派可信事件驱动）──

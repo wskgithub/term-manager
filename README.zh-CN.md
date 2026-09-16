@@ -47,12 +47,13 @@ PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会�
 
 ## 设置
 
-`＋` 下拉菜单底部的设置项或 `Ctrl+,` 打开设置页（结构仿 Windows Terminal，左侧分类导航，一期仅"外观"）：
+`＋` 下拉菜单底部的设置项或 `Ctrl+,` 打开设置页（结构仿 Windows Terminal，左侧分类导航，含"外观/终端"两类）：
 
 - **主题**：深色 / 浅色 / 跟随系统三态，实时切换（含原生标题栏跟随，X11 下经 `_GTK_THEME_VARIANT` 热生效）。
 - **字体**：下拉列出本机等宽字体（主进程 `fc-list :mono` 枚举）。默认"自动"= Nerd Font 优先栈
   （`JetBrainsMono Nerd Font` → `FiraCode Nerd Font` → … → CJK 等宽回退），显式选择纯拉丁字体时自动追加中文等宽回退。
 - **字号**：8–48 像素，步进器或直接输入。
+- **会话**（终端页）：「退出时保留会话」开关（默认开，见下节[会话保持](#会话保持)）。
 - 改动即时应用到所有已开终端并写入 `settings.json`，重启保持。
 
 ## Nautilus 右键集成
@@ -72,9 +73,10 @@ PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会�
 src/
 ├── main/            # Electron 主进程
 │   ├── index.ts     # 入口、窗口、IPC、冒烟/E2E 编排
-│   ├── tmux.ts      # tmux Control Mode 后端（会话托管/输入/输出/尺寸）
+│   ├── tmux.ts      # tmux Control Mode 后端（会话托管/输入/输出/尺寸/附着恢复/屏幕回放）
 │   ├── profiles.ts  # profile 注册表（JSON 持久化）
-│   └── settings.ts  # 应用设置（字体/字号）+ fc-list 字体枚举
+│   ├── settings.ts  # 应用设置（字体/字号）+ fc-list 字体枚举
+│   └── session.ts   # 会话持久化（sessions.json：附着候选判定 + 标签元数据落盘）
 ├── preload/         # contextBridge API
 └── renderer/src/
     ├── App.tsx      # 标签状态机 + 单点数据分发 + 快捷键 + 设置状态
@@ -132,6 +134,16 @@ npx electron out/main/index.js --e2e-tabs=20 --e2e-out=/tmp/e2e --e2e-quit --no-
 npx electron out/main/index.js --e2e-input --e2e-quit --no-sandbox
 ```
 
+```bash
+# 会话保持两段回归（隔离 userData，两个进程模拟"重启应用"）：
+# phase1 建标签+固定+建组+改名+打标记串 → 保留退出（detach）；
+# phase2 附着恢复 → 断言标签/固定/分组/改名/屏幕回放/可继续交互 → 终结清场
+U=/tmp/e2e-sess-ud; rm -rf $U; mkdir -p $U
+M=$(npx electron out/main/index.js --e2e-session=phase1 --e2e-user-data=$U --no-sandbox 2>&1 \
+  | grep -oE 'E2E_SESS1_MARKER [A-Za-z0-9_]+' | cut -d' ' -f2)
+npx electron out/main/index.js --e2e-session=phase2 --e2e-user-data=$U --e2e-sess-marker=$M --no-sandbox
+```
+
 ### 实测性能（20 标签托管，2026-09-09，i5/集成显卡）
 
 | 指标 | 数值 |
@@ -147,9 +159,21 @@ npx electron out/main/index.js --e2e-input --e2e-quit --no-sandbox
 - `Ctrl+Shift+W` 关闭当前标签（固定标签上不生效，防误关）
 - `Ctrl+Tab` / `Ctrl+Shift+Tab` 切换标签（终端聚焦时由 xterm 键盘钩子拦截处理，
   焦点在终端外时由 window 级监听兜底——Tab 族按键被 xterm 认领后不会冒泡）
+- `Ctrl+Shift+Q` 退出并终结全部会话（tmux 服务器与其上的 shell 一并结束）
 - `Ctrl+,` 打开/关闭设置页（`Esc` 或点击标签关闭）
 - 双击标签重命名（手动重命名后 shell 上报的标题不再覆盖）
 - 标签右键菜单：固定/取消固定（常驻左端、窄化、无关闭钮）、添加到新组/移入既有组/移出组、关闭
+
+## 会话保持
+
+关闭窗口默认**保留** tmux 会话：正在跑的任务（编译、ssh、训练）与终端现场继续存活，
+下次启动自动恢复全部标签——含固定/分组/手动改名/活跃标签与**屏幕内容回放**
+（`capture-pane -e` 带颜色历史 + 光标定位，shell 提示符与 vim/htop 等全屏程序均精确还原）。
+崩溃同样可恢复：会话状态每次变更即落盘（`sessions.json`），重启后按窗口对账收养。
+
+- 设置页「终端 → 会话」可关闭该行为，回到"退出即终结"
+- `Ctrl+Shift+Q` 随时显式终结全部会话后退出
+- 恢复的终端可继续交互（非只读快照）；上次运行期间已退出的标签不恢复
 
 ## 已实现 / 路线图
 
@@ -160,13 +184,13 @@ npx electron out/main/index.js --e2e-input --e2e-quit --no-sandbox
 - [x] tmux Control Mode 后端：UTF-8（StringDecoder 处理跨 chunk 多字节字符）、自适应尺寸、输入防抖合批（5ms/8KB）、
       进程异常兜底（tmux 缺失/被杀不再崩主进程）、启动时清理崩溃实例遗留的 tmux 服务器（socket 名内嵌 pid 探活）
 - [x] 设置页（外观：字体选择/字号，fc-list 枚举本机等宽字体，即时生效 + 持久化）
-- [x] E2E 测试设施（冒烟 + 20 标签基准 + 截图 + 键盘注入）
+- [x] E2E 测试设施（冒烟 + 20 标签基准 + 截图 + 键盘注入 + 输入回归 + 会话保持两段回归）
 - [x] 固定标签页 + 标签分组（标签栏内颜色组：组头单击折叠、右键重命名/换色/解散；固定与分组互斥）
-- [ ] 标签分组侧栏树视图与组内广播输入（按标签粒度，超越 Terminator）
-- [ ] 会话保持：应用重启附着既有 tmux 服务器（后端已隔离 socket，天然可做）
-- [ ] 命令面板、GPU 渲染（addon-webgl，硬渲染环境可选）
+- [x] 会话保持：退出保留 tmux 会话，重启附着恢复标签/固定/分组/改名态与屏幕回放（`--e2e-session` 两段回归覆盖）
 - [x] electron-builder deb 打包（桌面入口/图标/依赖元数据齐全）
 - [x] Nautilus 右键菜单集成（在目录中打开 + 单实例复用窗口，随 deb 分发）
+- [ ] 标签分组侧栏树视图与组内广播输入（按标签粒度，超越 Terminator）
+- [ ] 命令面板、GPU 渲染（addon-webgl，硬渲染环境可选）
 - [ ] AppImage、rpm 等其他打包格式
 
 ## 备注

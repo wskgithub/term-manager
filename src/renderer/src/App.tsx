@@ -41,7 +41,7 @@ export default function App() {
   const settingsOpenRef = useRef(false)
   settingsOpenRef.current = settingsOpen
   const [exited, setExited] = useState<Set<string>>(() => new Set())
-  // 标签分组（固定/分组均为渲染层 UI 态：标签会话不跨重启，无需持久化）
+  // 标签分组：UI 态由渲染层维护，经 session:sync 上报主进程随会话持久化（跨重启恢复）
   const [groups, setGroups] = useState<TabGroup[]>([])
   // 终端右键菜单：坐标 + 打开瞬间的可复制状态（随打开冻结，避免后续选择变化影响已开菜单）
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; canCopy: boolean } | null>(null)
@@ -84,6 +84,28 @@ export default function App() {
     if (activeId) terms.current.get(activeId)?.focus()
   }, [activeId])
 
+  // 会话持久化上报：标签顺序/固定/分组/活跃/改名态变化后 debounce 全量推送主进程
+  //（数据量极小，全量快照比增量补丁简单可靠），主进程与窗口映射对账后落盘
+  useEffect(() => {
+    if (!tabs.length) return
+    const timer = setTimeout(() => {
+      api.syncSession({
+        tabs: tabs.map((t) => ({
+          id: t.id,
+          profileId: t.profileId,
+          title: t.title,
+          color: t.color,
+          pinned: t.pinned,
+          groupId: t.groupId,
+          renamed: renamed.current.has(t.id)
+        })),
+        groups: groups.map((g) => ({ ...g })),
+        activeId
+      })
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [tabs, groups, activeId])
+
   useEffect(() => {
     let alive = true
     // 先订阅外部目录请求（Nautilus 右键 / CLI），再做 ready 握手取走排队项
@@ -95,20 +117,30 @@ export default function App() {
       // 同步刷 ref：下面 drain 时 newTab 需要据此选默认 profile
       profilesRef.current = ps
       setProfiles(ps)
-      void api.cliReady().then((dirs) => {
+      void api.cliReady().then(async (dirs) => {
         if (!alive) return
         for (const d of dirs) void newTab(undefined, d)
-        // 裸启动（应用菜单/命令行，无右键或 CLI 目录请求）也开一个默认终端；
-        // cwd 不传，后端回退 ~（profile.cwd 优先），有目录请求时不重复开
-        if (!dirs.length && !tabsRef.current.length) {
-          void api.getSettings().then((s) => {
-            if (!alive) return
-            // 同步刷 ref：newTab 要读到最新 defaultProfileId，不等 React 重渲染
-            settingsRef.current = s
-            setSettings(s)
-            if (!tabsRef.current.length) void newTab()
-          })
+        if (dirs.length || tabsRef.current.length) return
+        // 会话恢复：上次退出保留的 tmux 会话已由主进程附着，这里取回标签
+        // （含固定/分组/活跃/改名态）；恢复成功则不再裸启动开默认终端
+        const restored = await api.restoreSession()
+        if (!alive) return
+        if (restored && restored.tabs.length > 0) {
+          restored.renamed.forEach((id) => renamed.current.add(id))
+          setTabs(restored.tabs)
+          setGroups(restored.groups)
+          setActiveId(restored.activeId || restored.tabs[0]!.id)
+          return
         }
+        // 裸启动（应用菜单/命令行，无右键或 CLI 目录请求，无可恢复会话）开一个
+        // 默认终端；cwd 不传，后端回退 ~（profile.cwd 优先）
+        void api.getSettings().then((s) => {
+          if (!alive) return
+          // 同步刷 ref：newTab 要读到最新 defaultProfileId，不等 React 重渲染
+          settingsRef.current = s
+          setSettings(s)
+          if (!tabsRef.current.length) void newTab()
+        })
       })
     })
     api.getSettings().then((s) => {
@@ -312,8 +344,19 @@ export default function App() {
   }
 
   const registerTerminal = (id: string, t: Terminal | null) => {
-    if (t) terms.current.set(id, t)
-    else terms.current.delete(id)
+    if (t) {
+      terms.current.set(id, t)
+      // 会话恢复的标签：挂载即拉屏幕回放（capture-pane 快照 + 光标定位序列）。
+      // 新建标签 replayTerm 返回空串，多一次往返无副作用
+      void api
+        .replayTerm(id)
+        .then((text) => {
+          if (text) t.write(text)
+        })
+        .catch((e) => console.error('[term] replay failed:', e))
+    } else {
+      terms.current.delete(id)
+    }
   }
 
   // 右键菜单动作：目标始终是当前活跃终端（可见的那个 pane）。
@@ -341,6 +384,8 @@ export default function App() {
   }
 
   // 快捷键：Ctrl+Shift+T 新建 / Ctrl+Shift+W 关闭 / Ctrl+Tab、Ctrl+Shift+Tab 切换
+  // / Ctrl+Shift+Q 退出并终结会话（终端聚焦时 Ctrl+Q 族被 xterm 认领，由
+  // TermView 的 customKeyEventHandler 拦截后同样走 quitAll，这里是不在终端时的兜底）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase()
@@ -352,6 +397,9 @@ export default function App() {
         // 固定标签防误关：快捷键不关（× 也不渲染），关闭走右键菜单的显式动作
         const cur = tabsRef.current.find((t) => t.id === activeRef.current)
         if (activeRef.current && !cur?.pinned) closeTab(activeRef.current)
+      } else if (e.ctrlKey && e.shiftKey && k === 'q') {
+        e.preventDefault()
+        api.quitAll()
       } else if (e.ctrlKey && e.key === 'Tab') {
         e.preventDefault()
         cycleTab(e.shiftKey ? -1 : 1)
@@ -371,7 +419,14 @@ export default function App() {
   // define 成 false，rollup 把钩子从产物中摇掉（见 shared/globals.d.ts）
   useEffect(() => {
     if (__E2E__) {
-      setupE2E({ getProfiles: () => profilesRef.current, createTab: newTab, terms })
+      setupE2E({
+        getProfiles: () => profilesRef.current,
+        createTab: newTab,
+        terms,
+        getTabs: () => tabsRef.current,
+        getGroups: () => groupsRef.current,
+        getRenamed: () => [...renamed.current]
+      })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

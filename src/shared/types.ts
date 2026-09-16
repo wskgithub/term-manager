@@ -27,6 +27,8 @@ export interface AppSettings {
   // 界面主题三态：深/浅/跟随系统。主进程把它映射到 nativeTheme.themeSource，
   // 同时驱动 Linux 窗口装饰（darkTheme）与渲染层 prefers-color-scheme
   theme: ThemeOption
+  // 退出时保留 tmux 会话（下次启动附着恢复）。Ctrl+Shift+Q 可随时显式终结
+  keepSessionOnExit: boolean
 }
 
 // 主进程 settings.ts 的兜底值，渲染层 App 也用它做异步加载前的初值
@@ -35,7 +37,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fontFamily: '',
   fontSize: 14,
   defaultProfileId: '',
-  theme: 'dark'
+  theme: 'dark',
+  keepSessionOnExit: true
 }
 
 export interface TermInfo {
@@ -43,7 +46,64 @@ export interface TermInfo {
   profileId: string
   title: string
   color?: string
-  // 以下为渲染层 UI 态（固定/分组），主进程不感知，创建后由渲染层补充
+  // 以下为渲染层 UI 态（固定/分组），由渲染层经 session:sync 上报、随会话持久化
   pinned?: boolean
   groupId?: string
+}
+
+// 标签分组（原渲染层 api.ts 私有，会话持久化后主进程也要读写，提升到共享）
+export interface TabGroup {
+  id: string
+  name: string
+  color: string
+  collapsed?: boolean
+}
+
+// sessions.json 里单个标签的持久化形态：TermInfo 的超集（多 windowId 用于
+// 附着时与 tmux list-windows 对账、renamed 保留「手动改名后 shell 标题不再覆盖」语义）
+export interface SessionTab {
+  id: string
+  profileId: string
+  title: string
+  color?: string
+  pinned?: boolean
+  groupId?: string
+  renamed?: boolean
+  windowId: string
+}
+
+// 会话恢复数据（session:restore 一次性返回给渲染层）
+export interface RestoredSession {
+  tabs: TermInfo[]
+  groups: TabGroup[]
+  activeId: string
+  renamed: string[]
+}
+
+// 渲染层上报的标签 UI 态快照（session:sync，debounce 合并后全量推送）
+export interface SessionUiSync {
+  tabs: Array<{
+    id: string
+    profileId: string
+    title: string
+    color?: string
+    pinned?: boolean
+    groupId?: string
+    renamed?: boolean
+  }>
+  groups: TabGroup[]
+  activeId: string
+}
+
+// sessions.json：应用退出保留会话后，下次启动按
+// socketName 重连既有 tmux 服务器、按 tabs[].windowId 对账恢复标签列表
+export interface PersistedSession {
+  version: 1
+  socketName: string
+  sessionName: string
+  ownerPid: number
+  savedAt: string
+  tabs: SessionTab[]
+  groups: TabGroup[]
+  activeId: string
 }
