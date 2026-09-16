@@ -203,12 +203,31 @@ export function SettingsPage({ settings, profiles, onChange, onClose }: Props) {
                 设置后点击 + 直接以此新建标签页，+ 旁的箭头仍可选择其他 shell；未设置时 + 打开菜单
               </span>
             </div>
+            <div className="settings-section">组内广播</div>
+            <div className="settings-row">
+              <label className="settings-label">广播输入到全组</label>
+              <label className="settings-checkbox">
+                <input
+                  type="checkbox"
+                  data-setting="groupBroadcast"
+                  checked={settings.groupBroadcast}
+                  onChange={(e) => onChange({ groupBroadcast: e.target.checked })}
+                />
+                <span>开启后组头出现广播开关：广播中的组，任一标签的键盘输入（含粘贴）会同时发往组内全部终端</span>
+              </label>
+            </div>
+            <div className="settings-row">
+              <span className="settings-hint">
+                广播态不跨退出保留（重启即复位）。多终端同步输入密码或删除类命令前请先确认键盘落点
+              </span>
+            </div>
             <div className="settings-section">会话</div>
             <div className="settings-row">
               <label className="settings-label">退出时保留会话</label>
               <label className="settings-checkbox">
                 <input
                   type="checkbox"
+                  data-setting="keepSessionOnExit"
                   checked={settings.keepSessionOnExit}
                   onChange={(e) => onChange({ keepSessionOnExit: e.target.checked })}
                 />

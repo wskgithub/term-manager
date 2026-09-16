@@ -29,6 +29,10 @@ export interface AppSettings {
   theme: ThemeOption
   // 退出时保留 tmux 会话（下次启动附着恢复）。Ctrl+Shift+Q 可随时显式终结
   keepSessionOnExit: boolean
+  // 组内广播输入总开关（默认关）：开启后组头出现广播开关，广播中的组内
+  // 任一标签的键盘输入会同时发往全组。广播态本身不持久化——重启即复位，
+  // 避免用户忘记广播开着而误向多台机器输入
+  groupBroadcast: boolean
 }
 
 // 主进程 settings.ts 的兜底值，渲染层 App 也用它做异步加载前的初值
@@ -38,7 +42,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fontSize: 14,
   defaultProfileId: '',
   theme: 'dark',
-  keepSessionOnExit: true
+  keepSessionOnExit: true,
+  groupBroadcast: false
 }
 
 export interface TermInfo {

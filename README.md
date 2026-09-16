@@ -65,6 +65,8 @@ Windows Terminal: category navigation on the left — "Appearance" and "Terminal
 - **Font size**: 8–48 px, stepper or direct input.
 - **Session** (Terminal page): the "keep sessions on exit" toggle (on by default, see
   [Session persistence](#session-persistence) below).
+- **Group broadcast** (Terminal page): the "broadcast input to group" toggle
+  (**off by default**, see [Group broadcast](#group-broadcast) below).
 
 Changes apply immediately to all open terminals and persist to `settings.json`.
 
@@ -82,6 +84,27 @@ every change (`sessions.json`) and windows are reconciled/adopted on restart.
 - `Ctrl+Shift+Q` explicitly terminates all sessions and exits at any time
 - Restored terminals remain fully interactive (not a read-only snapshot); tabs whose
   shell had already exited are not restored
+
+## Group broadcast
+
+When operating many machines at once (e.g. running the same command across a cluster),
+a tab group can be set to **synchronize keyboard input** (paste included) across all of
+its terminals: light up the broadcast toggle on the group head (or use the group
+context menu's "Broadcast input to group"), and whatever is typed into any tab of that
+group is delivered to every tab in it. Groups are user-defined logical sets, not tied
+to window layout — more flexible than Terminator's split-pane-bound broadcast groups.
+
+Mistakenly broadcasting is expensive (a password or `rm` hitting several machines at
+once), so the design is deliberately defensive:
+
+- A master toggle in Settings (Terminal → Group broadcast), **off by default**; no
+  broadcast UI exists until it is enabled
+- Broadcast state is **not kept across restarts** — relaunching always resets it to
+  off, so it can never be silently left on
+- While broadcasting it is always visible: the group-head toggle lights up in warning
+  color, the group container deepens, and a persistent "broadcasting to N terminals"
+  badge sits in the top-right of the terminal area whenever the active tab belongs to
+  a broadcasting group
 
 ## Nautilus context-menu integration
 
@@ -169,7 +192,8 @@ after-typing). Add `--e2e-settings` to also open the settings page and capture
 ```bash
 # Real input-path regression: sendInputEvent trusted events — focus lands in the
 # terminal after a real tab click, Ctrl+Tab switches without leaking \t into the shell,
-# high-volume CJK text shows no mojibake
+# high-volume CJK text shows no mojibake, and group broadcast behaves (settings-gated
+# UI, delivery to both group panes but not outsiders, independence restored when off)
 npx electron out/main/index.js --e2e-input --e2e-quit --no-sandbox
 ```
 
@@ -223,15 +247,18 @@ npx electron out/main/index.js --e2e-session=phase2 --e2e-user-data=$U --e2e-ses
 - [x] Settings page (appearance: font picker / font size, fc-list monospace enumeration,
       applied live + persisted)
 - [x] E2E test infrastructure (smoke + 20-tab benchmark + screenshots + keyboard
-      injection + input regression + two-phase session-persistence regression)
+      injection + input regression [incl. broadcast routing] + two-phase
+      session-persistence regression)
 - [x] Pinned tabs + tab groups (colored groups in the tab bar: collapse by clicking the
       group head, right-click to rename/recolor/dissolve; pin and group are mutually exclusive)
 - [x] Session persistence: exit keeps tmux sessions; relaunch re-attaches and restores
       tabs/pin/group/rename state plus screen replay (covered by `--e2e-session`)
+- [x] Per-group broadcast input (tab granularity, beyond Terminator; settings toggle
+      off by default, broadcast state does not survive restart, covered by `--e2e-input`)
 - [x] electron-builder deb packaging (desktop entry / icons / dependency metadata included)
 - [x] Nautilus context-menu integration (open-in-directory + single-instance window reuse,
       shipped with the deb)
-- [ ] Group sidebar tree view and per-group broadcast input (tab granularity, beyond Terminator)
+- [ ] Group sidebar tree view
 - [ ] Command palette, GPU rendering (addon-webgl, optional on capable stacks)
 - [ ] AppImage, rpm and other package formats
 
