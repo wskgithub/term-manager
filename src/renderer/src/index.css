@@ -649,6 +649,22 @@ body,
   outline: 1px solid var(--accent);
 }
 
+/* 会话/行为开关：复选框 + 内联说明文字（说明较长，垂直居中对齐首行） */
+.settings-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.settings-checkbox input {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
 .stepper {
   display: flex;
   align-items: stretch;

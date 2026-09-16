@@ -203,6 +203,23 @@ export function SettingsPage({ settings, profiles, onChange, onClose }: Props) {
                 设置后点击 + 直接以此新建标签页，+ 旁的箭头仍可选择其他 shell；未设置时 + 打开菜单
               </span>
             </div>
+            <div className="settings-section">会话</div>
+            <div className="settings-row">
+              <label className="settings-label">退出时保留会话</label>
+              <label className="settings-checkbox">
+                <input
+                  type="checkbox"
+                  checked={settings.keepSessionOnExit}
+                  onChange={(e) => onChange({ keepSessionOnExit: e.target.checked })}
+                />
+                <span>关闭窗口后终端与正在运行的任务继续存活，下次启动自动恢复标签、固定/分组与屏幕内容</span>
+              </label>
+            </div>
+            <div className="settings-row">
+              <span className="settings-hint">
+                关闭后可用 Ctrl+Shift+Q 一次性终结全部会话再退出
+              </span>
+            </div>
           </div>
         )}
       </div>

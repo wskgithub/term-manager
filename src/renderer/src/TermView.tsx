@@ -147,6 +147,14 @@ export function TermView({ termId, active, fontFamily, fontSize, dark, onTitle, 
         cycleTabRef.current(ev.shiftKey ? -1 : 1)
         return false
       }
+      // Ctrl+Shift+Q 退出并终结会话：Ctrl+Q 在 xterm 键位表被认领（^Q/XON，
+      // cancel 掉且 window 层收不到），同样须在此拦截并阻断 App 兜底通路
+      if (ev.ctrlKey && ev.shiftKey && !ev.altKey && ev.code === 'KeyQ') {
+        ev.preventDefault()
+        ev.stopPropagation()
+        api.quitAll()
+        return false
+      }
       if (!ev.ctrlKey && !ev.shiftKey) return true
       const copy =
         (ev.ctrlKey && ev.shiftKey && !ev.altKey && ev.code === 'KeyC') ||

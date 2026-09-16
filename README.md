@@ -54,7 +54,7 @@ Legacy v1 configs (no `version` field) are detected and regenerated with default
 ## Settings
 
 Open via the settings entry at the bottom of the `+` dropdown, or `Ctrl+,` (layout follows
-Windows Terminal: category navigation on the left, currently "Appearance" only):
+Windows Terminal: category navigation on the left — "Appearance" and "Terminal"):
 
 - **Theme**: dark / light / follow-system, applied live (including the native title bar —
   on X11 it follows instantly via `_GTK_THEME_VARIANT`).
@@ -63,8 +63,25 @@ Windows Terminal: category navigation on the left, currently "Appearance" only):
   (`JetBrainsMono Nerd Font` → `FiraCode Nerd Font` → … → CJK monospace fallback);
   choosing a Latin-only font automatically appends a CJK fallback.
 - **Font size**: 8–48 px, stepper or direct input.
+- **Session** (Terminal page): the "keep sessions on exit" toggle (on by default, see
+  [Session persistence](#session-persistence) below).
 
 Changes apply immediately to all open terminals and persist to `settings.json`.
+
+## Session persistence
+
+Closing the window keeps the tmux sessions alive by default: running jobs (builds, ssh,
+training) and terminal state survive, and the next launch restores all tabs — including
+pin/group/manual-rename/active-tab state and **screen replay** (`capture-pane -e`
+colored history + cursor repositioning, exact for both shell prompts and full-screen
+apps like vim/htop). Crashes are recoverable the same way: session state is persisted on
+every change (`sessions.json`) and windows are reconciled/adopted on restart.
+
+- The settings page (Terminal → Session) can turn this off to return to
+  "exit terminates everything"
+- `Ctrl+Shift+Q` explicitly terminates all sessions and exits at any time
+- Restored terminals remain fully interactive (not a read-only snapshot); tabs whose
+  shell had already exited are not restored
 
 ## Nautilus context-menu integration
 
@@ -88,9 +105,10 @@ also accepts `term-manager --open-dir=<dir>` or `term-manager <dir>`.
 src/
 ├── main/            # Electron main process
 │   ├── index.ts     # entry, window, IPC, smoke/E2E orchestration
-│   ├── tmux.ts      # tmux Control Mode backend (session hosting / input / output / resize)
+│   ├── tmux.ts      # tmux Control Mode backend (session hosting / input / output / resize / attach & replay)
 │   ├── profiles.ts  # profile registry (JSON persistence)
-│   └── settings.ts  # app settings (font/size) + fc-list font enumeration
+│   ├── settings.ts  # app settings (font/size) + fc-list font enumeration
+│   └── session.ts   # session persistence (sessions.json: attach candidate + tab metadata)
 ├── preload/         # contextBridge API
 └── renderer/src/
     ├── App.tsx      # tab state machine + single-point data fan-out + hotkeys + settings state
@@ -155,6 +173,17 @@ after-typing). Add `--e2e-settings` to also open the settings page and capture
 npx electron out/main/index.js --e2e-input --e2e-quit --no-sandbox
 ```
 
+```bash
+# Session-persistence two-phase regression (isolated userData; two processes simulate
+# an app restart). Phase 1 creates tabs + pin + group + rename + a marker string, then
+# exits keeping the session; phase 2 re-attaches and asserts tabs/pin/group/rename/
+# screen replay/interactivity, then terminates and cleans up.
+U=/tmp/e2e-sess-ud; rm -rf $U; mkdir -p $U
+M=$(npx electron out/main/index.js --e2e-session=phase1 --e2e-user-data=$U --no-sandbox 2>&1 \
+  | grep -oE 'E2E_SESS1_MARKER [A-Za-z0-9_]+' | cut -d' ' -f2)
+npx electron out/main/index.js --e2e-session=phase2 --e2e-user-data=$U --e2e-sess-marker=$M --no-sandbox
+```
+
 ### Measured performance (20 hosted tabs, 2026-09-09, i5/integrated graphics)
 
 | Metric | Value |
@@ -171,6 +200,7 @@ npx electron out/main/index.js --e2e-input --e2e-quit --no-sandbox
 - `Ctrl+Tab` / `Ctrl+Shift+Tab` switch tabs (when a terminal has focus this is intercepted
   by the xterm keyboard hook; when focus is outside terminals a window-level listener is
   the fallback — the Tab family never bubbles once claimed by xterm)
+- `Ctrl+Shift+Q` quit and terminate all sessions (the tmux server and its shells end)
 - `Ctrl+,` toggle settings page (`Esc` or clicking a tab closes it)
 - Double-click a tab to rename (after a manual rename the shell-reported title no longer
   overrides it)
@@ -192,15 +222,16 @@ npx electron out/main/index.js --e2e-input --e2e-quit --no-sandbox
       creator pid for liveness probing)
 - [x] Settings page (appearance: font picker / font size, fc-list monospace enumeration,
       applied live + persisted)
-- [x] E2E test infrastructure (smoke + 20-tab benchmark + screenshots + keyboard injection)
+- [x] E2E test infrastructure (smoke + 20-tab benchmark + screenshots + keyboard
+      injection + input regression + two-phase session-persistence regression)
 - [x] Pinned tabs + tab groups (colored groups in the tab bar: collapse by clicking the
       group head, right-click to rename/recolor/dissolve; pin and group are mutually exclusive)
+- [x] Session persistence: exit keeps tmux sessions; relaunch re-attaches and restores
+      tabs/pin/group/rename state plus screen replay (covered by `--e2e-session`)
 - [x] electron-builder deb packaging (desktop entry / icons / dependency metadata included)
 - [x] Nautilus context-menu integration (open-in-directory + single-instance window reuse,
       shipped with the deb)
 - [ ] Group sidebar tree view and per-group broadcast input (tab granularity, beyond Terminator)
-- [ ] Session persistence: reattach to existing tmux servers after app restart (the backend
-      already isolates sockets, so this is a natural next step)
 - [ ] Command palette, GPU rendering (addon-webgl, optional on capable stacks)
 - [ ] AppImage, rpm and other package formats
 

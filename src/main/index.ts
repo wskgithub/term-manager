@@ -6,10 +6,13 @@ import { mkdirSync, statSync, writeFileSync } from 'fs'
 import { join, resolve } from 'path'
 import { ProfileRegistry } from './profiles'
 import { SettingsStore, listMonospaceFonts } from './settings'
-import { TmuxBackend, type TermInfo } from './tmux'
+import { SessionStore } from './session'
+import { TmuxBackend, sweepStaleServers, type TermInfo } from './tmux'
+import type { SessionTab, TabGroup } from '../shared/types'
 
 const registry = new ProfileRegistry()
 const settingsStore = new SettingsStore()
+const sessionStore = new SessionStore()
 // hub：主进程内分发终端事件（基准测试监听），同时转发给渲染进程
 const hub = new EventEmitter()
 hub.setMaxListeners(200)
@@ -132,6 +135,71 @@ function createWindow(): void {
 
 let inputEventsAtMain = 0
 
+// ── 会话保持：渲染层最后上报的 UI 态（标签顺序/固定/分组/改名/活跃），主进程
+// 与后端 windowId 对账后落盘 sessions.json。isolatedRun（smoke/e2e）不读写，
+// 避免测试进程污染真实会话 ──
+interface SyncedUiState {
+  tabs: Array<{
+    id: string
+    profileId: string
+    title: string
+    color?: string
+    pinned?: boolean
+    groupId?: string
+    renamed?: boolean
+  }>
+  groups: TabGroup[]
+  activeId: string
+}
+let lastSync: SyncedUiState | null = null
+// 附着恢复的标签（backend.start 的返回值），渲染层启动时经 session:restore 拉取
+let restoredTabs: TermInfo[] | null = null
+// 后端就绪 promise：session:restore 必须等它（渲染层 load 与后端附着并行，
+// 抢跑会拿到 null 误走裸启动）
+let backendStarted: Promise<TermInfo[]> | null = null
+
+/** 组装并落盘当前会话：标签顺序/UI 态取 lastSync（渲染层权威），窗口映射取后端
+    实况；新建未及上报的标签以主进程侧 TermInfo 兜底追加，已死窗口剔除 */
+function persistSession(): void {
+  if (isolatedRun && !sessionE2E) return
+  const desc = backend.describe()
+  if (!desc) {
+    sessionStore.clear()
+    return
+  }
+  const winIds = backend.windowIds()
+  const tabs: SessionTab[] = []
+  const seen = new Set<string>()
+  for (const t of lastSync?.tabs ?? []) {
+    const w = winIds.get(t.id)
+    if (!w) continue
+    seen.add(t.id)
+    tabs.push({ ...t, windowId: w })
+  }
+  for (const [id, w] of winIds) {
+    if (seen.has(id)) continue
+    const info = backend.tabInfo(id)
+    if (info) tabs.push({ ...info, windowId: w })
+  }
+  if (tabs.length === 0) {
+    sessionStore.clear()
+    return
+  }
+  const groups = (lastSync?.groups ?? []).filter((g) => tabs.some((t) => t.groupId === g.id))
+  const sync = lastSync
+  const activeId = sync && tabs.some((t) => t.id === sync.activeId) ? sync.activeId : tabs[0]!.id
+  sessionStore.update({ ...desc, tabs, groups, activeId })
+}
+
+/** 终结退出（Ctrl+Shift+Q / 退出不保留）：杀会话、清记录、退出应用 */
+function quitTerminating(): void {
+  sessionStore.clear()
+  void backend
+    .dispose()
+    .then(() => app.quit())
+    .catch(() => app.quit())
+}
+
 function registerIpc(): void {
   ipcMain.handle('profiles:list', () => registry.list())
 
@@ -145,16 +213,63 @@ function registerIpc(): void {
   })
   ipcMain.handle('settings:fonts', () => listMonospaceFonts())
 
-  ipcMain.handle('term:create', (_e, profileId: string, cwd?: unknown) => {
+  ipcMain.handle('term:create', async (_e, profileId: string, cwd?: unknown) => {
     const profile = registry.get(profileId)
     if (!profile) throw new Error(`profile not found: ${profileId}`)
-    return backend.create(profile, existingDir(cwd))
+    const info = await backend.create(profile, existingDir(cwd))
+    persistSession() // 新窗口立即可恢复（不等渲染层 debounce 上报）
+    return info
   })
 
   // 渲染层完成 onOpenDir 订阅后调用：取走排队中的目录并放开后续推送
   ipcMain.handle('cli:ready', (): string[] => {
     rendererReady = true
     return pendingOpenDirs.splice(0)
+  })
+
+  // 会话恢复：附着成功时返回恢复的标签与分组/活跃/改名态（一次性，取后即清）。
+  // 先等后端就绪再读结果（见 backendStarted 注释）
+  ipcMain.handle('session:restore', async () => {
+    if (backendStarted) await backendStarted.catch(() => undefined)
+    const tabs = restoredTabs
+    restoredTabs = null
+    if (!tabs || tabs.length === 0) return null
+    const saved = sessionStore.get()
+    const ids = new Set(tabs.map((t) => t.id))
+    return {
+      tabs,
+      groups: (saved?.groups ?? []).filter((g) => tabs.some((t) => t.groupId === g.id)),
+      activeId: saved && ids.has(saved.activeId) ? saved.activeId : tabs[0]!.id,
+      renamed: (saved?.tabs ?? []).filter((t) => t.renamed && ids.has(t.id)).map((t) => t.id)
+    }
+  })
+
+  // 恢复标签的屏幕回放：TermView 挂载后按需拉取（主进程 capture-pane 快照+光标定位）
+  ipcMain.handle('session:replay', (_e, id: unknown) =>
+    typeof id === 'string' ? backend.takeReplay(id) : ''
+  )
+
+  // 渲染层 UI 态上报（debounce 合并）：与后端窗口映射对账后落盘
+  ipcMain.on('session:sync', (_e, payload: unknown) => {
+    if (isolatedRun && !sessionE2E) return
+    const p = payload as SyncedUiState | null
+    if (
+      !p ||
+      !Array.isArray(p.tabs) ||
+      p.tabs.length > 200 ||
+      !Array.isArray(p.groups) ||
+      typeof p.activeId !== 'string'
+    ) {
+      return
+    }
+    lastSync = p
+    persistSession()
+  })
+
+  // Ctrl+Shift+Q：显式"退出并终结会话"
+  ipcMain.on('session:quit-all', () => {
+    console.log('[session] quit-terminating requested')
+    quitTerminating()
   })
 
   ipcMain.on('term:input', (_e, id: string, data: string) => {
@@ -171,7 +286,10 @@ function registerIpc(): void {
   ipcMain.on('term:resize', (_e, id: string, cols: number, rows: number) =>
     backend.resize(id, cols, rows)
   )
-  ipcMain.on('term:kill', (_e, id: string) => backend.kill(id))
+  ipcMain.on('term:kill', (_e, id: string) => {
+    backend.kill(id)
+    persistSession() // 窗口集合变化即时落盘，崩溃后恢复面最小
+  })
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -525,6 +643,128 @@ async function runInputSequence(win: BrowserWindow): Promise<void> {
   }
 }
 
+// ── 会话保持两段回归（--e2e-session=phase1 / phase2，共享 --e2e-user-data）──
+// phase1：建标签 + pin + 建组 + 改名 + 输入标记串 → 保留退出（detach）；
+// phase2：附着恢复 → 断言标签数/固定/分组/改名态/屏幕回放/可继续交互 → 终结清场。
+// 两个进程顺序跑，最接近真实"重启应用"
+
+async function runSessionPhase1(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string) => JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const marker = `SESS1_${randomUUID().slice(0, 8)}`
+
+  // 裸启动已开 1 个默认标签，再追加 2 个 → 共 3 个
+  await js('window.__e2eStart(2)')
+  await waitUntil(
+    async () =>
+      (await js<string>(`JSON.stringify(window.__e2e && window.__e2e.done && window.__e2e.created >= 2)`)) === 'true',
+    60000
+  )
+
+  // 标记串打进第一个标签（恢复后回放断言用）
+  const ids = await json<string[]>('window.__e2eIds()')
+  let seen = false
+  const tap = (_id: string, d: string) => {
+    if (d.includes(marker)) seen = true
+  }
+  hub.on('term:data', tap)
+  backend.write(ids[0], `echo ${marker}\r`)
+  const echoed = await waitUntil(() => seen, 8000, 200)
+  hub.off('term:data', tap)
+  console.log(`E2E_SESS1 ${echoed ? 'marker-echo' : 'marker-FAIL'}`)
+  console.log(`E2E_SESS1_MARKER ${marker}`) // 外部脚本传给 phase2 断言回放
+
+  // UI 态：pin 标签0 → 标签1 建组并命名 → 标签2 移入 → 标签0 改名
+  const menu = async (idx: number, action: string) =>
+    (await js<boolean>(`window.__e2eTabMenu && window.__e2eTabMenu(${idx}, '${action}')`)) === true
+  console.log(`E2E_SESS1 pin ${await menu(0, 'pin') ? 'ok' : 'FAIL'}`)
+  console.log(`E2E_SESS1 new-group ${await menu(1, 'new-group') ? 'ok' : 'FAIL'}`)
+  console.log(`E2E_SESS1 commit-name ${await menu(0, 'commit-name') ? 'ok' : 'FAIL'}`)
+  console.log(`E2E_SESS1 move ${await menu(2, 'move') ? 'ok' : 'FAIL'}`)
+  console.log(`E2E_SESS1 rename ${await menu(0, 'rename') ? 'ok' : 'FAIL'}`)
+  await delay(700) // 等渲染层 session:sync debounce 到达主进程
+
+  // 保留退出：先以主进程权威状态落盘，再 detach（不 kill 会话）
+  persistSession()
+  await backend.dispose({ keep: true })
+  console.log('E2E_SESS1_DONE')
+  app.exit(echoed ? 0 : 1)
+}
+
+async function runSessionPhase2(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string) => JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_SESS2 ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+
+  interface RestoredState {
+    count: number
+    pinned: number
+    renamed: number
+    groups: Array<{ name: string; members: number }>
+    titles: string[]
+  }
+  // 渲染层 mount → session:restore → 标签恢复（轮询直到拿到状态）
+  const pollState = async (): Promise<RestoredState | null> => {
+    const s = await json<RestoredState | null>(
+      'window.__e2eSessionState && window.__e2eSessionState()'
+    )
+    return s && s.count > 0 ? s : null
+  }
+  let st: RestoredState | null = null
+  const deadline = Date.now() + 15000
+  while (Date.now() < deadline) {
+    st = await pollState()
+    if (st) break
+    await delay(300)
+  }
+
+  check('tabs-restored', !!st && st.count === 3, JSON.stringify(st))
+  if (!st) {
+    console.log('E2E_SESS2_RESULT ' + JSON.stringify({ ok: false, results }))
+    await backend.dispose().catch(() => undefined)
+    app.exit(1)
+    return
+  }
+  check('pin-restored', st.pinned === 1, `pinned=${st.pinned}`)
+  check(
+    'group-restored',
+    st.groups.length === 1 && st.groups[0].name === '组 1' && st.groups[0].members === 2,
+    JSON.stringify(st.groups)
+  )
+  check('rename-restored', st.renamed === 1, `renamed=${st.renamed}`)
+
+  // 屏幕回放：恢复后的第一个标签应含有 phase1 的标记串（capture-pane 快照写入 xterm）
+  const marker = argvFlag('--e2e-sess-marker') ?? '__no_marker__'
+  check(
+    'replay-marker',
+    await json<boolean>(`window.__e2ePaneHas(0, ${JSON.stringify(marker)})`)
+  )
+
+  // 恢复的会话可继续交互：向第一个标签注入新回显
+  const ids = await json<string[]>('window.__e2eIds()')
+  const probe = `SESS2_${randomUUID().slice(0, 8)}`
+  let probeSeen = false
+  const tap = (_id: string, d: string) => {
+    if (d.includes(probe)) probeSeen = true
+  }
+  hub.on('term:data', tap)
+  backend.write(ids[0], `echo ${probe}\r`)
+  check('interactive', await waitUntil(() => probeSeen, 8000, 200))
+  hub.off('term:data', tap)
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_SESS2_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  sessionStore.clear() // 清场：不留 sessions.json，重跑 phase1 从零开始
+  await backend.dispose()
+  app.exit(allOk ? 0 : 1)
+}
+
 function argvHas(name: string): boolean {
   return process.argv.includes(name)
 }
@@ -558,10 +798,26 @@ async function runSmoke(): Promise<void> {
   }
 }
 
-// smoke / e2e 属于独立测试进程，不能和正在运行的 GUI 实例抢单实例锁
+// smoke / e2e 属于独立测试进程，不能和正在运行的 GUI 实例抢单实例锁。
+// sessionE2E（--e2e-session 两段回归）套 __E2E__ 门：剥离构建把参数名与
+// userData 重定向逻辑一并摇出产物
+const sessionE2E = __E2E__ ? argvFlag('--e2e-session') : undefined
 const isolatedRun =
-  argvHas('--smoke') || argvFlag('--e2e-tabs') !== undefined || argvHas('--e2e-input')
+  argvHas('--smoke') ||
+  argvFlag('--e2e-tabs') !== undefined ||
+  argvHas('--e2e-input') ||
+  sessionE2E !== undefined
 const cliOpenDir = extractOpenDir(process.argv)
+
+// --e2e-session 用独立 userData 跑两段，避免污染真实 profiles/settings/sessions
+if (sessionE2E) {
+  const dir = argvFlag('--e2e-user-data')
+  if (!dir) {
+    console.error('E2E_FAIL: --e2e-session 需要 --e2e-user-data=<dir>')
+    process.exit(1)
+  }
+  app.setPath('userData', resolve(dir))
+}
 
 if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null })) {
   // 第二实例：目录已通过 additionalData 带给首实例，自己直接退出
@@ -578,6 +834,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
   app.whenReady().then(async () => {
     registry.load()
     settingsStore.load()
+    sessionStore.load()
     // 启动即按存档主题定向：dark/light 覆盖，system 交给系统偏好；
     // 必须在 createWindow 之前，窗口装饰（darkTheme）取的是此刻的有效值
     nativeTheme.themeSource = settingsStore.get().theme
@@ -585,6 +842,15 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
 
     const smoke = argvHas('--smoke')
     const e2eTabs = argvFlag('--e2e-tabs')
+
+    // 附着候选：上次退出保留的会话（属主进程已死 + socket 在）。smoke/e2e 隔离
+    // 运行一律全新启动（共享真实 userData 时附着会破坏断言基数并误杀在保会话），
+    // 唯 --e2e-session=phase2 是"模拟重启附着"本身
+    const attachAllowed = !isolatedRun || sessionE2E === 'phase2'
+    const attach = attachAllowed ? sessionStore.attachCandidate() ?? undefined : undefined
+    // 遗留服务器清理只在真实 GUI 启动做：会话保持下"pid 死 + socket 在"可能是
+    // 在保会话，隔离测试进程不该动它（清理目标也排除本次附着对象）
+    if (!isolatedRun) sweepStaleServers(attach?.socketName)
 
     try {
       if (__E2E__ && smoke) {
@@ -595,10 +861,33 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
 
       createWindow()
       enqueueOpenDir(cliOpenDir)
-      const started = backend.start()
+      const started = backend.start(attach)
+      backendStarted = started
       // GUI 路径不 await start：这里挂一个兜底 catch 防止 tmux 缺失时
       // unhandledRejection 刷屏；e2e 路径 await started 仍能拿到失败
-      started.catch((e) => console.error('[tmux] backend start failed:', e))
+      started
+        .then((restored) => {
+          if (restored.length > 0) restoredTabs = restored
+        })
+        .catch((e) => console.error('[tmux] backend start failed:', e))
+
+      if (__E2E__ && sessionE2E && mainWindow) {
+        const win = mainWindow
+        win.webContents.once('did-finish-load', () => {
+          void delay(800)
+            .then(async () => {
+              await started
+              if (sessionE2E === 'phase1') await runSessionPhase1(win)
+              else await runSessionPhase2(win)
+            })
+            .catch(async (e) => {
+              console.error('E2E_FAIL:', e)
+              await backend.dispose().catch(() => undefined)
+              app.exit(1)
+            })
+        })
+        return
+      }
 
       if (__E2E__ && (e2eTabs || argvHas('--e2e-input')) && mainWindow) {
         const n = argvHas('--e2e-input') ? 2 : Math.max(1, Number(e2eTabs) || 20)
@@ -627,6 +916,16 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
 
 process.on('unhandledRejection', (e) => console.error('UNHANDLED_REJECTION:', e))
 
+// 退出语义：keepSessionOnExit（默认开）= 只 detach 不 kill，tmux 服务器与其上的
+// shell 继续存活，下次启动附着恢复；关闭该设置或 Ctrl+Shift+Q 则终结会话退出。
+// smoke/e2e 隔离运行一律终结，测试不残留服务器
 app.on('window-all-closed', () => {
-  void backend.dispose().then(() => app.quit())
+  if (isolatedRun) {
+    void backend.dispose().then(() => app.quit())
+    return
+  }
+  const keep = settingsStore.get().keepSessionOnExit
+  if (keep) persistSession() // 渲染层 sync 是 debounce 的，退出前以主进程权威状态兜底落盘
+  else sessionStore.clear()
+  void backend.dispose({ keep }).then(() => app.quit())
 })

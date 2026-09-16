@@ -1,16 +1,23 @@
-// 领域类型（Profile/AppSettings/TermInfo）与主进程同源自 src/shared/types，
+// 领域类型（Profile/AppSettings/TermInfo/TabGroup）与主进程同源自 src/shared/types，
 // 此处 re-export 供渲染层各组件统一从 './api' 导入
-import type { AppSettings, Profile, TermInfo } from '../../shared/types'
+import type {
+  AppSettings,
+  Profile,
+  RestoredSession,
+  SessionUiSync,
+  TabGroup,
+  TermInfo
+} from '../../shared/types'
 
-export type { AppSettings, Profile, TermInfo } from '../../shared/types'
+export type {
+  AppSettings,
+  Profile,
+  TermInfo,
+  TabGroup,
+  RestoredSession,
+  SessionUiSync
+} from '../../shared/types'
 export { DEFAULT_SETTINGS } from '../../shared/types'
-
-export interface TabGroup {
-  id: string
-  name: string
-  color: string
-  collapsed?: boolean
-}
 
 // 组调色板（Catppuccin 八色）：作为组头圆点/容器色边使用，深浅主题下均可读
 export const GROUP_COLORS = [
@@ -51,6 +58,10 @@ export interface Api {
   listFonts(): Promise<string[]>
   createTerm(profileId: string, cwd?: string): Promise<TermInfo>
   cliReady(): Promise<string[]>
+  restoreSession(): Promise<RestoredSession | null>
+  replayTerm(id: string): Promise<string>
+  syncSession(payload: SessionUiSync): void
+  quitAll(): void
   onOpenDir(cb: (dir: string) => void): () => void
   write(id: string, data: string): void
   resize(id: string, cols: number, rows: number): void

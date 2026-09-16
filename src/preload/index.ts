@@ -1,5 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AppSettings, Profile, TermInfo } from '../shared/types'
+import type {
+  AppSettings,
+  Profile,
+  RestoredSession,
+  SessionUiSync,
+  TermInfo
+} from '../shared/types'
+
+export type { RestoredSession, SessionUiSync } from '../shared/types'
 
 const api = {
   listProfiles: (): Promise<Profile[]> => ipcRenderer.invoke('profiles:list'),
@@ -10,6 +18,10 @@ const api = {
   createTerm: (profileId: string, cwd?: string): Promise<TermInfo> =>
     ipcRenderer.invoke('term:create', profileId, cwd),
   cliReady: (): Promise<string[]> => ipcRenderer.invoke('cli:ready'),
+  restoreSession: (): Promise<RestoredSession | null> => ipcRenderer.invoke('session:restore'),
+  replayTerm: (id: string): Promise<string> => ipcRenderer.invoke('session:replay', id),
+  syncSession: (payload: SessionUiSync): void => ipcRenderer.send('session:sync', payload),
+  quitAll: (): void => ipcRenderer.send('session:quit-all'),
   onOpenDir: (cb: (dir: string) => void): (() => void) => {
     const handler = (_e: Electron.IpcRendererEvent, dir: string): void => cb(dir)
     ipcRenderer.on('cli:open-dir', handler)
