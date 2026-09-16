@@ -1,12 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { AppSettings, Profile, TermInfo } from '../shared/types'
 
 const api = {
-  listProfiles: (): Promise<unknown> => ipcRenderer.invoke('profiles:list'),
-  getSettings: (): Promise<unknown> => ipcRenderer.invoke('settings:get'),
-  setSettings: (patch: Record<string, unknown>): Promise<unknown> =>
+  listProfiles: (): Promise<Profile[]> => ipcRenderer.invoke('profiles:list'),
+  getSettings: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
+  setSettings: (patch: Partial<AppSettings>): Promise<AppSettings> =>
     ipcRenderer.invoke('settings:set', patch),
   listFonts: (): Promise<string[]> => ipcRenderer.invoke('settings:fonts'),
-  createTerm: (profileId: string, cwd?: string): Promise<unknown> =>
+  createTerm: (profileId: string, cwd?: string): Promise<TermInfo> =>
     ipcRenderer.invoke('term:create', profileId, cwd),
   cliReady: (): Promise<string[]> => ipcRenderer.invoke('cli:ready'),
   onOpenDir: (cb: (dir: string) => void): (() => void) => {

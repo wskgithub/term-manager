@@ -179,4 +179,53 @@ export function setupE2E(ctx: E2ECtx): void {
       }, 150)
     })
   }
+
+  // ── 真实输入回归探针（--e2e-input，主进程用 sendInputEvent 派可信事件驱动）──
+
+  const termsInOrder = () => [...ctx.terms.current.values()]
+
+  /** 焦点归属快照：focused/visible 为 term-pane 下标（DOM 顺序=创建顺序） */
+  w.__e2eInputState = () => {
+    const ae = document.activeElement as HTMLElement | null
+    const panes = [...document.querySelectorAll<HTMLElement>('.term-pane')]
+    const pane = ae?.closest<HTMLElement>('.term-pane')
+    return {
+      panes: panes.length,
+      focused: pane ? panes.indexOf(pane) : -1,
+      visible: panes.findIndex((p) => p.style.display !== 'none'),
+      ae: String(ae?.className ?? ae?.tagName ?? 'null'),
+    }
+  }
+
+  /** 全部终端 id（创建顺序，即 terms Map 的 key） */
+  w.__e2eIds = () => [...ctx.terms.current.keys()]
+
+  /** 第 idx 个终端的 buffer（含 scrollback）里是否出现 sub */
+  w.__e2ePaneHas = (idx: number, sub: string) => {
+    const t = termsInOrder()[idx]
+    if (!t) return false
+    const b = t.buffer.active
+    for (let i = 0; i < b.length; i++) {
+      if ((b.getLine(i)?.translateToString(true) ?? '').includes(sub)) return true
+    }
+    return false
+  }
+
+  /** 含 U+FFFD 的终端及行内容（应为空：多字节字符跨 %output chunk 解码损坏的标志） */
+  w.__e2eUtf8Bad = () => {
+    const bad: Array<{ pane: number; line: string }> = []
+    let i = 0
+    for (const t of ctx.terms.current.values()) {
+      const b = t.buffer.active
+      for (let r = 0; r < b.length; r++) {
+        const s = b.getLine(r)?.translateToString(true) ?? ''
+        if (s.includes('\uFFFD')) {
+          bad.push({ pane: i, line: s.slice(0, 60) })
+          break
+        }
+      }
+      i++
+    }
+    return bad
+  }
 }

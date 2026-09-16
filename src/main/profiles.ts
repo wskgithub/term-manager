@@ -1,18 +1,9 @@
 import { app } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
+import type { Profile } from '../shared/types'
 
-export interface Profile {
-  id: string
-  name: string
-  command?: string
-  args?: string[]
-  env?: Record<string, string>
-  cwd?: string
-  color?: string
-  // PATH 探测结果：主进程注入，渲染层用它把不可用的 shell 项置灰
-  available?: boolean
-}
+export type { Profile } from '../shared/types'
 
 // 一层 Shell 类型候选（类似 Windows Terminal 的下拉：bash/zsh/fish/…），
 // 只列本机 PATH 里真实存在的。机器类连接（ssh 等）不再是内置分类，
@@ -61,18 +52,20 @@ export class ProfileRegistry {
 
   load(): void {
     this.file = join(app.getPath('userData'), 'profiles.json')
-    this.profiles = this.readConfig().profiles
+    const raw = existsSync(this.file) ? readFileSync(this.file, 'utf-8') : ''
+    this.profiles = this.readConfig(raw).profiles
     this.detectAvailability()
-    this.save()
+    // 仅在内容变化时回写（探测结果注入/默认值迁移），避免每次启动刷新 mtime
+    if (this.serialize() !== raw) this.save()
   }
 
-  private readConfig(): ConfigFile {
-    if (!existsSync(this.file)) return newDefaults()
+  private readConfig(raw: string): ConfigFile {
+    if (!raw) return newDefaults()
     try {
-      const raw = JSON.parse(readFileSync(this.file, 'utf-8')) as unknown
+      const parsed = JSON.parse(raw) as unknown
       // v1 结构是裸数组或无 version 的对象：视为过期，重新生成 shell 默认值
-      if (Array.isArray(raw) || !(raw as ConfigFile).profiles) return newDefaults()
-      const cfg = raw as ConfigFile
+      if (Array.isArray(parsed) || !(parsed as ConfigFile).profiles) return newDefaults()
+      const cfg = parsed as ConfigFile
       if (!Array.isArray(cfg.profiles) || !cfg.profiles.length) return newDefaults()
       return cfg
     } catch (e) {
@@ -99,9 +92,13 @@ export class ProfileRegistry {
     return this.profiles.find((p) => p.id === id)
   }
 
+  private serialize(): string {
+    const cfg: ConfigFile = { version: CONFIG_VERSION, profiles: this.profiles }
+    return JSON.stringify(cfg, null, 2)
+  }
+
   private save(): void {
     mkdirSync(app.getPath('userData'), { recursive: true })
-    const cfg: ConfigFile = { version: CONFIG_VERSION, profiles: this.profiles }
-    writeFileSync(this.file, JSON.stringify(cfg, null, 2))
+    writeFileSync(this.file, this.serialize())
   }
 }

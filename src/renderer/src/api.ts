@@ -1,34 +1,9 @@
-export interface Profile {
-  id: string
-  name: string
-  command?: string
-  args?: string[]
-  env?: Record<string, string>
-  cwd?: string
-  color?: string
-  // PATH 探测结果：不可用的 shell 在 "+" 菜单里置灰
-  available?: boolean
-}
+// 领域类型（Profile/AppSettings/TermInfo）与主进程同源自 src/shared/types，
+// 此处 re-export 供渲染层各组件统一从 './api' 导入
+import type { AppSettings, Profile, TermInfo } from '../../shared/types'
 
-export interface AppSettings {
-  // 空串 = 自动（Nerd Font 优先，见 fonts.ts）
-  fontFamily: string
-  fontSize: number
-  // 默认 profile id（对应 + 号直建），空串 = 未设置（+ 打开菜单）
-  defaultProfileId: string
-  // 界面主题：深/浅/跟随系统（跟随系统时由 prefers-color-scheme 决定实际深浅）
-  theme: 'dark' | 'light' | 'system'
-}
-
-export interface TermInfo {
-  id: string
-  profileId: string
-  title: string
-  color?: string
-  // 以下为渲染层 UI 态（固定/分组），主进程不感知，创建后由渲染层补充
-  pinned?: boolean
-  groupId?: string
-}
+export type { AppSettings, Profile, TermInfo } from '../../shared/types'
+export { DEFAULT_SETTINGS } from '../../shared/types'
 
 export interface TabGroup {
   id: string

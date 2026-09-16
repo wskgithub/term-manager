@@ -4,3 +4,6 @@ dist/
 *.tsbuildinfo
 .npm-cache/
 .cache/
+.mimosa/
+.zcode/
+__pycache__/

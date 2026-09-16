@@ -94,7 +94,9 @@ function createWindow(): void {
     show: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      // 沙箱可用：preload 只用 contextBridge/ipcRenderer（沙箱化 preload 均支持），
+      // 没有理由放着 OS 级隔离不用
+      sandbox: true
     }
   })
 
@@ -110,7 +112,14 @@ function createWindow(): void {
     if (process.env.E2E_DEBUG) console.log('[renderer]', message)
   })
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    // 只放行网页协议：window.open（若有）交给系统浏览器；
+    // file:// 等其他 scheme 交给外部处理器没有收益只有面
+    try {
+      const u = new URL(details.url)
+      if (u.protocol === 'http:' || u.protocol === 'https:') void shell.openExternal(details.url)
+    } catch {
+      // 非法 URL：直接拒绝
+    }
     return { action: 'deny' }
   })
 
@@ -393,6 +402,129 @@ function percentile(sorted: number[], p: number): number {
   return s[Math.min(s.length - 1, Math.floor((p / 100) * s.length))]
 }
 
+// ── 真实输入链路回归（--e2e-input）──
+// sendInputEvent 派发的是可信事件，走与用户操作相同的输入管线（合成
+// el.click()/dispatchEvent 不触发焦点转移，测不出这类回归）。覆盖三处历史缺陷：
+// 真实点击标签后焦点应落在终端（曾甩到 body，键盘输入丢失）、Ctrl+Tab 应切换
+// 标签且不向 shell 注入 \t（曾整族 Tab 被 xterm cancel() stopPropagation 吞掉）、
+// 大流量中文输出不应因 %output 跨 chunk 解码出现 U+FFFD
+
+interface InputPaneState {
+  panes: number
+  focused: number
+  visible: number
+  ae: string
+}
+
+async function typeChars(win: BrowserWindow, text: string): Promise<void> {
+  for (const ch of text) {
+    // keyDown 事件本身不携带字符文本（sendInputEvent 的 keyDown 只映射键位），
+    // 需补一个 char 事件才会产生输入；xterm 对两者各走 keydown/insert 路径，各一次
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: ch })
+    win.webContents.sendInputEvent({ type: 'char', keyCode: ch })
+    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: ch })
+  }
+}
+
+async function pressKey(
+  win: BrowserWindow,
+  keyCode: string,
+  modifiers: ('ctrl' | 'shift')[] = []
+): Promise<void> {
+  win.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
+  win.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers })
+}
+
+async function runInputSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string): Promise<T> =>
+    JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_INPUT ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+
+  await js('window.__e2eStart(2)')
+  await waitUntil(
+    async () => await json<boolean>('window.__e2e && window.__e2e.done && window.__e2e.created >= 2'),
+    60000
+  )
+  const state = () => json<InputPaneState>('window.__e2eInputState()')
+  const paneHas = (idx: number, sub: string) =>
+    json<boolean>(`window.__e2ePaneHas(${idx}, ${JSON.stringify(sub)})`)
+
+  const s0 = await state()
+  // 裸启动会自动开一个默认标签，实际标签数 = 1 + __e2eStart(n)；只断言焦点与可见终端一致
+  check(
+    'boot-focus',
+    s0.focused === s0.visible && s0.focused >= 0 && s0.ae.includes('xterm-helper-textarea'),
+    JSON.stringify(s0)
+  )
+
+  // 1) 真实点击第一个标签：焦点必须随切换落到该终端（曾丢到 body）
+  const rect = await json<{ x: number; y: number; width: number; height: number }>(
+    'document.querySelectorAll(".tab")[0].getBoundingClientRect()'
+  )
+  const cx = Math.round(rect.x + rect.width / 2)
+  const cy = Math.round(rect.y + rect.height / 2)
+  win.webContents.sendInputEvent({ type: 'mouseDown', x: cx, y: cy, button: 'left', clickCount: 1 })
+  win.webContents.sendInputEvent({ type: 'mouseUp', x: cx, y: cy, button: 'left', clickCount: 1 })
+  await delay(400)
+  const s1 = await state()
+  check(
+    'click-tab-focus',
+    s1.visible === 0 && s1.focused === 0 && s1.ae.includes('xterm-helper-textarea'),
+    JSON.stringify(s1)
+  )
+
+  // 点击后立即打字：回显必须落在被点击的 pane（焦点丢了会打到 body 什么也收不到）。
+  // 标记用小写：sendInputEvent 的 keyDown 事件 key 为小写，xterm 以 ev.key 产出字符
+  await typeChars(win, 'clickmk')
+  await pressKey(win, 'Enter')
+  check('click-tab-type', await waitUntil(() => paneHas(0, 'clickmk'), 6000))
+
+  // 2) Ctrl+Tab：切换标签且焦点跟随（曾在终端聚焦时被 xterm 吞掉，\t 打进 shell）
+  await pressKey(win, 'Tab', ['ctrl'])
+  await delay(400)
+  const s2 = await state()
+  check(
+    'ctrltab-switch',
+    s2.visible === 1 && s2.focused === 1 && s2.ae.includes('xterm-helper-textarea'),
+    JSON.stringify(s2)
+  )
+  await typeChars(win, 'tabmk')
+  await pressKey(win, 'Enter')
+  check('ctrltab-type', await waitUntil(() => paneHas(1, 'tabmk'), 6000))
+  check(
+    'ctrltab-no-leak',
+    !(await waitUntil(() => paneHas(0, 'tabmk'), 800)),
+    'pane0 不应收到 pane1 的输入'
+  )
+
+  // 3) Ctrl+Shift+Tab 切回
+  await pressKey(win, 'Tab', ['ctrl', 'shift'])
+  await delay(400)
+  const s3 = await state()
+  check('ctrlshifttab-back', s3.visible === 0 && s3.focused === 0, JSON.stringify(s3))
+
+  // 4) 大流量中文：backend.send-keys 注入 printf，3000 个「中」= 9KB UTF-8，
+  //    必然横跨多个 %output chunk，扫描全部 pane 的 buffer 不应出现 U+FFFD
+  const ids = await json<string[]>('window.__e2eIds()')
+  backend.write(ids[0], "printf '中%.0s' {1..3000}\r")
+  await delay(2500)
+  const bad = await json<Array<{ pane: number; line: string }>>('window.__e2eUtf8Bad()')
+  check('utf8-clean', bad.length === 0, JSON.stringify(bad))
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_INPUT_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  if (argvHas('--e2e-quit')) {
+    await backend.dispose()
+    app.exit(allOk ? 0 : 1)
+  }
+}
+
 function argvHas(name: string): boolean {
   return process.argv.includes(name)
 }
@@ -427,7 +559,8 @@ async function runSmoke(): Promise<void> {
 }
 
 // smoke / e2e 属于独立测试进程，不能和正在运行的 GUI 实例抢单实例锁
-const isolatedRun = argvHas('--smoke') || argvFlag('--e2e-tabs') !== undefined
+const isolatedRun =
+  argvHas('--smoke') || argvFlag('--e2e-tabs') !== undefined || argvHas('--e2e-input')
 const cliOpenDir = extractOpenDir(process.argv)
 
 if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null })) {
@@ -463,15 +596,19 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
       createWindow()
       enqueueOpenDir(cliOpenDir)
       const started = backend.start()
+      // GUI 路径不 await start：这里挂一个兜底 catch 防止 tmux 缺失时
+      // unhandledRejection 刷屏；e2e 路径 await started 仍能拿到失败
+      started.catch((e) => console.error('[tmux] backend start failed:', e))
 
-      if (e2eTabs && mainWindow) {
-        const n = Math.max(1, Number(e2eTabs) || 20)
+      if ((e2eTabs || argvHas('--e2e-input')) && mainWindow) {
+        const n = argvHas('--e2e-input') ? 2 : Math.max(1, Number(e2eTabs) || 20)
         const win = mainWindow
         win.webContents.once('did-finish-load', () => {
           void delay(800)
             .then(async () => {
               await started
-              await runE2ESequence(win, n)
+              if (argvHas('--e2e-input')) await runInputSequence(win)
+              else await runE2ESequence(win, n)
             })
             .catch(async (e) => {
               console.error('E2E_FAIL:', e)

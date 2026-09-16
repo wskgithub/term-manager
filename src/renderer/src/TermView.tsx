@@ -17,6 +17,10 @@ interface Props {
   onTerminal: (id: string, t: Terminal | null) => void
   // 右键菜单由 App 统一渲染（自绘浮层），这里只上报光标坐标
   onContextMenu: (x: number, y: number) => void
+  // Ctrl+Tab / Ctrl+Shift+Tab 循环切标签：焦点在终端内时必须由这里拦截
+  //（Tab 族按键被 xterm 键位表认领，见下方 customKeyEventHandler 注释），
+  // window 层监听收不到；焦点在终端外时走 App 的兜底通路
+  onCycleTab: (dir: 1 | -1) => void
 }
 
 interface Thumb {
@@ -24,7 +28,7 @@ interface Thumb {
   height: number
 }
 
-export function TermView({ termId, active, fontFamily, fontSize, dark, onTitle, onTerminal, onContextMenu }: Props) {
+export function TermView({ termId, active, fontFamily, fontSize, dark, onTitle, onTerminal, onContextMenu, onCycleTab }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -33,6 +37,9 @@ export function TermView({ termId, active, fontFamily, fontSize, dark, onTitle, 
   const rafRef = useRef(0)
   const titleRef = useRef(onTitle)
   titleRef.current = onTitle
+  // customKeyEventHandler 挂在 mount-once 的 effect 里，回调经 ref 拿最新闭包
+  const cycleTabRef = useRef(onCycleTab)
+  cycleTabRef.current = onCycleTab
   // 设置是异步加载的：建实例时用最新值，晚到的变化由下面的 effect 补齐
   const latest = useRef({ fontFamily, fontSize })
   latest.current = { fontFamily, fontSize }
@@ -122,11 +129,24 @@ export function TermView({ termId, active, fontFamily, fontSize, dark, onTitle, 
     term.onTitleChange((t) => titleRef.current(t))
     // 用户键盘输入：xterm 行编辑产出 → 写回后端 PTY
     term.onData((d) => api.write(termId, d))
-    // 复制/粘贴快捷键，拦在 xterm 键盘处理之前（返回 false 不再发给 shell）：
-    // Ctrl+Shift+C/V 是 Linux 终端惯例，Ctrl+C 必须保持 SIGINT 语义不能劫持；
-    // Ctrl+Insert / Shift+Insert 是同义的传统键位
+    // 键盘拦截都在 xterm 自身处理之前（customKeyEventHandler 返回 false 会直接
+    // 跳过 xterm 的键位评估与 cancel，见 xterm Terminal._keyDown）：
+    // 1) Ctrl+Tab / Ctrl+Shift+Tab 切标签——Tab 族在 xterm 键位表里被认领
+    //    （result.cancel → cancel() = preventDefault + stopPropagation），window
+    //    层监听收不到，还会把字面 \t / 反向 tab 发进 shell，必须在此拦截；
+    //    返回 false 并不自动 preventDefault（xterm 丢弃返回值），须自己调
+    // 2) 复制/粘贴：Ctrl+Shift+C/V 是 Linux 终端惯例（Ctrl+C 必须保持 SIGINT
+    //    语义不能劫持）；Ctrl+Insert / Shift+Insert 是同义的传统键位
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== 'keydown') return true
+      if (ev.ctrlKey && !ev.altKey && !ev.metaKey && ev.code === 'Tab') {
+        // stopPropagation：App 在 window 层还有 Ctrl+Tab 兜底通路（焦点不在终端时用），
+        // 不拦住会双触发——一次切换变两步
+        ev.preventDefault()
+        ev.stopPropagation()
+        cycleTabRef.current(ev.shiftKey ? -1 : 1)
+        return false
+      }
       if (!ev.ctrlKey && !ev.shiftKey) return true
       const copy =
         (ev.ctrlKey && ev.shiftKey && !ev.altKey && ev.code === 'KeyC') ||

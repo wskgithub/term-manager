@@ -1,15 +1,13 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { randomUUID } from 'crypto'
+import { readdirSync, unlinkSync } from 'fs'
 import os from 'os'
-import { basename } from 'path'
+import { basename, join } from 'path'
+import { StringDecoder } from 'string_decoder'
 import type { Profile } from './profiles'
+import type { TermInfo } from '../shared/types'
 
-export interface TermInfo {
-  id: string
-  profileId: string
-  title: string
-  color?: string
-}
+export type { TermInfo } from '../shared/types'
 
 interface Tab {
   info: TermInfo
@@ -36,21 +34,23 @@ function shQuote(s: string): string {
   return "'" + s.replace(/'/g, `'\\''`) + "'"
 }
 
-// 还原 tmux 控制协议输出中的八进制转义（\033、\015 等，均为非打印 ASCII 字节）
-function unescape(s: string): string {
-  if (!s.includes('\\')) return s
-  let out = ''
-  let i = 0
-  while (i < s.length) {
-    if (s[i] === '\\' && /[0-7]/.test(s[i + 1] ?? '')) {
-      out += String.fromCharCode(parseInt(s.slice(i + 1, i + 4), 8))
+// 还原 tmux 控制协议 %output 负载中的八进制转义（\033、\015 等，tmux 恒发 3 位）。
+// 字节级操作：除转义外的字节原样保留——其中包括 tmux 未转义、按事件边界
+// 拆开的 UTF-8 残段（见 TmuxBackend.emitOutput，需按 pane 重组后再解码）
+function unescapeBytes(buf: Buffer): Buffer {
+  if (!buf.includes(0x5c)) return buf
+  const out: number[] = []
+  const oct = (b: number | undefined): boolean => b !== undefined && b >= 0x30 && b <= 0x37
+  for (let i = 0; i < buf.length; ) {
+    if (buf[i] === 0x5c && oct(buf[i + 1]) && oct(buf[i + 2]) && oct(buf[i + 3])) {
+      out.push(((buf[i + 1]! - 0x30) << 6) | ((buf[i + 2]! - 0x30) << 3) | (buf[i + 3]! - 0x30))
       i += 4
     } else {
-      out += s[i]
+      out.push(buf[i]!)
       i++
     }
   }
-  return out
+  return Buffer.from(out)
 }
 
 const CMD_TIMEOUT_MS = 8000
@@ -58,7 +58,48 @@ const FLUSH_DEBOUNCE_MS = 5
 const FLUSH_CHUNK = 8 * 1024
 const RESIZE_DEBOUNCE_MS = 120
 
+// "%output " 的字节前缀（onData 里做字节级行分发用）
+const OUT_PREFIX = Buffer.from('%output ')
+
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+/** 清理崩溃实例遗留的私有 tmux 服务器。socket 名固定为 termmgr-<创建进程 pid>：
+    名字经 ^termmgr-(\d+)$ 白名单校验后只可能是「termmgr-」+纯数字，无注入面；
+    pid 已死而 socket 仍在 ⇒ 上次实例未正常退出（正常退出会 kill-session），
+    杀掉其服务器释放会话与 shell。pid 存活（另一运行实例 / pid 被复用）时保守跳过。
+    会话保持功能落地后，此处应改为附着候选而不是清理 */
+function sweepStaleServers(): void {
+  const dir = process.env.TMUX_TMPDIR ?? `/tmp/tmux-${process.getuid?.() ?? 0}`
+  let names: string[]
+  try {
+    names = readdirSync(dir)
+  } catch {
+    return // 目录不存在：没有遗留
+  }
+  const prefix = 'termmgr-'
+  for (const entry of names) {
+    if (!entry.startsWith(prefix)) continue
+    const digits = entry.slice(prefix.length)
+    if (!/^\d+$/.test(digits) || Number(digits) === process.pid) continue
+    try {
+      process.kill(Number(digits), 0)
+      continue // pid 还活着：另一实例在跑，不动
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ESRCH') continue // EPERM 等：当作活着
+    }
+    const cleaner = spawn('tmux', ['-L', prefix + digits, 'kill-server'], { stdio: 'ignore' })
+    cleaner.on('error', () => undefined) // tmux 缺失等：继续尝试清理 socket 文件
+    console.log(`[tmux] cleaning stale server socket ${prefix + digits}`)
+    // 服务器已死时（上次崩溃后又被系统清理/自杀）socket 文件也会残留
+    // （tmux 只在服务器正常退出时移除它），一并 unlink；活服务器则由
+    // kill-server 退出时自行移除，此处 ENOENT 忽略
+    try {
+      unlinkSync(join(dir, entry))
+    } catch {
+      // 已被 tmux 移除
+    }
+  }
+}
 
 /**
  * 基于 tmux Control Mode 的终端后端：
@@ -71,7 +112,9 @@ export class TmuxBackend {
   private paneToTerm = new Map<string, string>()
   private windowToTerm = new Map<string, string>()
   private pending: PendingCommand[] = []
-  private buffer = ''
+  /** 行帧缓冲（字节级）：tmux 负载含未经转义的原样 UTF-8，先按 0x0A 分行再谈解码
+      （多字节字符的组成字节均 ≥0x80，不可能与帧分隔符混淆） */
+  private buf: Buffer = Buffer.alloc(0)
   private session = ''
   private autoWindow = ''
   private autoWindowKilled = false
@@ -80,27 +123,32 @@ export class TmuxBackend {
   private resizeTimers = new Map<string, NodeJS.Timeout>()
   // \ek 标题序列跨 %output 事件分片时的残片缓存（pane id → 残片）
   private titleHold = new Map<string, string>()
+  // %output 重组解码器（pane id → decoder）：tmux 可能把一个多字节字符按事件
+  // 边界拆成两段原样（不转义）字节流，行帧里还夹着 "\n%output %N " 帧头，
+  // 流级解码永远重组不回来——必须把负载字节按 pane 攒着解码，
+  // StringDecoder 会把不完整序列留到下一个事件
+  private paneDecoders = new Map<string, StringDecoder>()
   private disposed = false
 
   constructor(private emit: (channel: string, ...args: unknown[]) => void) {}
 
   async start(): Promise<void> {
     if (this.proc) return
+    sweepStaleServers()
     this.proc = spawn('tmux', ['-C', '-u', '-L', `termmgr-${process.pid}`], {
       cwd: os.homedir()
     })
     this.proc.stdout.on('data', (chunk: Buffer) => this.onData(chunk))
     this.proc.stderr.on('data', (chunk: Buffer) => console.error('[tmux]', chunk.toString()))
-    this.proc.on('exit', () => {
-      this.proc = null
-      // 服务器意外退出：所有会话终结
-      for (const [id, tab] of this.tabs) {
-        if (tab.alive) {
-          tab.alive = false
-          this.emit('term:exit', id, -1)
-        }
-      }
+    // tmux 缺失（spawn ENOENT）等进程级失败：error 事件不处理会把主进程崩掉，
+    // 走与退出相同的通知语义，让渲染层拿到 term:exit 而不是应用闪退
+    this.proc.on('error', (err) => {
+      console.error('[tmux] process error:', err.message)
+      this.onGone()
     })
+    // 服务器先死时对 stdin 的残留写入会 EPIPE，同样不能变成未处理 error
+    this.proc.stdin.on('error', () => undefined)
+    this.proc.on('exit', () => this.onGone())
 
     // tmux -C 启动时自动创建并挂载一个会话（含一个默认 shell 窗口）。
     // 等它就绪后收编：改名作为工作会话；绝不能 kill 最后一个会话（服务器会随之退出）。
@@ -126,14 +174,51 @@ export class TmuxBackend {
     }
   }
 
-  private onData(chunk: Buffer): void {
-    this.buffer += chunk.toString('utf8')
-    let idx: number
-    while ((idx = this.buffer.indexOf('\n')) >= 0) {
-      const line = this.buffer.slice(0, idx)
-      this.buffer = this.buffer.slice(idx + 1)
-      this.onLine(line)
+  /** 服务器不可用（退出/启动失败）：所有会话终结 */
+  private onGone(): void {
+    this.proc = null
+    for (const [id, tab] of this.tabs) {
+      if (tab.alive) {
+        tab.alive = false
+        this.emit('term:exit', id, -1)
+      }
     }
+  }
+
+  private onData(chunk: Buffer): void {
+    // 字节级行帧：帧缓冲绝不做字符串解码（解码只在「整行非 %output」与
+    // 「按 pane 重组后的负载」两个安全位置发生）
+    this.buf = Buffer.concat([this.buf, chunk])
+    let idx: number
+    while ((idx = this.buf.indexOf(0x0a)) >= 0) {
+      const lineBytes = this.buf.subarray(0, idx)
+      this.buf = this.buf.subarray(idx + 1)
+      if (lineBytes.subarray(0, 8).equals(OUT_PREFIX)) {
+        // %output <pane> <payload>：payload 保持字节，交 pane 级重组解码
+        const rest = lineBytes.subarray(8)
+        const sp = rest.indexOf(0x20)
+        if (sp !== -1) {
+          this.emitOutput(rest.subarray(0, sp).toString(), unescapeBytes(rest.subarray(sp + 1)))
+        }
+      } else {
+        // 回执/事件行是 tmux 生成的完整文本行（无跨行多字节问题），整行解码安全
+        this.onLine(lineBytes.toString('utf8'))
+      }
+    }
+  }
+
+  /** pane 级负载解码：StringDecoder 把不完整的多字节序列留到下一个 %output
+      事件，重组 tmux 按事件边界拆开的字符 */
+  private emitOutput(pane: string, payload: Buffer): void {
+    const id = this.paneToTerm.get(pane)
+    if (!id || payload.length === 0) return
+    let dec = this.paneDecoders.get(pane)
+    if (!dec) {
+      dec = new StringDecoder('utf8')
+      this.paneDecoders.set(pane, dec)
+    }
+    const text = dec.write(payload)
+    if (text) this.emit('term:data', id, this.convertTmuxTitle(pane, text))
   }
 
   private onLine(line: string): void {
@@ -157,15 +242,6 @@ export class TmuxBackend {
         clearTimeout(p.timer)
         p.reject(new Error(line))
       }
-      return
-    }
-    if (line.startsWith('%output ')) {
-      const rest = line.slice('%output '.length)
-      const sp = rest.indexOf(' ')
-      const pane = sp === -1 ? rest : rest.slice(0, sp)
-      const payload = sp === -1 ? '' : unescape(rest.slice(sp + 1))
-      const id = this.paneToTerm.get(pane)
-      if (id && payload) this.emit('term:data', id, this.convertTmuxTitle(pane, payload))
       return
     }
     if (line.startsWith('%window-close ')) {
@@ -217,6 +293,13 @@ export class TmuxBackend {
     })
   }
 
+  /** 火忘型命令：tmux 对每条命令都会回执（%end 或 %error），超时/%error 的
+      rejection 在此吞掉——后端状态由后续命令与 %window-close 事件校准，
+      冒成 unhandledRejection 只会污染日志 */
+  private fire(line: string): void {
+    this.send(line, false).catch(() => undefined)
+  }
+
   async create(profile: Profile, cwdOverride?: string): Promise<TermInfo> {
     if (!this.proc) await this.start()
 
@@ -257,7 +340,7 @@ export class TmuxBackend {
     // 首个标签建成后再关自动窗口（此时会话仍有窗口，服务器不会退出）
     if (!this.autoWindowKilled && this.autoWindow.startsWith('@')) {
       this.autoWindowKilled = true
-      void this.send(`kill-window -t ${this.autoWindow}`, false)
+      this.fire(`kill-window -t ${this.autoWindow}`)
     }
     return info
   }
@@ -321,12 +404,12 @@ export class TmuxBackend {
     for (const seg of segments) {
       if (!seg) continue
       if (seg === '\r' || seg === '\n' || seg === '\r\n') {
-        void this.send(`send-keys -t ${tab.pane} Enter`, false)
+        this.fire(`send-keys -t ${tab.pane} Enter`)
       } else {
         // 大段输入切分为 ≤8KB 的命令行
         for (let i = 0; i < seg.length; i += FLUSH_CHUNK) {
           const piece = seg.slice(i, i + FLUSH_CHUNK)
-          void this.send(`send-keys -t ${tab.pane} -l ${tmuxToken(piece)}`, false)
+          this.fire(`send-keys -t ${tab.pane} -l ${tmuxToken(piece)}`)
         }
       }
     }
@@ -341,7 +424,7 @@ export class TmuxBackend {
       id,
       setTimeout(() => {
         this.resizeTimers.delete(id)
-        if (tab.alive) void this.send(`resize-window -t ${tab.window} -x ${cols} -y ${rows}`, false)
+        if (tab.alive) this.fire(`resize-window -t ${tab.window} -x ${cols} -y ${rows}`)
       }, RESIZE_DEBOUNCE_MS)
     )
   }
@@ -350,7 +433,7 @@ export class TmuxBackend {
     const tab = this.tabs.get(id)
     if (!tab?.alive) return
     tab.alive = false
-    void this.send(`kill-window -t ${tab.window}`, false)
+    this.fire(`kill-window -t ${tab.window}`)
     this.emit('term:exit', id, 0)
     this.cleanup(id)
   }
@@ -361,6 +444,7 @@ export class TmuxBackend {
       this.paneToTerm.delete(tab.pane)
       this.windowToTerm.delete(tab.window)
       this.titleHold.delete(tab.pane)
+      this.paneDecoders.delete(tab.pane)
     }
     this.tabs.delete(id)
     const t = this.inputTimers.get(id)

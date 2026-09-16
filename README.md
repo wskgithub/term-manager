@@ -111,6 +111,12 @@ npx electron out/main/index.js --e2e-tabs=20 --e2e-out=/tmp/e2e --e2e-quit --no-
 结果看 `E2E_RESULT` 日志行；截图落在 `--e2e-out` 目录（boot/tabs5/all-tabs/after-typing 四张）。
 加 `--e2e-settings` 会额外打开设置页并截 `05-settings.png`。
 
+```bash
+# 真实输入链路回归：sendInputEvent 可信事件驱动——
+# 点击标签后焦点落在终端、Ctrl+Tab 切换且不向 shell 注入 \t、大流量中文不乱码
+npx electron out/main/index.js --e2e-input --e2e-quit --no-sandbox
+```
+
 ### 实测性能（20 标签托管，2026-09-09，i5/集成显卡）
 
 | 指标 | 数值 |
@@ -124,7 +130,8 @@ npx electron out/main/index.js --e2e-tabs=20 --e2e-out=/tmp/e2e --e2e-quit --no-
 
 - `Ctrl+Shift+T` 新建标签（默认 profile）
 - `Ctrl+Shift+W` 关闭当前标签（固定标签上不生效，防误关）
-- `Ctrl+Tab` / `Ctrl+Shift+Tab` 切换标签
+- `Ctrl+Tab` / `Ctrl+Shift+Tab` 切换标签（终端聚焦时由 xterm 键盘钩子拦截处理，
+  焦点在终端外时由 window 级监听兜底——Tab 族按键被 xterm 认领后不会冒泡）
 - `Ctrl+,` 打开/关闭设置页（`Esc` 或点击标签关闭）
 - 双击标签重命名（手动重命名后 shell 上报的标题不再覆盖）
 - 标签右键菜单：固定/取消固定（常驻左端、窄化、无关闭钮）、添加到新组/移入既有组/移出组、关闭
@@ -135,7 +142,8 @@ npx electron out/main/index.js --e2e-tabs=20 --e2e-out=/tmp/e2e --e2e-quit --no-
 - [x] 双击重命名（标题覆盖语义）
 - [x] 标签拖拽排序
 - [x] profile 系统：`+` 菜单列出本机 shell 类型（bash / zsh / fish / pwsh / Docker Shell，按 PATH 探测、未安装置灰），默认 profile 为用户登录 shell；ssh 等远程连接由用户在 profiles.json 自定义 profile 实现
-- [x] tmux Control Mode 后端：UTF-8、自适应尺寸、输入防抖合批（5ms/8KB）
+- [x] tmux Control Mode 后端：UTF-8（StringDecoder 处理跨 chunk 多字节字符）、自适应尺寸、输入防抖合批（5ms/8KB）、
+      进程异常兜底（tmux 缺失/被杀不再崩主进程）、启动时清理崩溃实例遗留的 tmux 服务器（socket 名内嵌 pid 探活）
 - [x] 设置页（外观：字体选择/字号，fc-list 枚举本机等宽字体，即时生效 + 持久化）
 - [x] E2E 测试设施（冒烟 + 20 标签基准 + 截图 + 键盘注入）
 - [x] 固定标签页 + 标签分组（标签栏内颜色组：组头单击折叠、右键重命名/换色/解散；固定与分组互斥）

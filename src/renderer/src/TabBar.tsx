@@ -1,4 +1,4 @@
-import { useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import {
   ContextMenu,
   FolderPlusIcon,
@@ -102,6 +102,21 @@ export function TabBar(props: Props) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
+  // ＋下拉菜单的键盘/失焦关闭：此前只有 mouseLeave 一条关闭路径，
+  // 键盘用户按 Esc 或切走窗口后菜单会悬着不关
+  useEffect(() => {
+    if (!menuOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false)
+    }
+    const onBlur = () => setMenuOpen(false)
+    window.addEventListener('keydown', onKey, true)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [menuOpen])
   // 组头重命名（与标签重命名同一套内联编辑模式）
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null)
   const [groupDraft, setGroupDraft] = useState('')
@@ -169,7 +184,7 @@ export function TabBar(props: Props) {
         e.preventDefault()
         setTabMenu({ x: e.clientX, y: e.clientY, tabId: t.id })
       }}
-      title={t.pinned ? t.title : '双击重命名'}
+      title={`${t.title}（双击重命名）`}
     >
       {t.pinned ? (
         <span className="pin-mark">{PinIcon}</span>
@@ -194,10 +209,12 @@ export function TabBar(props: Props) {
       ) : (
         <span className="title">{t.title}</span>
       )}
-      {/* 固定标签不渲染关闭钮（防误关），关闭走右键菜单的显式动作 */}
+      {/* 固定标签不渲染关闭钮（防误关），关闭走右键菜单的显式动作。
+          mousedown 阻止默认（按钮夺焦）：点击后焦点保持在终端，不必再点回终端 */}
       {!t.pinned && (
         <button
           className="close"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={(e) => {
             e.stopPropagation()
             onClose(t.id)
@@ -289,9 +306,11 @@ export function TabBar(props: Props) {
               className={'tabgroup' + (seg.group.collapsed ? ' collapsed' : '')}
               style={{ '--g-color': seg.group.color } as CSSProperties}
             >
-              {/* 组头：单击折叠/展开（点击即意图明确，重命名走右键，避免双击先触两次折叠） */}
+              {/* 组头：单击折叠/展开（点击即意图明确，重命名走右键，避免双击先触两次折叠）。
+                  mousedown 阻止默认（夺焦）：折叠后键盘输入应继续落在终端 */}
               <div
                 className="tabgroup-head"
+                onMouseDown={(e) => e.preventDefault()}
                 onClick={() => onGroupToggle(seg.group.id)}
                 onContextMenu={(e) => {
                   e.preventDefault()
@@ -342,6 +361,7 @@ export function TabBar(props: Props) {
       <div className="newtab-split">
         <button
           className="newtab"
+          onMouseDown={(e) => e.preventDefault()}
           title={defaultProfile ? `新建 ${defaultProfile.name} 终端` : '新建终端'}
           onClick={() => {
             if (defaultProfile) {
@@ -357,6 +377,7 @@ export function TabBar(props: Props) {
         {defaultProfile && (
           <button
             className="newtab-caret"
+            onMouseDown={(e) => e.preventDefault()}
             title="选择其他 shell"
             onClick={() => setMenuOpen(!menuOpen)}
           >
@@ -381,6 +402,7 @@ export function TabBar(props: Props) {
                 key={p.id}
                 className={'menu-item' + (p.available === false ? ' disabled' : '')}
                 title={p.available === false ? '本机未安装该 shell' : undefined}
+                onMouseDown={(e) => e.preventDefault()}
                 onClick={() => {
                   if (p.available === false) return
                   onNewTab(p.id)
@@ -396,6 +418,7 @@ export function TabBar(props: Props) {
             <div className="menu-sep" />
             <div
               className="menu-item menu-settings"
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 setMenuOpen(false)
                 onOpenSettings()

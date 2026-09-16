@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { Terminal } from '@xterm/xterm'
 import {
   api,
+  DEFAULT_SETTINGS,
   nextGroupColor,
   nextGroupName,
   type AppSettings,
@@ -15,9 +16,6 @@ import { SettingsPage } from './SettingsPage'
 import { ContextMenu, CopyIcon, PasteIcon } from './ContextMenu'
 import { resolveDark, subscribeScheme, xtermTheme, rememberTheme } from './theme'
 import { setupE2E } from './e2e'
-
-// 与主进程 DEFAULT_SETTINGS 一致的初值，仅用于设置异步加载完成前，避免终端闪一下默认字体
-const DEFAULT_SETTINGS: AppSettings = { fontFamily: '', fontSize: 14, defaultProfileId: '', theme: 'dark' }
 
 // 摘出标签并给出插回锚点：原本在组内则锚在原组块末尾之后（原地改组会把同组切成
 // 前后两段，破坏「同组连续」不变量），未分组则锚在原位置
@@ -47,6 +45,8 @@ export default function App() {
   const [groups, setGroups] = useState<TabGroup[]>([])
   // 终端右键菜单：坐标 + 打开瞬间的可复制状态（随打开冻结，避免后续选择变化影响已开菜单）
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; canCopy: boolean } | null>(null)
+  // 新建终端失败提示（tmux 死了/profile 失效等），下次成功即清除
+  const [createError, setCreateError] = useState('')
   // 用户手动重命名后，shell 上报的标题不再覆盖
   const renamed = useRef(new Set<string>())
   // 单点分发：所有终端实例注册在这里，一个 onData 订阅服务全部标签
@@ -76,6 +76,13 @@ export default function App() {
   useEffect(() => {
     for (const t of terms.current.values()) t.options.theme = xtermTheme(dark)
   }, [dark])
+
+  // 激活标签变化后把焦点交给它：真实点击标签（mousedown 已 preventDefault 保住
+  // 原焦点，但目标终端此刻还 display:none、focus() 无效）与 Ctrl+Tab 切换
+  // （旧终端被藏起，焦点不能留在不可见的 textarea 里）之后，键盘输入都应落在新终端
+  useEffect(() => {
+    if (activeId) terms.current.get(activeId)?.focus()
+  }, [activeId])
 
   useEffect(() => {
     let alive = true
@@ -136,11 +143,31 @@ export default function App() {
         (ps.find((p) => p.available !== false) ?? ps[0])?.id
     }
     if (!pid) return undefined
-    const info = await api.createTerm(pid, cwd)
+    let info: TermInfo
+    try {
+      info = await api.createTerm(pid, cwd)
+    } catch (e) {
+      // 后端不可用（tmux 缺失/服务器死了）不能只静默 reject：用户按了新建却毫无反馈
+      console.error('[term] create failed:', e)
+      setCreateError(e instanceof Error ? e.message : String(e))
+      return undefined
+    }
+    setCreateError('')
     setTabs((ts) => [...ts, info])
     setActiveId(info.id)
     setSettingsOpen(false)
     return info
+  }
+
+  // Ctrl+Tab 循环切换。两条触发通路：焦点在终端内时 Tab 族被 xterm 键位表认领
+  // （cancel = preventDefault + stopPropagation，window 层监听收不到），由
+  // TermView 的 customKeyEventHandler 拦截后回调到这里；焦点在终端外
+  // （菜单/设置页等）时走 App 的 window keydown 兜底
+  const cycleTab = (dir: 1 | -1) => {
+    const ts = tabsRef.current
+    if (!ts.length) return
+    const i = ts.findIndex((t) => t.id === activeRef.current)
+    activateTab(ts[(i + dir + ts.length) % ts.length].id)
   }
 
   // 给 TabBar 的默认终端：设置了且本机可用才生效，否则视为未设置（+ 打开菜单）
@@ -270,8 +297,12 @@ export default function App() {
     setGroups((gs) => gs.map((g) => (g.id === gid ? { ...g, collapsed: !g.collapsed } : g)))
   }
 
-  // 激活标签：切入折叠组的成员时自动展开该组（点选与 Ctrl+Tab 共用）
+  // 激活标签：切入折叠组的成员时自动展开该组（点选与 Ctrl+Tab 共用）。
+  // 焦点：切换场景（含真实点击标签——.tab 不可聚焦，点击会把焦点甩到 body）
+  // 由 [activeId] effect 在渲染后聚焦新终端；点已激活的标签没有状态变化，
+  // effect 不会重跑，这里同步聚焦（此刻终端可见，focus() 立即生效）
   const activateTab = (id: string) => {
+    if (id === activeRef.current) terms.current.get(id)?.focus()
     setActiveId(id)
     setSettingsOpen(false)
     const gid = tabsRef.current.find((t) => t.id === id)?.groupId
@@ -323,11 +354,7 @@ export default function App() {
         if (activeRef.current && !cur?.pinned) closeTab(activeRef.current)
       } else if (e.ctrlKey && e.key === 'Tab') {
         e.preventDefault()
-        const ts = tabsRef.current
-        if (!ts.length) return
-        const i = ts.findIndex((t) => t.id === activeRef.current)
-        const next = e.shiftKey ? (i - 1 + ts.length) % ts.length : (i + 1) % ts.length
-        activateTab(ts[next].id)
+        cycleTab(e.shiftKey ? -1 : 1)
       } else if (e.ctrlKey && !e.shiftKey && e.key === ',') {
         e.preventDefault()
         setSettingsOpen((open) => !open)
@@ -387,8 +414,10 @@ export default function App() {
             onTitle={(title) => shellTitle(t.id, title)}
             onTerminal={registerTerminal}
             onContextMenu={openTermContextMenu}
+            onCycleTab={cycleTab}
           />
         ))}
+        {createError && <div className="create-error">新建终端失败：{createError}</div>}
         {settingsOpen && (
           <SettingsPage
             settings={settings}
