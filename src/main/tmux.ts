@@ -417,14 +417,17 @@ export class TmuxBackend {
 
   resize(id: string, cols: number, rows: number): void {
     const tab = this.tabs.get(id)
-    if (!tab?.alive || cols <= 0 || rows <= 0) return
+    // NaN 会穿过 `<= 0` 比较（NaN <= 0 为 false）直进命令行，钳在入口
+    const c = Math.round(cols)
+    const r = Math.round(rows)
+    if (!tab?.alive || !Number.isFinite(c) || !Number.isFinite(r) || c <= 0 || r <= 0) return
     const prev = this.resizeTimers.get(id)
     if (prev) clearTimeout(prev)
     this.resizeTimers.set(
       id,
       setTimeout(() => {
         this.resizeTimers.delete(id)
-        if (tab.alive) this.fire(`resize-window -t ${tab.window} -x ${cols} -y ${rows}`)
+        if (tab.alive) this.fire(`resize-window -t ${tab.window} -x ${c} -y ${r}`)
       }, RESIZE_DEBOUNCE_MS)
     )
   }

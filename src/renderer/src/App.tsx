@@ -367,9 +367,12 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // E2E 驱动（仅当主进程调用 __e2eStart 时激活）
+  // E2E 驱动（仅当主进程调用 __e2eStart 时激活）；__E2E__ 在 dist 打包时被
+  // define 成 false，rollup 把钩子从产物中摇掉（见 shared/globals.d.ts）
   useEffect(() => {
-    setupE2E({ getProfiles: () => profilesRef.current, createTab: newTab, terms })
+    if (__E2E__) {
+      setupE2E({ getProfiles: () => profilesRef.current, createTab: newTab, terms })
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

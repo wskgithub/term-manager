@@ -39,6 +39,26 @@ function shellOrder(p: Profile): number {
   return p.command === login ? 0 : 1
 }
 
+// profiles.json 可被手工编辑：字段级形状校验，坏条目整条丢弃并告警，
+// 而不是留到拼装 tmux 命令时才 TypeError（id/name 必填非空，可选字段类型不符即弃）
+function validProfile(p: unknown): p is Profile {
+  if (typeof p !== 'object' || p === null) return false
+  const r = p as Record<string, unknown>
+  if (typeof r.id !== 'string' || !r.id) return false
+  if (typeof r.name !== 'string' || !r.name) return false
+  if (r.command !== undefined && typeof r.command !== 'string') return false
+  if (r.args !== undefined && !(Array.isArray(r.args) && r.args.every((a) => typeof a === 'string')))
+    return false
+  if (r.env !== undefined) {
+    if (typeof r.env !== 'object' || r.env === null || Array.isArray(r.env)) return false
+    for (const v of Object.values(r.env)) if (typeof v !== 'string') return false
+  }
+  if (r.cwd !== undefined && typeof r.cwd !== 'string') return false
+  if (r.color !== undefined && typeof r.color !== 'string') return false
+  if (r.available !== undefined && typeof r.available !== 'boolean') return false
+  return true
+}
+
 function newDefaults(): ConfigFile {
   const candidates = [...SHELL_CANDIDATES].sort((a, b) => shellOrder(a) - shellOrder(b))
   const profiles = candidates.filter((p) => (p.command ? findOnPath(p.command) : true))
@@ -67,6 +87,13 @@ export class ProfileRegistry {
       if (Array.isArray(parsed) || !(parsed as ConfigFile).profiles) return newDefaults()
       const cfg = parsed as ConfigFile
       if (!Array.isArray(cfg.profiles) || !cfg.profiles.length) return newDefaults()
+      const profiles = cfg.profiles.filter((p): p is Profile => {
+        if (validProfile(p)) return true
+        console.error('[profiles] dropped malformed profile entry:', JSON.stringify(p)?.slice(0, 200))
+        return false
+      })
+      if (!profiles.length) return newDefaults()
+      cfg.profiles = profiles
       return cfg
     } catch (e) {
       console.error('[profiles] bad profiles.json, falling back to defaults:', e)

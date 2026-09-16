@@ -587,7 +587,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
     const e2eTabs = argvFlag('--e2e-tabs')
 
     try {
-      if (smoke) {
+      if (__E2E__ && smoke) {
         await backend.start()
         await runSmoke()
         return
@@ -600,7 +600,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
       // unhandledRejection 刷屏；e2e 路径 await started 仍能拿到失败
       started.catch((e) => console.error('[tmux] backend start failed:', e))
 
-      if ((e2eTabs || argvHas('--e2e-input')) && mainWindow) {
+      if (__E2E__ && (e2eTabs || argvHas('--e2e-input')) && mainWindow) {
         const n = argvHas('--e2e-input') ? 2 : Math.max(1, Number(e2eTabs) || 20)
         const win = mainWindow
         win.webContents.once('did-finish-load', () => {

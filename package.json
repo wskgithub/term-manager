@@ -15,8 +15,8 @@
     "rebuild": "electron-rebuild",
     "postinstall": "electron-rebuild",
     "smoke": "electron-vite build && electron out/main/index.js --smoke --no-sandbox",
-    "dist": "electron-vite build && ELECTRON_BUILDER_CACHE=\"$PWD/.cache/electron-builder\" ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --linux deb",
-    "dist:dir": "electron-vite build && ELECTRON_BUILDER_CACHE=\"$PWD/.cache/electron-builder\" ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --linux deb --dir"
+    "dist": "TERM_MGR_E2E=0 electron-vite build && ELECTRON_BUILDER_CACHE=\"$PWD/.cache/electron-builder\" ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --linux deb",
+    "dist:dir": "TERM_MGR_E2E=0 electron-vite build && ELECTRON_BUILDER_CACHE=\"$PWD/.cache/electron-builder\" ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --linux deb --dir"
   },
   "build": {
     "appId": "io.github.wsk.term-manager",
@@ -72,15 +72,15 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.7.1",
+    "@electron/rebuild": "^4.2.0",
     "@types/node": "^22.10.1",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
-    "@vitejs/plugin-react": "^4.3.4",
-    "electron": "^33.2.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^44.4.1",
     "electron-builder": "^26.15.3",
-    "electron-vite": "^2.3.0",
+    "electron-vite": "^5.0.0",
     "typescript": "^5.6.3",
-    "vite": "^5.4.11"
+    "vite": "^7.3.6"
   }
 }
