@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { api } from './api'
 import { resolveFontStack } from './fonts'
@@ -13,6 +14,9 @@ interface Props {
   fontSize: number
   // 创建实例时的深浅（决定初始调色板）；运行中切换由 App 的全局主题 effect 统一下发
   dark: boolean
+  // GPU 渲染开关（设置页「渲染」节）：开=尝试 WebGL 渲染器，失败/上下文丢失
+  // 自动回退 DOM 渲染器；关=DOM。变化即时生效，不重建终端实例
+  gpu: boolean
   onTitle: (title: string) => void
   onTerminal: (id: string, t: Terminal | null) => void
   // 右键菜单由 App 统一渲染（自绘浮层），这里只上报光标坐标
@@ -31,10 +35,11 @@ interface Thumb {
   height: number
 }
 
-export function TermView({ termId, active, fontFamily, fontSize, dark, onTitle, onTerminal, onContextMenu, onInput, onCycleTab }: Props) {
+export function TermView({ termId, active, fontFamily, fontSize, dark, gpu, onTitle, onTerminal, onContextMenu, onInput, onCycleTab }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  const webglRef = useRef<WebglAddon | null>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const [thumb, setThumb] = useState<Thumb | null>(null)
   const rafRef = useRef(0)
@@ -205,6 +210,8 @@ export function TermView({ termId, active, fontFamily, fontSize, dark, onTitle, 
       onTerminal(termId, null)
       termRef.current = null
       fitRef.current = null
+      // term.dispose() 会连带释放已挂的 WebGL addon，这里置空 ref 防二次 dispose
+      webglRef.current = null
       term.dispose()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -220,6 +227,38 @@ export function TermView({ termId, active, fontFamily, fontSize, dark, onTitle, 
     fitIfVisible()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [termId, fontFamily, fontSize])
+
+  // GPU 渲染（同字体 effect 模式：改 addon 不重建 Terminal，开关即时生效）：
+  // 开 = 尝试 WebGL 渲染器（必须在 term.open 之后 load，本 effect 声明在挂载
+  // effect 之后、同批执行，顺序天然满足）；创建抛错（驱动不支持/被开关禁用）
+  // 静默保持 DOM 渲染器。上下文丢失回调里弃用 addon 即回退 DOM——浏览器对
+  // WebGL 上下文数有上限（约 16），标签开满超额时最旧上下文被逐出，靠这条
+  // 路径自动降级，自愈不崩溃。卸载时挂载 effect 的 term.dispose() 会连带释放
+  // addon，这里再置空 ref 兜底
+  useEffect(() => {
+    const term = termRef.current
+    if (!term || !gpu) return
+    try {
+      const addon = new WebglAddon()
+      addon.onContextLoss(() => {
+        addon.dispose()
+        if (webglRef.current === addon) webglRef.current = null
+      })
+      term.loadAddon(addon)
+      webglRef.current = addon
+    } catch {
+      // WebGL 不可用：xterm 保留 DOM 渲染器，输入输出路径不受影响。但 addon 的
+      // 渲染层 canvas（xterm-link-layer 等）在创建 WebGL 上下文之前就已插进
+      // DOM，构造抛错后无人回收——每次重试都会再插一层，这里整体清扫
+      //（DOM 渲染器本身只用 div/span，元素内出现 canvas 必属半途而废的 addon）
+      term.element?.querySelectorAll('canvas').forEach((c) => c.remove())
+    }
+    return () => {
+      webglRef.current?.dispose()
+      webglRef.current = null
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [termId, gpu])
 
   return (
     <div

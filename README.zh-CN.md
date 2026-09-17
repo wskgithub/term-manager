@@ -177,6 +177,15 @@ npx electron out/main/index.js --e2e-palette --e2e-quit --no-sandbox
 npx electron out/main/index.js --e2e-profile-refresh --e2e-quit --no-sandbox
 ```
 
+```bash
+# GPU 渲染回归（判据：WebGL 主 canvas 在上下文创建成功后才入 DOM）：
+# 常规模式断言默认启用、设置开关即时切换且终端实例不重建、新建终端跟随、
+# 字号/主题变化的重绘路径不丢渲染器；加 --e2e-webgl-fallback 则在启动早期
+# 禁用 WebGL，确定性触发创建失败 → 自动回退 DOM 渲染 + 层残留清扫 + 功能完好
+npx electron out/main/index.js --e2e-webgl --e2e-quit --no-sandbox
+npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
+```
+
 ### 实测性能（20 标签托管，2026-09-09，i5/集成显卡）
 
 | 指标 | 数值 |
@@ -257,6 +266,20 @@ Esc 关闭并把焦点还给终端。覆盖四类命令：
 命令动作全部映射到应用现有回调（无新增 IPC/数据流），上下文相关项随状态
 出现与翻转（如在组内才出现移出、固定后关闭变置灰）。
 
+## GPU 渲染
+
+终端默认用 WebGL 渲染器（`@xterm/addon-webgl`）加速绘制——快速输出、大回滚
+滚动的流畅度显著好于 DOM 渲染器，字形以纹理图集驻留 GPU，无需逐帧排布 DOM。
+开箱即用、无配置：
+
+- **自动回退**：WebGL 上下文创建失败（驱动不支持/被环境禁用）或运行中丢失
+  （图形驱动重置、浏览器对上下文数量设限）时自动回退 DOM 渲染器，功能不受
+  影响；标签多到超出上下文上限时最旧的终端逐个降级，自愈不崩溃
+- **设置页开关**（终端 → 渲染）：关闭则一律 DOM 渲染，切换即时生效、不重建
+  已开终端（切换后新建的终端跟随新设置）
+- 代价：每终端一份 WebGL 上下文与字形图集，显存/内存开销略增（20 标签实测
+  约 +200MB）；受限机器可关
+
 ## 已实现 / 路线图
 
 - [x] 多标签、点击切换、关闭、退出置灰提示
@@ -274,7 +297,7 @@ Esc 关闭并把焦点还给终端。覆盖四类命令：
 - [x] Nautilus 右键菜单集成（在目录中打开 + 单实例复用窗口，随 deb 分发）
 - [x] 标签分组侧栏树视图（纵向「组 → 标签」面板取代标签栏；树内拖拽重排/入组/出组，`--e2e-sidebar` 覆盖）
 - [x] 命令面板（`Ctrl+Shift+P` 模糊搜索执行：标签/profile/切换/分组/广播/主题/侧栏/设置/退出，面板内二段改名，`--e2e-palette` 覆盖）
-- [ ] GPU 渲染（addon-webgl，硬渲染环境可选）
+- [x] GPU 渲染（addon-webgl 默认启用，创建失败/上下文丢失自动回退 DOM 渲染器，设置页可关，`--e2e-webgl` 双模式覆盖）
 - [ ] AppImage、rpm 等其他打包格式
 
 ## 备注

@@ -36,6 +36,10 @@ export interface AppSettings {
   // 标签分组侧栏树视图（默认关）：开启后左侧显示「组→标签」树形面板并
   // 隐藏顶部标签栏（侧栏承担全部管理）。仅布局偏好，不涉会话数据
   sidebarVisible: boolean
+  // GPU 渲染（默认开）：终端优先用 WebGL 渲染器（addon-webgl），创建失败
+  //（驱动不支持/被开关禁用）或运行中上下文丢失时自动回退 DOM 渲染器，功能
+  // 不受影响；关闭后一律 DOM 渲染。即时生效，不重建已开终端
+  gpuRendering: boolean
 }
 
 // 主进程 settings.ts 的兜底值，渲染层 App 也用它做异步加载前的初值
@@ -47,7 +51,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
   keepSessionOnExit: true,
   groupBroadcast: false,
-  sidebarVisible: false
+  sidebarVisible: false,
+  gpuRendering: true
 }
 
 export interface TermInfo {

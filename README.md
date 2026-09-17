@@ -151,6 +151,24 @@ Every command maps onto existing app callbacks (no new IPC or data flow);
 context-sensitive entries appear and flip with state (e.g. "leave group" only exists
 inside a group; close grays out once pinned).
 
+## GPU rendering
+
+Terminals render through the WebGL renderer (`@xterm/addon-webgl`) by default —
+fast output and large-scrollback scrolling are noticeably smoother than with the DOM
+renderer; glyphs live on the GPU in a texture atlas instead of per-frame DOM layout.
+Works out of the box, nothing to configure:
+
+- **Automatic fallback**: if the WebGL context cannot be created (driver unsupported /
+  disabled by the environment) or is lost at runtime (GPU reset, or the browser's
+  context-count limit), the terminal falls back to the DOM renderer with no functional
+  impact; when tabs exceed the context limit the oldest terminals degrade one by one
+  and self-heal — no crash
+- **Settings toggle** (Terminal → Rendering): off forces the DOM renderer everywhere;
+  the switch applies live without recreating open terminals (terminals created
+  afterwards follow the new setting)
+- The cost: one WebGL context + glyph atlas per terminal, a modest memory increase
+  (measured ~+200MB with 20 tabs); constrained machines can turn it off
+
 ## Nautilus context-menu integration
 
 The file manager's right-click menu (on a directory or in the empty area of a directory)
@@ -284,6 +302,17 @@ npx electron out/main/index.js --e2e-palette --e2e-quit --no-sandbox
 npx electron out/main/index.js --e2e-profile-refresh --e2e-quit --no-sandbox
 ```
 
+```bash
+# GPU rendering regression (discriminator: the WebGL main canvas only enters the DOM
+# after context creation succeeds). Normal mode asserts default-on, live settings
+# toggling without recreating terminal instances, new terminals following the setting,
+# and font-size/theme changes keeping the renderer; add --e2e-webgl-fallback to
+# disable WebGL early in boot, deterministically triggering creation failure →
+# automatic DOM fallback + leftover-layer cleanup + fully working terminals
+npx electron out/main/index.js --e2e-webgl --e2e-quit --no-sandbox
+npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
+```
+
 ### Measured performance (20 hosted tabs, 2026-09-09, i5/integrated graphics)
 
 | Metric | Value |
@@ -343,7 +372,9 @@ npx electron out/main/index.js --e2e-profile-refresh --e2e-quit --no-sandbox
 - [x] Command palette (`Ctrl+Shift+P` fuzzy search & run: tabs/profiles/switching/
       grouping/broadcast/theme/sidebar/settings/quit, in-palette two-step rename,
       covered by `--e2e-palette`)
-- [ ] GPU rendering (addon-webgl, optional on capable stacks)
+- [x] GPU rendering (addon-webgl on by default, automatic DOM-renderer fallback on
+      creation failure or context loss, settings toggle, covered by `--e2e-webgl` in
+      both modes)
 - [ ] AppImage, rpm and other package formats
 
 ## Notes
