@@ -7,12 +7,14 @@ import { join, resolve } from 'path'
 import { ProfileRegistry } from './profiles'
 import { SettingsStore, listMonospaceFonts } from './settings'
 import { SessionStore } from './session'
+import { ThemeRegistry } from './themes'
 import { TmuxBackend, sweepStaleServers, type TermInfo } from './tmux'
 import type { SessionTab, TabGroup } from '../shared/types'
 
 const registry = new ProfileRegistry()
 const settingsStore = new SettingsStore()
 const sessionStore = new SessionStore()
+const themes = new ThemeRegistry()
 // hub：主进程内分发终端事件（基准测试监听），同时转发给渲染进程
 const hub = new EventEmitter()
 hub.setMaxListeners(200)
@@ -217,6 +219,13 @@ function registerIpc(): void {
     return next
   })
   ipcMain.handle('settings:fonts', () => listMonospaceFonts())
+
+  // 配色方案列表：每次调用重扫 themes 目录（设置页/面板打开时拉取，
+  // 运行中新增的主题文件无需重启即可选）
+  ipcMain.handle('themes:list', () => {
+    themes.refresh()
+    return themes.list()
+  })
 
   ipcMain.handle('term:create', async (_e, profileId: string, cwd?: unknown) => {
     const profile = registry.get(profileId)
@@ -1498,6 +1507,209 @@ async function runProfileRefreshSequence(win: BrowserWindow): Promise<void> {
   }
 }
 
+// ── 自定义配色回归（--e2e-themes，环境自备）──
+// 预置：隔离 userData + themes 目录夹具（好深/浅各一、坏 JSON、坏颜色字段、
+// 保留字 id、非法文件名）。断言：加载器的丢弃路径、设置页深浅双选择器、
+// 内联 CSS 变量覆盖与级联继承、xterm 调色板「partial 显式合并」语义（未声明
+// 键继承内建而非 xterm 默认）、深浅两端独立切换、坏 id 防御回退、preapply 缓存
+async function runThemesSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string) => JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const outDir = argvFlag('--e2e-out') ?? join(app.getPath('userData'), 'e2e')
+  mkdirSync(outDir, { recursive: true })
+  const snap = async (name: string) => {
+    const img = await win.webContents.capturePage()
+    writeFileSync(join(outDir, `${name}.png`), img.toPNG())
+    console.log(`E2E_SNAP ${name}`)
+  }
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_THEME ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+  const schemeState = () => json<Record<string, unknown>>('window.__e2eSchemeState()')
+  const term = async () => {
+    const s = (await schemeState()) as {
+      dataTheme?: string
+      vars?: Record<string, string>
+      terms?: Array<{ id: string; bg: string | null; green: string | null; red: string | null }>
+    }
+    return s.terms?.[0]
+  }
+
+  const prevSettings = await js<{ theme: string; darkTheme: string; lightTheme: string }>(
+    'window.api.getSettings()'
+  )
+
+  // 1) 启动默认：深色 + 内建 Mocha，无内联变量（走 :root 级联），红绿均为 Mocha 值
+  let s = (await schemeState()) as {
+    dataTheme: string
+    vars: Record<string, string>
+    terms: Array<{ bg: string | null }>
+  }
+  let t = await term()
+  check(
+    'boot-default-mocha',
+    s.dataTheme === 'dark' &&
+      s.vars.bg === '' &&
+      s.vars.accent === '' &&
+      t?.bg === '#1e1e2e' &&
+      t?.green === '#a6e3a1' &&
+      t?.red === '#f38ba8',
+    JSON.stringify({ dataTheme: s.dataTheme, vars: s.vars, t })
+  )
+
+  // 2) 加载器集合：内建 2 + 好文件 3；坏 JSON/保留字/非法文件名整文件丢弃；
+  //    坏颜色值字段级丢弃（badcolor 的 ui 只剩 accent、terminal 整段没了）。
+  //    注意 listThemes 返回 Promise：走 js（awaitPromise 解包），不能套 JSON.stringify
+  interface ThemeListEntry {
+    id: string
+    name: string
+    type: string
+    ui?: Record<string, string>
+    terminal?: Record<string, string>
+  }
+  const themes = await js<ThemeListEntry[]>('window.api.listThemes()')
+  const ids = themes.map((x) => x.id)
+  const badcolor = themes.find((x) => x.id === 'e2e-badcolor')
+  check(
+    'themes-listed',
+    ids.filter((id) => id === 'mocha').length === 1 &&
+      ['latte', 'e2e-dusk', 'e2e-paper', 'e2e-badcolor'].every((id) => ids.includes(id)) &&
+      !ids.includes('e2e-broken') &&
+      !ids.some((id) => id.includes(' ')) &&
+      badcolor?.ui !== undefined &&
+      Object.keys(badcolor.ui).join(',') === 'accent' &&
+      badcolor.ui.accent === '#89b4fa' &&
+      badcolor.terminal === undefined,
+    JSON.stringify(ids)
+  )
+
+  // 3) 设置页双选择器：按 type 过滤分组；主题 select 仍是面板第一个（__e2eTheme 契约）
+  await js('window.__e2eSettings(true)')
+  await delay(300)
+  const firstSelOptions = await json<string[]>(
+    `[...document.querySelector('.settings-panel .settings-select').options].map(o=>o.value)`
+  )
+  const darkOptions = await json<string[]>(
+    `[...document.querySelectorAll('.settings-panel select[data-setting="darkTheme"] option')].map(o=>o.value)`
+  )
+  const lightOptions = await json<string[]>(
+    `[...document.querySelectorAll('.settings-panel select[data-setting="lightTheme"] option')].map(o=>o.value)`
+  )
+  check(
+    'scheme-selects',
+    JSON.stringify(firstSelOptions) === JSON.stringify(['dark', 'light', 'system']) &&
+      darkOptions.includes('mocha') &&
+      darkOptions.includes('e2e-dusk') &&
+      !darkOptions.includes('e2e-paper') &&
+      lightOptions.includes('latte') &&
+      lightOptions.includes('e2e-paper') &&
+      !lightOptions.includes('e2e-dusk'),
+    JSON.stringify({ firstSelOptions, darkOptions, lightOptions })
+  )
+
+  // 4) 应用自定义深色：声明的变量走内联覆盖，未声明的 surface 仍空（级联继承
+  //    内建基线）；终端背景/绿为方案值，未声明的红继承 Mocha——partial 合并语义
+  await js(`window.__e2eScheme('darkTheme', 'e2e-dusk')`)
+  await delay(300)
+  s = (await schemeState()) as typeof s
+  t = await term()
+  check(
+    'dusk-applied',
+    s.dataTheme === 'dark' &&
+      s.vars.bg === '#26251f' &&
+      s.vars.accent === '#d8a657' &&
+      s.vars.surface === '' &&
+      t?.bg === '#26251f' &&
+      t?.green === '#a9b665' &&
+      t?.red === '#f38ba8',
+    JSON.stringify({ vars: s.vars, t })
+  )
+  await snap('01-dusk')
+
+  // 5) 深浅两端独立：切浅色端用 paper，深色端的 dusk 选择不受影响；
+  //    切回深色时 dusk 恢复（跟随系统切换的通路同款）
+  await js(`window.__e2eTheme('light')`)
+  await delay(300)
+  await js(`window.__e2eScheme('lightTheme', 'e2e-paper')`)
+  await delay(300)
+  s = (await schemeState()) as typeof s
+  t = await term()
+  check(
+    'paper-light-independent',
+    s.dataTheme === 'light' &&
+      s.vars.bg === '#f5f0e8' &&
+      s.vars.accent === '#8f5e15' &&
+      t?.bg === '#f5f0e8',
+    JSON.stringify({ dataTheme: s.dataTheme, vars: s.vars, t })
+  )
+  await snap('02-paper-light')
+  await js(`window.__e2eTheme('dark')`)
+  await delay(300)
+  s = (await schemeState()) as typeof s
+  check('dusk-restored', s.dataTheme === 'dark' && s.vars.bg === '#26251f', JSON.stringify(s.vars))
+
+  // 6) preapply 缓存：dusk 生效中，localStorage 里深/浅两侧各存了对应方案的 ui
+  //    变量表，供下次启动同步预应用防首帧闪内建色
+  const cached = await json<{ dark?: Record<string, string> | null; light?: Record<string, string> | null }>(
+    `JSON.parse(localStorage.getItem('tm.schemeVars') ?? '{}')`
+  )
+  check(
+    'preapply-cache',
+    cached.dark?.bg === '#26251f' &&
+      cached.dark?.accent === '#d8a657' &&
+      cached.light?.bg === '#f5f0e8',
+    JSON.stringify(cached)
+  )
+
+  // 7) 防御回退（真实路径）：选中 dusk 后主题文件被删，重开设置页触发重扫——
+  //    pickScheme 找不到存的 id，回退该侧内建（内联变量清空、调色板回 Mocha），
+  //    下拉出现「未找到，已回退内建」占位项而不是空白
+  rmSync(join(THEMES_UD, 'themes', 'e2e-dusk.json'))
+  await pressKey(win, 'Escape')
+  await delay(250)
+  await js('window.__e2eSettings(true)')
+  await delay(450)
+  s = (await schemeState()) as typeof s
+  t = await term()
+  const staleOption = await json<string>(
+    `document.querySelector('.settings-panel select[data-setting="darkTheme"] option')?.textContent ?? ''`
+  )
+  check(
+    'deleted-file-fallback',
+    s.dataTheme === 'dark' &&
+      s.vars.bg === '' &&
+      t?.bg === '#1e1e2e' &&
+      staleOption.includes('未找到'),
+    JSON.stringify({ vars: s.vars, t, staleOption })
+  )
+
+  // 8) 还原设置（settings:set 全链路回写）并关闭设置页；同样返回 Promise，走 js
+  const final = await js<{ theme: string; darkTheme: string; lightTheme: string }>(
+    `window.api.setSettings({ theme: ${JSON.stringify(prevSettings.theme)}, darkTheme: ${JSON.stringify(
+      prevSettings.darkTheme
+    )}, lightTheme: ${JSON.stringify(prevSettings.lightTheme)} })`
+  )
+  check(
+    'settings-restored',
+    final.theme === prevSettings.theme &&
+      final.darkTheme === prevSettings.darkTheme &&
+      final.lightTheme === prevSettings.lightTheme,
+    JSON.stringify({ final, prevSettings })
+  )
+  await pressKey(win, 'Escape')
+  await delay(200)
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_THEME_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  if (argvHas('--e2e-quit')) {
+    await backend.dispose()
+    app.exit(allOk ? 0 : 1)
+  }
+}
+
 // ── GPU 渲染回归（--e2e-webgl 常规 / --e2e-webgl-fallback 回退）──
 // 判据：WebGL 渲染器的主 canvas（无类名，上下文创建成功后才入 DOM）在
 // .xterm-screen 下可查到；addon 的 link 层 canvas（xterm-link-layer）在更早的
@@ -1831,6 +2043,7 @@ const sessionE2E = __E2E__ ? argvFlag('--e2e-session') : undefined
 const sidebarE2E = __E2E__ ? argvHas('--e2e-sidebar') : false
 const paletteE2E = __E2E__ ? argvHas('--e2e-palette') : false
 const profileRefreshE2E = __E2E__ ? argvHas('--e2e-profile-refresh') : false
+const themesE2E = __E2E__ ? argvHas('--e2e-themes') : false
 const webglE2E = __E2E__ ? argvHas('--e2e-webgl') || argvHas('--e2e-webgl-fallback') : false
 const isolatedRun =
   argvHas('--smoke') ||
@@ -1839,6 +2052,7 @@ const isolatedRun =
   sidebarE2E ||
   paletteE2E ||
   profileRefreshE2E ||
+  themesE2E ||
   webglE2E ||
   sessionE2E !== undefined
 const cliOpenDir = extractOpenDir(process.argv)
@@ -1892,6 +2106,59 @@ if (profileRefreshE2E) {
   app.setPath('userData', PROF_UD)
 }
 
+// --e2e-themes 的自备环境，须在 whenReady 的 themes.load() 之前就绪：隔离
+// userData 预写 themes 目录夹具，覆盖加载器各条丢弃路径（坏 JSON / 坏颜色字段 /
+// 保留字 id / 非法文件名）与两条正常路径（深色/浅色自定义各一）
+const THEMES_UD = '/tmp/e2e-themes-ud'
+if (themesE2E) {
+  const themesDir = join(THEMES_UD, 'themes')
+  rmSync(THEMES_UD, { recursive: true, force: true })
+  mkdirSync(themesDir, { recursive: true })
+  // 好的深色方案：只声明部分 ui/terminal 字段——继承语义是断言点之一
+  writeFileSync(
+    join(themesDir, 'e2e-dusk.json'),
+    JSON.stringify({
+      name: 'E2E 黄昏',
+      type: 'dark',
+      ui: { bg: '#26251f', accent: '#d8a657' },
+      terminal: { background: '#26251f', foreground: '#d4be98', green: '#a9b665' }
+    })
+  )
+  // 好的浅色方案：字段全一点的另一套
+  writeFileSync(
+    join(themesDir, 'e2e-paper.json'),
+    JSON.stringify({
+      name: 'E2E 纸白',
+      type: 'light',
+      ui: { bg: '#f5f0e8', accent: '#8f5e15' },
+      terminal: { background: '#f5f0e8', foreground: '#4f4538' }
+    })
+  )
+  // 坏 JSON：整文件丢弃
+  writeFileSync(join(themesDir, 'e2e-broken.json'), '{ not json')
+  // 好结构 + 坏颜色值：字段级丢弃，主题本身保留（断言 ui 里只剩好字段）
+  writeFileSync(
+    join(themesDir, 'e2e-badcolor.json'),
+    JSON.stringify({
+      name: 'E2E 坏色',
+      type: 'dark',
+      ui: { bg: 'notacolor', accent: '#89b4fa' },
+      terminal: { background: 'javascript:' }
+    })
+  )
+  // 保留字 id：文件被跳过，内建 mocha 不受影响
+  writeFileSync(
+    join(themesDir, 'mocha.json'),
+    JSON.stringify({ name: '假 Mocha', type: 'dark', ui: { bg: '#ff0000' } })
+  )
+  // 非法文件名（含空格）：跳过
+  writeFileSync(
+    join(themesDir, 'e2e bad name.json'),
+    JSON.stringify({ name: '坏名', type: 'dark' })
+  )
+  app.setPath('userData', THEMES_UD)
+}
+
 if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null })) {
   // 第二实例：目录已通过 additionalData 带给首实例，自己直接退出
   app.quit()
@@ -1908,6 +2175,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
     registry.load()
     settingsStore.load()
     sessionStore.load()
+    themes.load()
     // 启动即按存档主题定向：dark/light 覆盖，system 交给系统偏好；
     // 必须在 createWindow 之前，窗口装饰（darkTheme）取的是此刻的有效值
     nativeTheme.themeSource = settingsStore.get().theme
@@ -1969,6 +2237,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
           argvHas('--e2e-sidebar') ||
           argvHas('--e2e-palette') ||
           profileRefreshE2E ||
+          themesE2E ||
           webglE2E) &&
         mainWindow
       ) {
@@ -1985,6 +2254,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
               else if (argvHas('--e2e-sidebar')) await runSidebarSequence(win)
               else if (argvHas('--e2e-palette')) await runPaletteSequence(win)
               else if (profileRefreshE2E) await runProfileRefreshSequence(win)
+              else if (themesE2E) await runThemesSequence(win)
               else if (webglE2E) await runWebglSequence(win)
               else await runE2ESequence(win, n)
             })

@@ -59,7 +59,8 @@ Open via the settings entry at the bottom of the `+` dropdown, or `Ctrl+,` (layo
 Windows Terminal: category navigation on the left — "Appearance" and "Terminal"):
 
 - **Theme**: dark / light / follow-system, applied live (including the native title bar —
-  on X11 it follows instantly via `_GTK_THEME_VARIANT`).
+  on X11 it follows instantly via `_GTK_THEME_VARIANT`). Two additional selects pick the
+  color scheme for each side (see [Custom themes](#custom-themes) below).
 - **Font**: dropdown of local monospace fonts (enumerated by the main process via
   `fc-list :mono`). The default "auto" is a Nerd-Font-first stack
   (`JetBrainsMono Nerd Font` → `FiraCode Nerd Font` → … → CJK monospace fallback);
@@ -74,6 +75,37 @@ Windows Terminal: category navigation on the left — "Appearance" and "Terminal
   (**off by default**, see [Group broadcast](#group-broadcast) below).
 
 Changes apply immediately to all open terminals and persist to `settings.json`.
+
+## Custom themes
+
+Beyond the built-in Catppuccin Mocha/Latte pair, color schemes are plain data files: drop
+a JSON into `~/.config/term-manager/themes/` and it appears in the settings page (the
+directory is created on first launch). The mode setting (dark/light/follow-system) stays
+as-is; **Dark scheme / Light scheme** selects independently pick what each side uses —
+follow-system switches between the two.
+
+```json
+{
+  "name": "Gruvbox Dark",
+  "type": "dark",
+  "ui": { "bg": "#282828", "accent": "#b8bb26" },
+  "terminal": { "background": "#282828", "foreground": "#ebdbb2", "green": "#98971a" }
+}
+```
+
+- `type` declares which side the scheme belongs to (drives which select lists it).
+- `ui` overrides the whitelisted CSS variables (17 keys — the app chrome palette);
+  values are `#hex` or `rgba()` only. `terminal` overrides the xterm palette
+  (background/foreground/cursor/selection + 16 ANSI colors).
+- Any field you don't declare **inherits from the built-in scheme of that side** (the
+  terminal palette is explicitly merged onto builtins — undeclared ANSI colors keep the
+  Catppuccin values rather than falling back to xterm defaults).
+- The filename (without `.json`) becomes the scheme id; `mocha`/`latte` are reserved.
+  Bad JSON files are skipped, invalid color fields are dropped individually (with a log),
+  never taking the app down. Selecting a scheme whose file later disappears falls back
+  to the built-in side automatically.
+- Files are re-scanned whenever the settings page or command palette opens — edit or add
+  themes while running, no restart needed. Pure local data: no code execution, no network.
 
 ## Session persistence
 
@@ -194,6 +226,7 @@ src/
 │   ├── tmux.ts      # tmux Control Mode backend (session hosting / input / output / resize / attach & replay)
 │   ├── profiles.ts  # profile registry (JSON persistence)
 │   ├── settings.ts  # app settings (font/size) + fc-list font enumeration
+│   ├── themes.ts    # color-scheme directory loader (themes/*.json, read-only)
 │   └── session.ts   # session persistence (sessions.json: attach candidate + tab metadata)
 ├── preload/         # contextBridge API
 └── renderer/src/
@@ -303,6 +336,17 @@ npx electron out/main/index.js --e2e-profile-refresh --e2e-quit --no-sandbox
 ```
 
 ```bash
+# Custom color-scheme regression (self-contained env: isolated userData with a themes/
+# directory fixture — good dark/light files, broken JSON, bad color fields, a reserved
+# builtin id, an illegal filename). Asserts loader drop paths, the settings-page dark/light
+# scheme selects, inline CSS-variable overrides with cascade inheritance, the explicit
+# partial-palette merge onto builtins (undeclared ANSI colors inherit instead of falling
+# back to xterm defaults), independent dark/light switching, defensive fallback when a
+# selected file is deleted (settings page rescan), and the anti-flash preapply cache
+npx electron out/main/index.js --e2e-themes --e2e-quit --no-sandbox
+```
+
+```bash
 # GPU rendering regression (discriminator: the WebGL main canvas only enters the DOM
 # after context creation succeeds). Normal mode asserts default-on, live settings
 # toggling without recreating terminal instances, new terminals following the setting,
@@ -375,6 +419,11 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
 - [x] GPU rendering (addon-webgl on by default, automatic DOM-renderer fallback on
       creation failure or context loss, settings toggle, covered by `--e2e-webgl` in
       both modes)
+- [x] Custom themes (color schemes as data files in the themes directory: UI CSS
+      variables + xterm palette with field-level inheritance from builtins, dark/light
+      scheme selects per side, covered by `--e2e-themes`)
+- [ ] Declarative plugins (manifest-based profiles / palette commands / theme packs —
+      zero code execution, zero network; code-level extension API is a later stage)
 - [ ] AppImage, rpm and other package formats
 
 ## Notes

@@ -16,6 +16,68 @@ export interface Profile {
 
 export type ThemeOption = 'dark' | 'light' | 'system'
 
+// ── 自定义配色方案（themes 目录数据化）──
+// UI 侧可覆盖的 CSS 变量白名单（index.css 的 :root 变量去掉 --shadow-lg——
+// 完整 box-shadow 串无法安全校验，维持按深浅内建；color-scheme 非变量）
+export type ThemeUiVar =
+  | 'bg'
+  | 'bg-deep'
+  | 'bg-inset'
+  | 'surface'
+  | 'surface-hover'
+  | 'text'
+  | 'text-bright'
+  | 'accent'
+  | 'warn'
+  | 'hairline'
+  | 'hover-wash'
+  | 'menu-bg'
+  | 'kbd'
+  | 'kbd-strong'
+  | 'thumb'
+  | 'thumb-hover'
+  | 'thumb-active'
+
+// 终端侧可覆盖的 xterm 颜色键（前景/光标/选区 + ANSI 16 色），键名与 ITheme 对齐
+export type ThemeColorKey =
+  | 'background'
+  | 'foreground'
+  | 'cursor'
+  | 'cursorAccent'
+  | 'selectionBackground'
+  | 'selectionForeground'
+  | 'black'
+  | 'red'
+  | 'green'
+  | 'yellow'
+  | 'blue'
+  | 'magenta'
+  | 'cyan'
+  | 'white'
+  | 'brightBlack'
+  | 'brightRed'
+  | 'brightGreen'
+  | 'brightYellow'
+  | 'brightBlue'
+  | 'brightMagenta'
+  | 'brightCyan'
+  | 'brightWhite'
+
+// themes/*.json 的文件形态：type 声明归属深/浅（跟随系统切换在两端各自生效），
+// ui/terminal 均可缺省——缺省字段继承同侧内建（UI 靠 CSS 级联，终端靠解析时显式合并）
+export interface ThemeFile {
+  name: string
+  type: 'dark' | 'light'
+  ui?: Partial<Record<ThemeUiVar, string>>
+  terminal?: Partial<Record<ThemeColorKey, string>>
+}
+
+// 加载后的完整方案：id 来自文件名 stem（内建为 mocha/latte）
+export interface ThemeDef extends ThemeFile {
+  id: string
+  builtin: boolean
+}
+
 export interface AppSettings {
   // 空串 = 自动（渲染层解析为 Nerd Font 优先栈，见 renderer/fonts.ts）
   fontFamily: string
@@ -27,6 +89,11 @@ export interface AppSettings {
   // 界面主题三态：深/浅/跟随系统。主进程把它映射到 nativeTheme.themeSource，
   // 同时驱动 Linux 窗口装饰（darkTheme）与渲染层 prefers-color-scheme
   theme: ThemeOption
+  // 深/浅两端各自的配色方案 id（themes 目录数据化的选择项）：跟随系统时
+  // 系统深用 darkTheme、系统浅用 lightTheme，两端独立。只做字符串清洗，
+  // 不校验存在性——方案列表归 ThemeRegistry 管，渲染层解析不到时回退内建
+  darkTheme: string
+  lightTheme: string
   // 退出时保留 tmux 会话（下次启动附着恢复）。Ctrl+Shift+Q 可随时显式终结
   keepSessionOnExit: boolean
   // 组内广播输入总开关（默认关）：开启后组头出现广播开关，广播中的组内
@@ -49,6 +116,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fontSize: 14,
   defaultProfileId: '',
   theme: 'dark',
+  darkTheme: 'mocha',
+  lightTheme: 'latte',
   keepSessionOnExit: true,
   groupBroadcast: false,
   sidebarVisible: false,

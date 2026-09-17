@@ -4,7 +4,8 @@ import type {
   Profile,
   RestoredSession,
   SessionUiSync,
-  TermInfo
+  TermInfo,
+  ThemeDef
 } from '../shared/types'
 
 export type { RestoredSession, SessionUiSync } from '../shared/types'
@@ -15,6 +16,7 @@ const api = {
   setSettings: (patch: Partial<AppSettings>): Promise<AppSettings> =>
     ipcRenderer.invoke('settings:set', patch),
   listFonts: (): Promise<string[]> => ipcRenderer.invoke('settings:fonts'),
+  listThemes: (): Promise<ThemeDef[]> => ipcRenderer.invoke('themes:list'),
   createTerm: (profileId: string, cwd?: string): Promise<TermInfo> =>
     ipcRenderer.invoke('term:create', profileId, cwd),
   cliReady: (): Promise<string[]> => ipcRenderer.invoke('cli:ready'),

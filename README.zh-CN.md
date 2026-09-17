@@ -51,7 +51,8 @@ PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会�
 
 `＋` 下拉菜单底部的设置项或 `Ctrl+,` 打开设置页（结构仿 Windows Terminal，左侧分类导航，含"外观/终端"两类）：
 
-- **主题**：深色 / 浅色 / 跟随系统三态，实时切换（含原生标题栏跟随，X11 下经 `_GTK_THEME_VARIANT` 热生效）。
+- **主题**：深色 / 浅色 / 跟随系统三态，实时切换（含原生标题栏跟随，X11 下经 `_GTK_THEME_VARIANT` 热生效）；
+  另有「深色配色」「浅色配色」两个选择器独立挑选两侧的配色方案（见下节[自定义主题](#自定义主题)）。
 - **字体**：下拉列出本机等宽字体（主进程 `fc-list :mono` 枚举）。默认"自动"= Nerd Font 优先栈
   （`JetBrainsMono Nerd Font` → `FiraCode Nerd Font` → … → CJK 等宽回退），显式选择纯拉丁字体时自动追加中文等宽回退。
 - **字号**：8–48 像素，步进器或直接输入。
@@ -60,6 +61,33 @@ PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会�
 - **会话**（终端页）：「退出时保留会话」开关（默认开，见下节[会话保持](#会话保持)）。
 - **组内广播**（终端页）：「广播输入到全组」开关（**默认关**，开启后见[组内广播](#组内广播)）。
 - 改动即时应用到所有已开终端并写入 `settings.json`，重启保持。
+
+## 自定义主题
+
+内建深/浅两套（Catppuccin Mocha/Latte）之外，配色方案就是纯数据文件：往
+`~/.config/term-manager/themes/` 放一个 JSON 即出现在设置页（目录首次启动自动创建）。
+主题三态（深/浅/跟随系统）语义不变，**「深色配色」「浅色配色」各自独立选择**——
+跟随系统时系统深用前者、系统浅用后者。
+
+```json
+{
+  "name": "Gruvbox Dark",
+  "type": "dark",
+  "ui": { "bg": "#282828", "accent": "#b8bb26" },
+  "terminal": { "background": "#282828", "foreground": "#ebdbb2", "green": "#98971a" }
+}
+```
+
+- `type` 声明归属深/浅侧（决定出现在哪个选择器里）。
+- `ui` 覆盖白名单内的 CSS 变量（17 个键，应用界面观感），取值仅接受 `#hex` 或
+  `rgba()`；`terminal` 覆盖 xterm 调色板（前后景/光标/选区 + ANSI 16 色）。
+- **未声明的字段继承该侧内建**：终端调色板在解析时与内建显式合并——没写的
+  ANSI 色保持 Catppuccin 值，而不是退回 xterm 默认。
+- 文件名（去 `.json`）即方案 id，`mocha`/`latte` 为保留字。坏 JSON 整文件跳过、
+  坏颜色值逐字段丢弃（均有日志），不拖垮应用；选中的方案文件后来被删则自动
+  回退该侧内建。
+- 设置页/命令面板打开时重扫目录——运行中编辑、新增主题无需重启。纯本地
+  数据：不执行代码、不联网。
 
 ## Nautilus 右键集成
 
@@ -81,6 +109,7 @@ src/
 │   ├── tmux.ts      # tmux Control Mode 后端（会话托管/输入/输出/尺寸/附着恢复/屏幕回放）
 │   ├── profiles.ts  # profile 注册表（JSON 持久化）
 │   ├── settings.ts  # 应用设置（字体/字号）+ fc-list 字体枚举
+│   ├── themes.ts    # 配色方案目录加载器（themes/*.json，只读）
 │   └── session.ts   # 会话持久化（sessions.json：附着候选判定 + 标签元数据落盘）
 ├── preload/         # contextBridge API
 └── renderer/src/
@@ -175,6 +204,15 @@ npx electron out/main/index.js --e2e-palette --e2e-quit --no-sandbox
 # 运行中写入/删除假 shell 模拟安装/卸载，断言 profiles:list 每次重探、＋菜单与
 # 命令面板打开时渲染层重拉、新装内建 shell 补齐、变化落盘 profiles.json
 npx electron out/main/index.js --e2e-profile-refresh --e2e-quit --no-sandbox
+```
+
+```bash
+# 自定义配色回归（环境自备：隔离 userData 预写 themes/ 夹具——好深/浅各一、坏 JSON、
+# 坏颜色字段、保留字 id、非法文件名）：断言加载器丢弃路径、设置页深浅双选择器、
+# 内联 CSS 变量覆盖与级联继承、xterm 调色板与内建的显式合并（未声明 ANSI 色继承
+# 而非退回 xterm 默认）、深浅两端独立切换、选中文件被删的防御回退（设置页重扫）、
+# 防首帧闪色的 preapply 缓存
+npx electron out/main/index.js --e2e-themes --e2e-quit --no-sandbox
 ```
 
 ```bash
@@ -298,6 +336,8 @@ Esc 关闭并把焦点还给终端。覆盖四类命令：
 - [x] 标签分组侧栏树视图（纵向「组 → 标签」面板取代标签栏；树内拖拽重排/入组/出组，`--e2e-sidebar` 覆盖）
 - [x] 命令面板（`Ctrl+Shift+P` 模糊搜索执行：标签/profile/切换/分组/广播/主题/侧栏/设置/退出，面板内二段改名，`--e2e-palette` 覆盖）
 - [x] GPU 渲染（addon-webgl 默认启用，创建失败/上下文丢失自动回退 DOM 渲染器，设置页可关，`--e2e-webgl` 双模式覆盖）
+- [x] 自定义主题（themes 目录数据化配色方案：UI CSS 变量 + xterm 调色板，未声明字段逐项继承内建，深/浅双选择器独立，`--e2e-themes` 覆盖）
+- [ ] 声明式插件（manifest 注入 profile/面板命令/主题包——零代码执行零网络；代码级扩展 API 是后续阶段）
 - [ ] AppImage、rpm 等其他打包格式
 
 ## 备注

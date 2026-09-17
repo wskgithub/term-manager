@@ -3,17 +3,17 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
-import { api } from './api'
+import { api, type ThemeDef } from './api'
 import { resolveFontStack } from './fonts'
-import { xtermTheme } from './theme'
 
 interface Props {
   termId: string
   active: boolean
   fontFamily: string
   fontSize: number
-  // 创建实例时的深浅（决定初始调色板）；运行中切换由 App 的全局主题 effect 统一下发
-  dark: boolean
+  // 创建实例时的生效配色方案（决定初始调色板，已与内建合并成完整 22 键）；
+  // 运行中切换由 App 的全局主题 effect 统一下发，这里不订阅
+  scheme: ThemeDef
   // GPU 渲染开关（设置页「渲染」节）：开=尝试 WebGL 渲染器，失败/上下文丢失
   // 自动回退 DOM 渲染器；关=DOM。变化即时生效，不重建终端实例
   gpu: boolean
@@ -35,7 +35,7 @@ interface Thumb {
   height: number
 }
 
-export function TermView({ termId, active, fontFamily, fontSize, dark, gpu, onTitle, onTerminal, onContextMenu, onInput, onCycleTab }: Props) {
+export function TermView({ termId, active, fontFamily, fontSize, scheme, gpu, onTitle, onTerminal, onContextMenu, onInput, onCycleTab }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -129,7 +129,7 @@ export function TermView({ termId, active, fontFamily, fontSize, dark, gpu, onTi
       fontSize: latest.current.fontSize,
       cursorBlink: true,
       scrollback: 2000,
-      theme: xtermTheme(dark)
+      theme: scheme.terminal
     })
     const fit = new FitAddon()
     term.loadAddon(fit)

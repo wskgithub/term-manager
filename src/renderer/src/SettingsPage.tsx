@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, type AppSettings, type Profile } from './api'
+import { api, type AppSettings, type Profile, type ThemeDef } from './api'
 import { resolveFontStack } from './fonts'
 
 const FONT_SIZE_MIN = 8
@@ -19,12 +19,14 @@ type SectionKey = (typeof NAV_ITEMS)[number]['key']
 interface Props {
   settings: AppSettings
   profiles: Profile[]
+  // 可选配色方案（App 持有，内建 + themes 目录自定义；设置页打开时 App 会重扫）
+  themes: ThemeDef[]
   onChange: (patch: Partial<AppSettings>) => void
   onClose: () => void
 }
 
-/** 设置页（外观 → 字体/字号；终端 → 默认终端），结构对齐 Windows Terminal，左侧导航便于后续扩展 */
-export function SettingsPage({ settings, profiles, onChange, onClose }: Props) {
+/** 设置页（外观 → 主题/配色/字体/字号；终端 → 默认终端），结构对齐 Windows Terminal，左侧导航便于后续扩展 */
+export function SettingsPage({ settings, profiles, themes, onChange, onClose }: Props) {
   const [section, setSection] = useState<SectionKey>('appearance')
   const [fonts, setFonts] = useState<string[]>([])
   const [sizeDraft, setSizeDraft] = useState(String(settings.fontSize))
@@ -80,6 +82,15 @@ export function SettingsPage({ settings, profiles, onChange, onClose }: Props) {
       ? [{ id: settings.defaultProfileId, name: settings.defaultProfileId, available: false } as Profile, ...profiles]
       : profiles
 
+  // 配色下拉按方案 type 过滤；存值指向已删除的主题文件时补一项占位（实际生效
+  // 的是 pickScheme 的内建回退，占位只为让已存值可见不空白）
+  const schemeOptions = (type: 'dark' | 'light', selected: string): ThemeDef[] => {
+    const list = themes.filter((t) => t.type === type)
+    return list.some((t) => t.id === selected)
+      ? list
+      : [{ id: selected, name: `${selected}（未找到，已回退内建）`, type, builtin: false }, ...list]
+  }
+
   return (
     <div className="settings" ref={rootRef} tabIndex={-1}>
       <div className="settings-header">
@@ -115,6 +126,40 @@ export function SettingsPage({ settings, profiles, onChange, onClose }: Props) {
                 <option value="system">跟随系统</option>
               </select>
               <span className="settings-hint">跟随系统时随系统深色模式自动切换</span>
+            </div>
+            {/* 两行配色选择必须排在「主题」select 之后：e2e 的 __e2eTheme 取
+                面板里第一个 .settings-select，DOM 顺序即契约 */}
+            <div className="settings-row">
+              <label className="settings-label">深色配色</label>
+              <select
+                className="settings-select"
+                data-setting="darkTheme"
+                value={settings.darkTheme}
+                onChange={(e) => onChange({ darkTheme: e.target.value })}
+              >
+                {schemeOptions('dark', settings.darkTheme).map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+              <span className="settings-hint">深色模式（含系统深）时生效，自定义主题放 ~/.config/term-manager/themes/</span>
+            </div>
+            <div className="settings-row">
+              <label className="settings-label">浅色配色</label>
+              <select
+                className="settings-select"
+                data-setting="lightTheme"
+                value={settings.lightTheme}
+                onChange={(e) => onChange({ lightTheme: e.target.value })}
+              >
+                {schemeOptions('light', settings.lightTheme).map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+              <span className="settings-hint">浅色模式（含系统浅）时生效，方案未声明的字段继承内建</span>
             </div>
             <div className="settings-row">
               <label className="settings-label">字体</label>

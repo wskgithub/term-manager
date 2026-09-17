@@ -161,7 +161,9 @@ export function setupE2E(ctx: E2ECtx): void {
   }
 
   // 主题切换（配合 __e2eSettings(true) 使用）：改真实设置页下拉并派发 change，
-  // 走 onChange → applySettings → settings:set → nativeTheme 全链路
+  // 走 onChange → applySettings → settings:set → nativeTheme 全链路。
+  // 注意取的是面板里第一个 .settings-select（即「主题」行），配色两行的
+  // select 必须排在它之后（SettingsPage 有对应契约注释）
   w.__e2eTheme = (theme: string) => {
     const sel = document.querySelector<HTMLSelectElement>('.settings-panel .settings-select')
     if (!sel) return false
@@ -169,6 +171,36 @@ export function setupE2E(ctx: E2ECtx): void {
     sel.dispatchEvent(new Event('change', { bubbles: true }))
     return true
   }
+
+  // 深浅配色切换（配合 __e2eSettings(true) 使用）：按 data-setting 定位配色下拉，
+  // 走 onChange → applySettings → pickScheme → 内联变量/调色板下发全链路
+  w.__e2eScheme = (which: 'darkTheme' | 'lightTheme', id: string) => {
+    const sel = document.querySelector<HTMLSelectElement>(
+      `.settings-panel select[data-setting="${which}"]`
+    )
+    if (!sel) return false
+    sel.value = id
+    sel.dispatchEvent(new Event('change', { bubbles: true }))
+    return true
+  }
+
+  /** 配色生效快照（--e2e-themes 断言用）：dataset 深浅、内联 CSS 变量抽样
+      （空串=未覆盖、走级联内建）、各终端调色板抽样（bg/green=方案可声明，
+      red=断言「未声明键继承内建」的对照键） */
+  w.__e2eSchemeState = () => ({
+    dataTheme: document.documentElement.dataset.theme,
+    vars: {
+      bg: document.documentElement.style.getPropertyValue('--bg'),
+      accent: document.documentElement.style.getPropertyValue('--accent'),
+      surface: document.documentElement.style.getPropertyValue('--surface'),
+    },
+    terms: [...ctx.terms.current.entries()].map(([id, t]) => ({
+      id,
+      bg: t.options.theme?.background ?? null,
+      green: t.options.theme?.green ?? null,
+      red: t.options.theme?.red ?? null,
+    })),
+  })
 
   // 标签右键菜单驱动（--e2e-tab-menu）：对第 tabIndex 个 .tab 派发真实 contextmenu，
   // 等 React 渲染出浮层后按 data-key 点菜单项，走 onContextMenu → ContextMenu action 全链路。

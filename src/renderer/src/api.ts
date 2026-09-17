@@ -6,7 +6,8 @@ import type {
   RestoredSession,
   SessionUiSync,
   TabGroup,
-  TermInfo
+  TermInfo,
+  ThemeDef
 } from '../../shared/types'
 
 export type {
@@ -15,7 +16,8 @@ export type {
   TermInfo,
   TabGroup,
   RestoredSession,
-  SessionUiSync
+  SessionUiSync,
+  ThemeDef
 } from '../../shared/types'
 export { DEFAULT_SETTINGS } from '../../shared/types'
 
@@ -56,6 +58,7 @@ export interface Api {
   getSettings(): Promise<AppSettings>
   setSettings(patch: Partial<AppSettings>): Promise<AppSettings>
   listFonts(): Promise<string[]>
+  listThemes(): Promise<ThemeDef[]>
   createTerm(profileId: string, cwd?: string): Promise<TermInfo>
   cliReady(): Promise<string[]>
   restoreSession(): Promise<RestoredSession | null>
