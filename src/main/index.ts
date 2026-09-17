@@ -1049,6 +1049,12 @@ async function runPaletteSequence(win: BrowserWindow): Promise<void> {
   const paneHas = (idx: number, sub: string) =>
     json<boolean>(`window.__e2ePaneHas(${idx}, ${JSON.stringify(sub)})`)
 
+  // 真实显示器上物理鼠标指针可能恰好停在面板列表区域：Chromium 会给指针下的
+  // 命令项派发 mouseenter，面板的悬停选中会把初始选中从 0 挪走（悬停选中本身
+  // 是正常产品行为）。先合成一次鼠标移动把指针带离面板区，断言才不受环境影响
+  win.webContents.sendInputEvent({ type: 'mouseMove', x: 640, y: 600 })
+  await delay(150)
+
   // 记录用户原设置（结束还原）：getSettings 返回 Promise，须 executeJavaScript 解析
   const prevSettings = await js<{ sidebarVisible: boolean; groupBroadcast: boolean; theme: string }>(
     'window.api.getSettings()'
@@ -1466,6 +1472,177 @@ async function runProfileRefreshSequence(win: BrowserWindow): Promise<void> {
   }
 }
 
+// ── GPU 渲染回归（--e2e-webgl 常规 / --e2e-webgl-fallback 回退）──
+// 判据：WebGL 渲染器的主 canvas（无类名，上下文创建成功后才入 DOM）在
+// .xterm-screen 下可查到；addon 的 link 层 canvas（xterm-link-layer）在更早的
+// 构造期插入、失败路径会残留，判据用 :not() 排除。常规模式（GPU 可用）：默认
+// 开启生效、设置开关即时切换且不重建终端实例、新建终端跟随、字号/主题变化的
+// 重绘路径不丢渲染器；回退模式在启动早期禁用 WebGL，确定性触发创建失败 →
+// 全部 DOM + 层残留清扫 + 功能完好
+
+interface RenderEntry {
+  id: string
+  canvas: boolean
+}
+
+async function runWebglSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string) => JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const outDir = argvFlag('--e2e-out') ?? join(app.getPath('userData'), 'e2e')
+  mkdirSync(outDir, { recursive: true })
+  const snap = async (name: string) => {
+    const img = await win.webContents.capturePage()
+    writeFileSync(join(outDir, `${name}.png`), img.toPNG())
+    console.log(`E2E_SNAP ${name}`)
+  }
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_WEBGL ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+  const renderState = () => js<RenderEntry[]>('window.__e2eRenderState()')
+  const allCanvas = async () => (await renderState()).every((e) => e.canvas)
+  const noCanvas = async () => (await renderState()).every((e) => !e.canvas)
+  const paneHas = (idx: number, sub: string) =>
+    json<boolean>(`window.__e2ePaneHas(${idx}, ${JSON.stringify(sub)})`)
+  const startTabs = async (n: number) => {
+    await js(`window.__e2eStart(${n})`)
+    await waitUntil(
+      async () =>
+        await json<boolean>(`window.__e2e && window.__e2e.done && window.__e2e.created >= ${n}`),
+      60000
+    )
+  }
+  // 在最后一个终端打 echo 标记并等回显到达（__e2eStart 后焦点/activeId 都在最后一个）
+  const echo = async (tag: string) => {
+    const marker = `${tag}_${randomUUID().slice(0, 8)}`
+    await js(`window.__e2ePaste(${JSON.stringify(`echo ${marker}`)})`)
+    await delay(600)
+    return marker
+  }
+  // 设置页「终端」节开关 GPU（同 palette 套件的 setViaSettingsPage 模式）
+  const setGpu = async (on: boolean): Promise<boolean> => {
+    await js('window.__e2eSettings && window.__e2eSettings(true)')
+    await delay(300)
+    await js(`document.querySelectorAll('.settings-nav-item')[1]?.click()`)
+    await delay(200)
+    const ok = await js<boolean>(
+      `(() => { const cb = document.querySelector('[data-setting="gpuRendering"]'); ` +
+        `if (!cb) return false; if (cb.checked !== ${on}) cb.click(); return cb.checked === ${on} })()`
+    )
+    await delay(250)
+    await js('window.__e2eSettings && window.__e2eSettings(false)')
+    await delay(150)
+    return ok
+  }
+
+  // 回退模式：WebGL 被禁用，addon 创建必走 catch → 全部 DOM 渲染、输入输出完好
+  if (argvHas('--e2e-webgl-fallback')) {
+    await startTabs(1)
+    const rs = await renderState()
+    check(
+      'fallback-no-canvas',
+      rs.length >= 2 && rs.every((e) => !e.canvas),
+      JSON.stringify(rs)
+    )
+    const marker = await echo('WGLF')
+    check('fallback-echo-ok', await paneHas(1, marker))
+    // 失败路径的层残留必须被清扫（DOM 渲染器元素内不应有任何 canvas），且反复
+    // 开关 GPU（每次都重试失败）不会越积越多
+    const residue = async () =>
+      (await js<number>('document.querySelectorAll(".term-mount canvas").length')) === 0
+    check('fallback-no-residue', await residue())
+    const toggled =
+      (await setGpu(false)) && (await setGpu(true)) && (await delay(300), await residue())
+    check('fallback-toggle-still-clean', toggled)
+    await snap('01-fallback-dom')
+    const fbOk = !results.some((r) => r.startsWith('FAIL:'))
+    console.log('E2E_WEBGL_RESULT ' + JSON.stringify({ ok: fbOk, mode: 'fallback', results }))
+    if (argvHas('--e2e-quit')) {
+      await backend.dispose()
+      app.exit(fbOk ? 0 : 1)
+    }
+    return
+  }
+
+  // ── 常规模式 ──
+  const prev = await js<{ gpuRendering: boolean; theme: string; fontSize: number }>(
+    'window.api.getSettings()'
+  )
+
+  // 1) 默认设置（gpuRendering=true）下裸启动 + 追加 1 = 2 个终端全 WebGL，
+  //    输入→后端→shell→回显→WebGL 绘制链路完整
+  await startTabs(1)
+  const rs0 = await renderState()
+  check('webgl-active', rs0.length >= 2 && rs0.every((e) => e.canvas), JSON.stringify(rs0))
+  const m1 = await echo('WGL1')
+  check('webgl-echo-ok', await paneHas(1, m1))
+  await snap('01-webgl-active')
+
+  // 2) 设置关 → 同一批终端实例（id 不变，验证不重建）即时回 DOM，输入仍通
+  const ids0 = (await renderState()).map((e) => e.id).join(',')
+  check('toggle-off-dom', (await setGpu(false)) && (await noCanvas()))
+  const ids1 = (await renderState()).map((e) => e.id).join(',')
+  check('toggle-keeps-instances', ids0 === ids1, `${ids0} -> ${ids1}`)
+  const m2 = await echo('WGL2')
+  check('dom-echo-ok', await paneHas(1, m2))
+
+  // 3) 设置开 → canvas 回到全部终端
+  check('toggle-on-webgl', (await setGpu(true)) && (await allCanvas()))
+
+  // 4) 之后新建的终端跟随 WebGL
+  await startTabs(1)
+  const rs2 = await renderState()
+  check('new-tab-webgl', rs2.length >= 3 && rs2.every((e) => e.canvas), JSON.stringify(rs2))
+
+  // 5) WebGL 激活下改字号（字形纹理图集重建）与切主题（调色板重传）：
+  //    外观节的步进器/下拉走真实 onChange → applySettings，重绘后渲染器不丢
+  await js('window.__e2eSettings && window.__e2eSettings(true)')
+  await delay(300)
+  const fontOk = await js<boolean>(
+    `(() => { const inp = document.querySelector('.stepper input'); if (!inp) return false; ` +
+      `const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set; ` +
+      `setter?.call(inp, '16'); inp.dispatchEvent(new Event('input', { bubbles: true })); ` +
+      `inp.blur(); return true })()`
+  )
+  await delay(400)
+  const themeOk = await js<boolean>('window.__e2eTheme && window.__e2eTheme("light")')
+  await delay(400)
+  const themeNow = await js<string>('document.documentElement.dataset.theme')
+  check(
+    'restyle-keeps-webgl',
+    fontOk && themeOk && themeNow === 'light' && (await allCanvas()),
+    `fontOk=${fontOk} themeOk=${themeOk} dataset=${themeNow}`
+  )
+  await snap('02-webgl-restyled')
+  await js('window.__e2eSettings && window.__e2eSettings(false)')
+  await delay(150)
+
+  // 6) 还原（字号/主题/GPU 走 IPC 直写主进程；进程即将退出，渲染层内存态无需跟随）
+  await js(
+    `window.api.setSettings({ gpuRendering: ${prev.gpuRendering}, fontSize: ${prev.fontSize}, ` +
+      `theme: '${prev.theme}' })`
+  )
+  const final = await js<{ gpuRendering: boolean; theme: string; fontSize: number }>(
+    'window.api.getSettings()'
+  )
+  check(
+    'settings-restored',
+    final.gpuRendering === prev.gpuRendering &&
+      final.theme === prev.theme &&
+      final.fontSize === prev.fontSize,
+    JSON.stringify({ final, prev })
+  )
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_WEBGL_RESULT ' + JSON.stringify({ ok: allOk, mode: 'normal', results }))
+  if (argvHas('--e2e-quit')) {
+    await backend.dispose()
+    app.exit(allOk ? 0 : 1)
+  }
+}
+
 // ── 会话保持两段回归（--e2e-session=phase1 / phase2，共享 --e2e-user-data）──
 // phase1：建标签 + pin + 建组 + 改名 + 输入标记串 → 保留退出（detach）；
 // phase2：附着恢复 → 断言标签数/固定/分组/改名态/屏幕回放/可继续交互 → 终结清场。
@@ -1628,6 +1805,7 @@ const sessionE2E = __E2E__ ? argvFlag('--e2e-session') : undefined
 const sidebarE2E = __E2E__ ? argvHas('--e2e-sidebar') : false
 const paletteE2E = __E2E__ ? argvHas('--e2e-palette') : false
 const profileRefreshE2E = __E2E__ ? argvHas('--e2e-profile-refresh') : false
+const webglE2E = __E2E__ ? argvHas('--e2e-webgl') || argvHas('--e2e-webgl-fallback') : false
 const isolatedRun =
   argvHas('--smoke') ||
   argvFlag('--e2e-tabs') !== undefined ||
@@ -1635,8 +1813,19 @@ const isolatedRun =
   sidebarE2E ||
   paletteE2E ||
   profileRefreshE2E ||
+  webglE2E ||
   sessionE2E !== undefined
 const cliOpenDir = extractOpenDir(process.argv)
+
+// --e2e-webgl-fallback：启动早期禁用 WebGL（appendSwitch 必须早于 app ready），
+// 确定性触发 WebglAddon 创建失败路径 → 断言自动回退 DOM 渲染后功能完好。
+// 实测 --disable-webgl 单独拦不住 WebGL2（SwiftShader 软件实现仍发上下文），
+// 须连软件光栅化一并禁掉才让 getContext('webgl2') 返回 null
+if (__E2E__ && argvHas('--e2e-webgl-fallback')) {
+  app.commandLine.appendSwitch('disable-webgl')
+  app.commandLine.appendSwitch('disable-gpu')
+  app.commandLine.appendSwitch('disable-software-rasterizer')
+}
 
 // --e2e-session 用独立 userData 跑两段，避免污染真实 profiles/settings/sessions
 if (sessionE2E) {
@@ -1753,7 +1942,8 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
           argvHas('--e2e-input') ||
           argvHas('--e2e-sidebar') ||
           argvHas('--e2e-palette') ||
-          profileRefreshE2E) &&
+          profileRefreshE2E ||
+          webglE2E) &&
         mainWindow
       ) {
         const n =
@@ -1769,6 +1959,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
               else if (argvHas('--e2e-sidebar')) await runSidebarSequence(win)
               else if (argvHas('--e2e-palette')) await runPaletteSequence(win)
               else if (profileRefreshE2E) await runProfileRefreshSequence(win)
+              else if (webglE2E) await runWebglSequence(win)
               else await runE2ESequence(win, n)
             })
             .catch(async (e) => {

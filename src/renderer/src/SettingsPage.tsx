@@ -239,6 +239,24 @@ export function SettingsPage({ settings, profiles, onChange, onClose }: Props) {
                 广播态不跨退出保留（重启即复位）。多终端同步输入密码或删除类命令前请先确认键盘落点
               </span>
             </div>
+            <div className="settings-section">渲染</div>
+            <div className="settings-row">
+              <label className="settings-label">GPU 渲染（WebGL）</label>
+              <label className="settings-checkbox">
+                <input
+                  type="checkbox"
+                  data-setting="gpuRendering"
+                  checked={settings.gpuRendering}
+                  onChange={(e) => onChange({ gpuRendering: e.target.checked })}
+                />
+                <span>终端用 WebGL 加速绘制，滚动与高频输出的流畅度更好；即时生效，无需重开标签</span>
+              </label>
+            </div>
+            <div className="settings-row">
+              <span className="settings-hint">
+                不可用（驱动不支持/被禁用）或运行中图形上下文丢失时自动回退常规 DOM 渲染，功能不受影响；关闭则一律 DOM 渲染
+              </span>
+            </div>
             <div className="settings-section">会话</div>
             <div className="settings-row">
               <label className="settings-label">退出时保留会话</label>

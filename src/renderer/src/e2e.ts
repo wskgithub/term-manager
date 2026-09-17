@@ -462,6 +462,16 @@ export function setupE2E(ctx: E2ECtx): void {
     return bad
   }
 
+  /** GPU 渲染回归（--e2e-webgl）：WebGL 渲染器的主 canvas（无类名，挂在
+      .xterm-screen 下）在上下文创建成功后才入 DOM；addon 的 link 层 canvas
+      （xterm-link-layer）在更早的构造期插入、失败路径会残留——用 :not() 把
+      判据精确锁定到主 canvas，不受层残留干扰 */
+  w.__e2eRenderState = () =>
+    [...ctx.terms.current.entries()].map(([id, t]) => ({
+      id,
+      canvas: !!t.element?.querySelector('canvas:not(.xterm-link-layer)'),
+    }))
+
   // ── 命令面板回归（--e2e-palette）：面板开合由主进程 sendInputEvent 注入
   //    Ctrl+Shift+P（真实快捷键通路），这里只做面板内驱动与状态快照 ──
 

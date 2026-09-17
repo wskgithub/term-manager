@@ -634,6 +634,7 @@ export default function App() {
               active={t.id === activeId}
               fontFamily={settings.fontFamily}
               fontSize={settings.fontSize}
+              gpu={settings.gpuRendering}
               dark={dark}
               onTitle={(title) => shellTitle(t.id, title)}
               onTerminal={registerTerminal}
