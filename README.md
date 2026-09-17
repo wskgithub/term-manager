@@ -361,7 +361,9 @@ also accepts `term-manager --open-dir=<dir>` or `term-manager <dir>`.
 - The deb installs the extension to
   `/usr/share/nautilus-python/extensions/term_manager_nautilus.py` and Recommends
   `python3-nautilus`: `apt install ./*.deb` pulls it in automatically, `dpkg -i` needs a
-  manual `sudo apt install python3-nautilus`. Without that dependency the extension
+  manual `sudo apt install python3-nautilus`. The rpm carries the same file (install
+  `python3-nautilus` manually — rpm has no Recommends here); the AppImage does not include
+  it. Without that dependency the extension
   silently does nothing (the app itself is unaffected).
 - After installing, run `nautilus -q` (or log out/in) so the file manager reloads
   extensions.
@@ -405,19 +407,25 @@ npm run build      # build to out/
 npm run typecheck  # TS checks (node + web projects)
 npm run smoke      # windowless smoke: real shell echo round-trip validates the backend path
 npm run rebuild    # rebuild native modules (currently none — no-op)
-npm run dist       # build the deb (dist/term-manager_<version>_amd64.deb)
+npm run dist       # build all three packages: deb + AppImage + rpm into dist/
 npm run dist:dir   # produce dist/linux-unpacked/ only (no package, quick content check)
 ```
 
-## deb packaging
+## Linux packaging (deb / AppImage / rpm)
 
 ```bash
-npm run dist        # dist/term-manager_0.1.0_amd64.deb
+npm run dist        # dist/term-manager_<version>_amd64.deb, term-manager-<version>.AppImage,
+                    # term-manager-<version>.x86_64.rpm
+```
+
+### deb (Ubuntu / Debian)
+
+```bash
 sudo dpkg -i dist/term-manager_*.deb   # install (into /opt + /usr/bin link + desktop entry)
 sudo dpkg -r term-manager              # uninstall
 ```
 
-- Configuration lives in the `build` field of `package.json` (electron-builder 26, deb target).
+- Configuration lives in the `build` field of `package.json` (electron-builder 26).
 - Layout: the app installs to `/opt/term-manager/`; postinst creates `/usr/bin/term-manager`
   (update-alternatives), handles chrome-sandbox permissions (SUID when no user namespaces),
   registers desktop databases; Ubuntu 24+ also installs an apparmor profile.
@@ -431,6 +439,36 @@ sudo dpkg -r term-manager              # uninstall
 - Window association verified: `desktopName` ships inside the asar and Electron derives the
   app_id from it; `xprop WM_CLASS` reports `"term-manager", "Term-manager"`, matching
   `StartupWMClass`.
+
+### AppImage (portable, no install)
+
+```bash
+chmod +x dist/term-manager-*.AppImage
+./dist/term-manager-*.AppImage            # needs FUSE (libfuse2) — or, without it:
+./dist/term-manager-*.AppImage --appimage-extract-and-run
+```
+
+- Self-contained single file: no root, no install, runs from anywhere; delete to remove.
+- **tmux is not a packaged dependency** — install it yourself (`apt install tmux` /
+  `dnf install tmux`); the app shows an error banner if it is missing.
+- On systems that restrict unprivileged user namespaces (e.g. Ubuntu 24.04's AppArmor
+  restrictions) the Chromium sandbox may fail inside a squashfs mount — the AppImage then
+  needs `--no-sandbox`, or use the deb/rpm which set up chrome-sandbox properly.
+- The Nautilus context-menu extension is not included (AppImages never write into system
+  directories); the deb/rpm carry it.
+
+### rpm (Fedora / RHEL family)
+
+```bash
+sudo dnf install dist/term-manager-*.rpm
+sudo dnf remove term-manager
+```
+
+- `Requires` covers the Electron runtime libraries plus **tmux**, using Fedora-family
+  package names (`gtk3`, `nss`, `libXScrnSaver`, …). Other rpm distros (e.g. openSUSE)
+  name some libraries differently — best effort, not tested there.
+- The Nautilus extension is installed to the same path, but rpm has no `Recommends` here —
+  install `python3-nautilus` manually if you want the file-manager integration.
 
 ## E2E tests
 
@@ -582,7 +620,7 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
       off by default, broadcast state does not survive restart, covered by `--e2e-input`)
 - [x] electron-builder deb packaging (desktop entry / icons / dependency metadata included)
 - [x] Nautilus context-menu integration (open-in-directory + single-instance window reuse,
-      shipped with the deb)
+      shipped with the deb / rpm)
 - [x] Group sidebar tree view (vertical "group → tab" panel replacing the tab bar; tree
       drag-and-drop for reorder/join/leave, covered by `--e2e-sidebar`)
 - [x] Command palette (`Ctrl+Shift+P` fuzzy search & run: tabs/profiles/switching/
@@ -603,7 +641,7 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
       declared in the manifest and approved by the user, while the app page CSP stays
       `connect-src 'none'`. `--e2e-code-plugins` covers isolation, permissions, CSP and
       unload end-to-end)
-- [ ] AppImage, rpm and other package formats
+- [x] AppImage and rpm package formats (deb / AppImage / rpm from one `npm run dist`)
 
 ## Notes
 

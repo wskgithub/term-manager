@@ -226,6 +226,7 @@ API 逐组讲解、权限与 CSP 说明、上限总表与调试方法见[插件�
 
 - deb 将扩展装到 `/usr/share/nautilus-python/extensions/term_manager_nautilus.py`，并 Recommends
   `python3-nautilus`：`apt install ./*.deb` 会自动装上，`dpkg -i` 需手动 `sudo apt install python3-nautilus`。
+  rpm 携带同一文件（手动装 `python3-nautilus`——rpm 侧没有 Recommends）；AppImage 不含该扩展。
   缺该依赖时扩展静默不生效（应用功能不受影响）。
 - 装完执行 `nautilus -q`（或注销重登）让文件管理器重新加载扩展。
 - 调试时可用环境变量 `TERM_MANAGER_BIN` 指向本地构建产物。
@@ -268,19 +269,25 @@ npm run build      # 构建到 out/
 npm run typecheck  # TS 检查（node + web 两个工程）
 npm run smoke      # 无窗口冒烟：真实 shell 回显往返验证后端链路
 npm run rebuild    # 重编译原生模块（当前无原生依赖，空操作）
-npm run dist       # 构建 deb 安装包（dist/term-manager_<version>_amd64.deb）
+npm run dist       # 构建全部三格式安装包：deb + AppImage + rpm，落 dist/
 npm run dist:dir   # 只产出 dist/linux-unpacked/（不打包，快速检查内容）
 ```
 
-## deb 打包
+## Linux 打包（deb / AppImage / rpm）
 
 ```bash
-npm run dist        # dist/term-manager_0.1.0_amd64.deb
+npm run dist        # dist/term-manager_<version>_amd64.deb、term-manager-<version>.AppImage、
+                    # term-manager-<version>.x86_64.rpm
+```
+
+### deb（Ubuntu / Debian）
+
+```bash
 sudo dpkg -i dist/term-manager_*.deb   # 安装（自动装 /opt + /usr/bin 链接 + 桌面入口）
 sudo dpkg -r term-manager              # 卸载
 ```
 
-- 配置在 `package.json` 的 `build` 字段（electron-builder 26，deb target）。
+- 配置在 `package.json` 的 `build` 字段（electron-builder 26）。
 - 布局：应用装到 `/opt/term-manager/`；postinst 建 `/usr/bin/term-manager`（update-alternatives）、
   处理 chrome-sandbox 权限（无 user namespace 时置 SUID）、注册桌面数据库，Ubuntu 24+ 会装 apparmor profile。
 - 桌面入口 `/usr/share/applications/term-manager.desktop`（Name=Term Manager，
@@ -290,6 +297,35 @@ sudo dpkg -r term-manager              # 卸载
   `ELECTRON_BUILDER_BINARIES_MIRROR`（npmmirror）拉取，缓存落 `.cache/`（已 gitignore）。
 - 窗口关联已验证：`desktopName` 随 asar 进包，Electron 以其推导 app_id，
   实测 `xprop WM_CLASS` = `"term-manager", "Term-manager"`，与 `StartupWMClass` 一致。
+
+### AppImage（免安装便携版）
+
+```bash
+chmod +x dist/term-manager-*.AppImage
+./dist/term-manager-*.AppImage            # 需要 FUSE（libfuse2）——没有的话：
+./dist/term-manager-*.AppImage --appimage-extract-and-run
+```
+
+- 单文件自包含：无需 root、无需安装，放哪都能跑，删除即卸载。
+- **tmux 不随包携带**（AppImage 不声明系统依赖）——请自行安装（`apt install tmux` /
+  `dnf install tmux`）；缺失时应用会显示错误条。
+- 在限制非特权 user namespace 的系统上（如 Ubuntu 24.04 的 AppArmor 限制），squashfs 内的
+  Chromium sandbox 可能起不来——此时 AppImage 需要加 `--no-sandbox`，或改装部署了
+  chrome-sandbox 权限的 deb/rpm。
+- 不含 Nautilus 右键菜单扩展（AppImage 从不写系统目录）；该扩展随 deb/rpm 分发。
+
+### rpm（Fedora / RHEL 系）
+
+```bash
+sudo dnf install dist/term-manager-*.rpm
+sudo dnf remove term-manager
+```
+
+- `Requires` 覆盖 Electron 运行库并固定含 **tmux**，包名按 Fedora 系写法
+  （`gtk3`、`nss`、`libXScrnSaver`……）。其他 rpm 发行版（如 openSUSE）部分库名不同——
+  属尽力而为，未在那些发行版实测。
+- Nautilus 扩展装到同路径，但此处没有 `Recommends` 机制——想要文件管理器集成请手动
+  安装 `python3-nautilus`。
 
 ## E2E 测试
 
@@ -481,7 +517,7 @@ Esc 关闭并把焦点还给终端。覆盖四类命令：
 - [x] 会话保持：退出保留 tmux 会话，重启附着恢复标签/固定/分组/改名态与屏幕回放（`--e2e-session` 两段回归覆盖）
 - [x] 组内广播输入（按标签粒度，超越 Terminator；设置开关默认关，广播态不跨重启，`--e2e-input` 覆盖）
 - [x] electron-builder deb 打包（桌面入口/图标/依赖元数据齐全）
-- [x] Nautilus 右键菜单集成（在目录中打开 + 单实例复用窗口，随 deb 分发）
+- [x] Nautilus 右键菜单集成（在目录中打开 + 单实例复用窗口，随 deb/rpm 分发）
 - [x] 标签分组侧栏树视图（纵向「组 → 标签」面板取代标签栏；树内拖拽重排/入组/出组，`--e2e-sidebar` 覆盖）
 - [x] 命令面板（`Ctrl+Shift+P` 模糊搜索执行：标签/profile/切换/分组/广播/主题/侧栏/设置/退出，面板内二段改名，`--e2e-palette` 覆盖）
 - [x] GPU 渲染（addon-webgl 默认启用，创建失败/上下文丢失自动回退 DOM 渲染器，设置页可关，`--e2e-webgl` 双模式覆盖）
@@ -491,7 +527,7 @@ Esc 关闭并把焦点还给终端。覆盖四类命令：
       postMessage RPC 桥上的 `termManager` API——命令/动态主题/事件/标签控制/终端读写/状态栏；
       逐插件 CSP 默认零网络，manifest 声明 + 用户批准的 origin 才放行；应用本体 CSP `connect-src
       'none'` 技术强制，`--e2e-code-plugins` 覆盖隔离/权限/CSP/卸载全链路）
-- [ ] AppImage、rpm 等其他打包格式
+- [x] AppImage 与 rpm 打包格式（一次 `npm run dist` 产出 deb / AppImage / rpm 三格式）
 
 ## 备注
 

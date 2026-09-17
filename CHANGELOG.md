@@ -20,6 +20,9 @@ All notable changes to Term Manager are documented in this file.
 - API semantic change: value-returning methods (`registerCommand` / `registerTheme` /
   `tabs.list` / `tabs.active`) resolve Promises under the isolated host; plugins get
   localStorage on their own origin (no longer shared with the app).
+- **New package formats**: one `npm run dist` now produces **AppImage** (portable,
+  no install; bring your own tmux) and **rpm** (Fedora / RHEL family, Requires includes
+  tmux) alongside the deb; CI builds all three and attaches them as artifacts.
 
 ### 中文
 
@@ -33,6 +36,9 @@ All notable changes to Term Manager are documented in this file.
 - API 语义变化：带返回值的方法（`registerCommand` / `registerTheme` /
   `tabs.list` / `tabs.active`）在隔离宿主下返回 Promise；插件获得自己 origin 的
   localStorage（不再与应用共享）。
+- **新增打包格式**：一次 `npm run dist` 产出 **AppImage**（免安装便携版，tmux 自备）与
+  **rpm**（Fedora / RHEL 系，Requires 含 tmux），与 deb 并列；CI 构建三格式并作为
+  artifact 附带。
 
 ## 0.1.0 — 2026-09-17
 
