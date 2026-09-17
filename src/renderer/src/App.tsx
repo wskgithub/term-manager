@@ -29,6 +29,7 @@ import {
 } from './theme'
 import { BUILTIN_THEMES } from '../../shared/themes'
 import { setupE2E } from './e2e'
+import { PluginPermissionModal } from './PluginPermissionModal'
 import {
   clickStatusItem,
   dispatchTermData,
@@ -36,7 +37,9 @@ import {
   initPluginHost,
   loadCodePlugins,
   onHostChange,
+  permissionDecided,
   type HostSnapshot,
+  type PluginPermPrompt,
 } from './pluginHost'
 
 // 摘出标签并给出插回锚点：原本在组内则锚在原组块末尾之后（原地改组会把同组切成
@@ -69,6 +72,23 @@ export default function App() {
   const settingsOpenRef = useRef(false)
   settingsOpenRef.current = settingsOpen
   const [exited, setExited] = useState<Set<string>>(() => new Set())
+  // Tier 2 待批准的插件网络权限队列（每次弹队首；决策后 pluginHost 补挂帧）
+  const [permPrompts, setPermPrompts] = useState<PluginPermPrompt[]>([])
+
+  // 权限批准入队（已在队列的插件不重复弹——refreshProfiles 会反复到达）
+  const enqueuePermPrompts = (prompts: PluginPermPrompt[]) => {
+    if (!prompts.length) return
+    setPermPrompts((q) => [...q, ...prompts.filter((p) => !q.some((x) => x.id === p.id))])
+  }
+  // 决策落盘（允许 = 授权声明的 origin；拒绝 = null）→ pluginHost 补挂帧 → 出队
+  const decidePerm = (allow: boolean) => {
+    const p = permPrompts[0]
+    if (!p) return
+    void api.grantPluginPermission(p.id, allow ? p.hosts : null).then(() => {
+      permissionDecided(p.id)
+      setPermPrompts((q) => q.slice(1))
+    })
+  }
   // 标签分组：UI 态由渲染层维护，经 session:sync 上报主进程随会话持久化（跨重启恢复）
   const [groups, setGroups] = useState<TabGroup[]>([])
   // 广播中的组 id：纯运行时态，刻意不进 session:sync——重启/重开应用后广播一律
@@ -224,8 +244,9 @@ export default function App() {
       profilesRef.current = [...ps, ...infos.flatMap((p) => p.profiles)]
       setProfiles(ps)
       setPluginInfos(infos)
-      // 带 entry 的插件在此注入脚本（tmplug:// module，异步执行）
-      loadCodePlugins(infos)
+      // 带 entry 的插件在此挂沙箱 iframe（Tier 2 隔离宿主）；声明了网络权限
+      // 且未决策的进批准队列
+      enqueuePermPrompts(loadCodePlugins(infos))
       void api.cliReady().then(async (dirs) => {
         if (!alive) return
         for (const d of dirs) void newTab(undefined, d)
@@ -329,8 +350,9 @@ export default function App() {
       profilesRef.current = [...ps, ...infos.flatMap((p) => p.profiles)]
       setProfiles(ps)
       setPluginInfos(infos)
-      // 代码级插件：新出现的注入、消失的摘注册物（与 plugins:list 同一节拍）
-      loadCodePlugins(infos)
+      // 代码级插件：新出现的挂帧、消失的摘注册物销毁 realm（与 plugins:list
+      // 同一节拍）；未决策的网络权限进批准队列
+      enqueuePermPrompts(loadCodePlugins(infos))
     })
   }
 
@@ -865,6 +887,11 @@ export default function App() {
           </footer>
         )}
       </div>
+      {/* Tier 2 权限批准弹窗：最顶层（面板/菜单/设置页之上），Esc/Enter 快捷决策。
+          key 按插件 id 强制重建——弹窗内的防双击 ref 不跨插件复用 */}
+      {permPrompts.length > 0 && permPrompts[0] && (
+        <PluginPermissionModal key={permPrompts[0].id} prompt={permPrompts[0]} onDecide={decidePerm} />
+      )}
       {ctxMenu && (
         <ContextMenu
           x={ctxMenu.x}

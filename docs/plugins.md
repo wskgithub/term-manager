@@ -34,7 +34,7 @@ Two tiers:
 | --- | --- | --- |
 | Contents | manifest.json + optional themes/ | same + an `entry` script |
 | Can contribute | profiles, palette commands, theme packs | all of that + runtime commands/themes, events, tab operations, terminal read/write, status-bar items |
-| Has code | No — pure data | Yes — an ES module running in the same realm as the UI |
+| Has code | No — pure data | Yes — an ES module running in its own sandboxed iframe (isolated host) |
 | Good for | new terminal types, quick actions, color schemes | reacting to output, automation, status display |
 
 Rule of thumb: **prefer declarative when it suffices** (zero code means zero audit cost
@@ -82,14 +82,18 @@ That's a complete declarative plugin. To add code, see
 | Is there an enable toggle | No — the folder existing is the whole truth. A management UI is a later-stage item |
 | How to distribute | Git repo, zip, anything — this project deliberately ships no marketplace (see the end of the README “Declarative plugins” section) |
 
-Two semantics specific to code plugins:
+Three semantics specific to code plugins:
 
-- **Resident code cannot be unloaded**: after you delete the plugin folder, everything it
-  registered disappears immediately, but loaded JS closures stay in memory until restart.
-  Treat “delete, then restart eventually” as the mental model.
-- **How to re-execute changed code**: the entry script runs once per `pluginId@version`.
-  After editing `main.mjs`, bump the manifest `version` (e.g. `1.0.0` → `1.0.1`) and the
-  next rescan re-injects it; or restart the app.
+- **Unloading actually unloads**: after you delete the plugin folder, everything it
+  registered disappears immediately and the sandboxed iframe carrying it is destroyed
+  with it (closures, timers, open connections all end with the frame) — no restart needed.
+- **How to re-execute changed code**: the plugin frame is created once per
+  `pluginId@version`. After editing `main.mjs`, bump the manifest `version`
+  (e.g. `1.0.0` → `1.0.1`) and the next rescan rebuilds the frame; or restart the app.
+- **Network permissions need approval**: a plugin declaring `permissions.connect` shows
+  an approval dialog on first load (allow / deny; Esc counts as deny); the decision
+  persists and does not nag again — until the declared list changes. See
+  [runtime model](#code-level-plugins-entry-and-runtime-model).
 
 ## manifest.json field reference
 
@@ -99,6 +103,7 @@ Two semantics specific to code plugins:
 | `name` | ✅ | string | non-empty, truncated at 80 chars | whole plugin skipped |
 | `version` | — | string | non-empty, ≤32 chars | field ignored |
 | `entry` | — | string | see “entry validation” below | field dropped; plugin degrades to purely declarative |
+| `permissions` | — | object | see “permissions validation” below | bad origins dropped individually; all-bad drops the field |
 | `profiles` | — | array | each per [profile fields](#profile-field-reference), max 50 | bad entries dropped individually |
 | `commands` | — | array | each per the [action vocabulary](#palette-commands-and-the-action-vocabulary), max 100 | bad entries dropped individually |
 | (subdir) `themes/` | — | dir | `themes/*.json`, one theme per file, max 50 | bad files dropped whole |
@@ -115,6 +120,21 @@ name when distributing):
 - a relative path matching `^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}` with no `..` segment;
 - ends with `.js` or `.mjs`;
 - the file exists and is ≤ 1MB.
+
+**permissions validation** (the v1 vocabulary has only `connect`, a network-allow list):
+
+```json
+"permissions": { "connect": ["https://api.github.com", "http://127.0.0.1:8080"] }
+```
+
+- each origin looks like `scheme://host[:port]` (no path): `https://` any host; `http://`
+  only `localhost` / `127.0.0.1`;
+- ≤200 chars each, deduplicated in order, max 8 entries;
+- meaningful only for plugins with an `entry` (purely declarative plugins have no code
+  and no network needs);
+- first load after declaring shows an approval dialog; approved origins enter the plugin
+  frame CSP's `connect-src`. Changing the declared list re-prompts (old approvals never
+  cover new addresses).
 
 **Validation culture** (inherited from profiles.json — expect these behaviors while
 developing):
@@ -248,10 +268,14 @@ plugins/my-tools/
 
 Runtime model essentials:
 
-1. **Loading**: the entry is injected into the renderer as a
-   `<script type="module">` served by the built-in `tmplug://<pluginId>/<relpath>`
-   protocol, running **in the same realm as the UI** (Tier 1 trust model — see
-   [Security model](#security-model-read-before-installing)).
+1. **Loading (isolated host)**: the app creates one **sandboxed iframe** per code plugin,
+   loading a host page synthesized by the main process at
+   `tmplug://<pluginId>/__tmplug_host__?entry=main.mjs` (a unique origin per plugin),
+   which then loads your entry as a `<script type="module">`. The frame is **cross-origin
+   to the UI** — it cannot touch the UI DOM or `window.api`; the only channel is the
+   `termManager` API exposed by the in-frame bridge (postMessage RPC: value-returning
+   methods are async, see below). The sandbox attribute is
+   `allow-scripts allow-same-origin`; the frame gets localStorage on its own origin.
 2. **Boilerplate**: the first line obtains the namespaced API — the argument must exactly
    match the manifest `id`:
 
@@ -270,8 +294,10 @@ Runtime model essentials:
    package-name resolution — a bare `import 'lodash'` cannot resolve. Bundle third-party
    libraries (e.g. with esbuild) into a single entry file; there is intentionally no API
    for reading local files.
-5. **Persistence**: v1 has no plugin storage API. `localStorage` works but is shared with
-   the app's origin — prefix your keys with the plugin id (e.g. `my-tools:lastRun`).
+5. **Persistence**: v1 has no plugin storage API. `localStorage` works and is
+   **naturally isolated** — the plugin frame's origin is `tmplug://<pluginId>/`, distinct
+   from the app and from every other plugin (no key prefixing needed); deleting and
+   reinstalling the plugin starts from clean storage.
 6. **Error isolation**: if your command run, event listener, data subscription or
    status-bar click callback throws, the app catches it and logs a console error without
    crashing or affecting sibling plugins. Failed loads are **not retried** (see refresh
@@ -288,6 +314,13 @@ Full type definitions live in `TmScopedApi` in [`src/shared/types.ts`](../src/sh
 tm.version            // '1'
 tm.info               // { id, name, version? } — from the manifest
 ```
+
+> **Async semantics under the isolated host**: the API travels over postMessage RPC, so
+> value-returning methods — `registerCommand`, `registerTheme`, `tabs.list`,
+> `tabs.active` — resolve **Promises** (e.g. `const ok = await tm.registerCommand(…)`,
+> `const tabs = await tm.tabs.list()`). Ignoring the return value is fine, semantics are
+> unchanged; the unsubscribe functions returned by event/data subscriptions stay
+> synchronous.
 
 ### Commands: into the palette
 
@@ -452,8 +485,8 @@ Character-set rules in one place:
 | Symptom | Check |
 | --- | --- |
 | `termManager.init: unknown plugin id` | argument doesn't match the manifest `id`; or entry validation dropped the field (main-process `[plugins]` log: bad path / missing file / over 1MB) |
-| script doesn't run, no error | no entry at all (purely declarative); or `id@version` already loaded — bump the version and retry |
-| `[plugin-host] script load failed: tmplug://…` | wrong path; imported a non-whitelisted type (`.txt` etc.); import escaped the plugin folder |
+| script doesn't run, no error | no entry at all (purely declarative); or the `id@version` frame already exists — bump the version and retry; or network permissions are declared but not yet approved (the dialog may have gone unnoticed — reopening the palette/settings page re-prompts) |
+| `[plugin-host] script load failed / in-frame error: tmplug://…` | wrong path; imported a non-whitelisted type (`.txt` etc.); import escaped the plugin folder; the `in-frame error` prefix forwards plugin runtime exceptions (with stack) |
 | `registerCommand` returns false | id charset / empty label / over the per-plugin cap (see summary) |
 | command not findable in the palette | type a more specific query first (the palette caps at 60 matches); confirm registration returned true |
 | `terminals.write` does nothing | tab id not in `tabs.list()`; payload over 16KB; empty string |
@@ -466,34 +499,39 @@ described here — readable as an executable spec.
 
 ## Security model (read before installing)
 
-The Tier 1 same-realm trust model, in three sentences:
+The Tier 2 isolated-host trust model, in four sentences:
 
-1. **Zero network is enforced, not promised**: the production build's CSP carries
-   `connect-src 'none'` — plugins, like the app itself, cannot fetch / XHR / WebSocket /
-   sendBeacon. The “phone home” path is closed at the browser layer.
-2. **Same realm = equal capability**: plugin JS runs in the page's context; `window.api`
-   is reachable. Anything a plugin can do, the app itself can do — installing a code
-   plugin grants it local power equal to the app. The `termManager` API is a documented
-   front door, **not a security boundary**.
+1. **Sandbox isolation is structural**: plugin frames are
+   `sandbox="allow-scripts allow-same-origin"` and cross-origin to the UI (a unique
+   `tmplug://` origin per plugin) — the DOM, `window.api` and the app's localStorage are
+   all unreachable; only data and callback tokens cross the bridge. The `termManager`
+   API is the **entire** capability surface.
+2. **Zero network by default, declared opt-in**: each plugin frame carries its own CSP
+   (`default-src 'none'`) whose `connect-src` contains only origins declared in the
+   manifest *and* approved by you — the “phone home” path is closed at the browser
+   layer, and changing the declaration re-prompts. The app page's own CSP stays
+   `connect-src 'none'`.
 3. **Writing to terminals = shell command injection**: `terminals.write` can silently
-   inject input, and the shell itself has network access. Only install code plugins you
-   trust; as an author, state honestly in your README what you write.
-
-Remaining channels, stated as they are: `window.open` goes through the app's existing
-handler and opens the system browser (a visible action); the clipboard is reachable via
-`window.api`. Real isolation (sandboxed iframes + per-plugin CSP + declared permissions)
-is the later Tier 2 plugin host — code plugins will then be able to trade declared
-permissions for stronger isolation.
+   inject input, and the shell itself has network access. Granting network permission
+   and allowing terminal writes are two stacking grants of trust — only install code
+   plugins you trust; as an author, state honestly in your README which origins you
+   declare and what you write to terminals.
+4. **Permission decisions are yours**: the approval dialog is a binary allow/deny
+   (Esc = deny); denying does not disable the plugin (code runs, network does not).
+   Decisions persist in `userData/plugin-permissions.json` and may be hand-edited
+   (grants never exceed the declared list — undeclared origins are silently stripped).
 
 ## Known limitations and roadmap
 
 - The palette shows at most 60 matching commands (may crowd out with many tabs — narrow
   the query) — existing interaction behavior;
-- resident code of removed plugins cannot be unloaded (restart clears it fully);
-- no enable toggle / plugin management UI (folder add/remove is the entire semantics);
-- no plugin storage API (use prefixed localStorage, see above);
-- the Tier 2 isolated plugin host (sandboxed iframes + permission declarations) is on the
-  roadmap — see the main README's “Done / roadmap”.
+- no enable toggle / plugin management UI (folder add/remove is the entire semantics;
+  re-deciding permissions requires changing the declared list or hand-editing
+  `plugin-permissions.json`);
+- no plugin storage API (in-frame localStorage is isolated per plugin origin — enough
+  for v1);
+- the permission vocabulary currently covers network `connect` only; local file reads,
+  system notifications etc. will be added on demand.
 
 ## Examples index
 

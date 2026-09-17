@@ -3,6 +3,37 @@
 All notable changes to Term Manager are documented in this file.
 本项目的所有重要变更都记录在此文件中。
 
+## Unreleased (0.2.0)
+
+### English
+
+- **Code-level plugins upgraded to the Tier 2 isolated host**: every code plugin now
+  runs in its own sandboxed iframe (a unique `tmplug://` origin per plugin). The browser
+  sandbox keeps plugins away from the UI DOM and `window.api` — the `termManager` API
+  (over a postMessage RPC bridge) becomes the entire capability surface.
+- **Declared network permissions**: manifests may declare a `permissions.connect`
+  origin allow-list; the first load shows an approval dialog (allow / deny, Esc = deny).
+  Approved origins enter the plugin frame CSP's `connect-src`; changing the declared
+  list re-prompts. The per-plugin CSP starts at zero network.
+- **Plugins truly unload**: deleting the plugin folder destroys the sandbox frame and
+  all registrations (previously resident JS required a restart).
+- API semantic change: value-returning methods (`registerCommand` / `registerTheme` /
+  `tabs.list` / `tabs.active`) resolve Promises under the isolated host; plugins get
+  localStorage on their own origin (no longer shared with the app).
+
+### 中文
+
+- **代码级插件升级为 Tier 2 隔离宿主**：每个代码插件运行在独立的沙箱 iframe 里
+  （`tmplug://` 每插件独立 origin），浏览器沙箱保证插件碰不到界面 DOM 与
+  `window.api`——`termManager` API（postMessage RPC 桥）成为全部能力面。
+- **声明式网络权限**：manifest `permissions.connect` 声明 origin 白名单，首次加载
+  弹批准框（允许/拒绝，Esc=拒绝）；批准后进插件帧 CSP 的 `connect-src`，改声明
+  列表会重新询问。默认逐插件 CSP 零网络。
+- **插件真正可卸载**：删除插件文件夹即销毁沙箱帧与全部注册物（此前驻留 JS 须重启）。
+- API 语义变化：带返回值的方法（`registerCommand` / `registerTheme` /
+  `tabs.list` / `tabs.active`）在隔离宿主下返回 Promise；插件获得自己 origin 的
+  localStorage（不再与应用共享）。
+
 ## 0.1.0 — 2026-09-17
 
 First public release. / 首个公开发布的版本。
