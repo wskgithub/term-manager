@@ -62,6 +62,8 @@ export interface Api {
   listFonts(): Promise<string[]>
   listThemes(): Promise<ThemeDef[]>
   listPlugins(): Promise<PluginInfo[]>
+  // Tier 2 权限批准落盘（origins=null 表示拒绝）
+  grantPluginPermission(id: string, origins: string[] | null): Promise<void>
   createTerm(profileId: string, cwd?: string): Promise<TermInfo>
   cliReady(): Promise<string[]>
   restoreSession(): Promise<RestoredSession | null>

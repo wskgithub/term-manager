@@ -139,7 +139,7 @@ plugins/docker-tools/
 [docs/examples/declarative-plugin/](docs/examples/declarative-plugin/) 与
 [docs/examples/code-plugin/](docs/examples/code-plugin/)。
 
-## 代码级插件（实验性）
+## 代码级插件（隔离宿主）
 
 声明式插件覆盖「数据」类扩展；需要**行为**时（监听输出、自动化动作、状态栏展示），
 在 manifest 里加一个 `"entry"`，插件就能带代码运行：
@@ -150,11 +150,12 @@ plugins/my-tools/
 └─ main.mjs           入口脚本（ES module，可相对 import 插件目录内其他文件）
 ```
 
-入口经应用内建协议 `tmplug://<插件id>/<相对路径>` 以 module 脚本加载，与界面
-**同 realm** 运行，通过全局对象取得命名空间化 API：
+每个代码插件运行在**独立的沙箱 iframe** 里（`tmplug://<插件id>/` 每插件独立
+origin）：浏览器沙箱保证它碰不到界面 DOM 与 `window.api`，唯一通道是应用主动
+架设的 postMessage 桥——桥上暴露的 `termManager` API 就是全部能力面：
 
 ```js
-// main.mjs
+// main.mjs（在插件自己的沙箱帧内执行）
 const tm = termManager.init('my-tools')
 
 tm.registerCommand({
@@ -163,11 +164,13 @@ tm.registerCommand({
   run: () => tm.statusbar.setItem('ping', { text: 'pong' })
 })
 tm.registerTheme({ id: 'midnight', name: 'Midnight', type: 'dark', terminal: { background: '#0b0d12' } })
-tm.on('tab-created', (e) => console.log('new tab', e.id))
+tm.on('tab-created', async (e) => console.log('new tab', e.id))
 tm.statusbar.setItem('clock', { text: '⏳', onClick: () => tm.tabs.create() })
 ```
 
-API 面（v1；完整类型见 `src/shared/types.ts` 的 `TmScopedApi`）：
+API 面（v1；完整类型见 `src/shared/types.ts` 的 `TmScopedApi`）。隔离宿主下 API
+经 RPC 落地，带返回值的方法（`registerCommand` / `registerTheme` /
+`tabs.list` / `tabs.active`）返回 **Promise**，其余方法语义不变：
 
 | 分组 | 能力 |
 | --- | --- |
@@ -179,30 +182,42 @@ API 面（v1；完整类型见 `src/shared/types.ts` 的 `TmScopedApi`）：
 | 终端 | `terminals.subscribe(id, cb)`（实时输出流，不含历史回放）、`terminals.write(id, data)`（注入输入，直达 tmux 不走广播扇出） |
 | 状态栏 | `statusbar.setItem(itemId, { text, color?, tooltip?, onClick? } | null)`——底部状态栏仅当有插件项时才出现 |
 
-- **刷新语义**：启动时加载；面板/＋菜单/设置页打开触发重扫——新插件即时注入，
-  被删插件的注册物（命令/主题/状态栏项/事件与数据订阅）即时下架。同 realm 代码
-  无法卸载，删除后的惰性闭包留待重启；改版本号后重新放回会重新执行。
+**声明式网络权限**：默认逐插件 CSP 零网络。manifest 里声明、用户批准后，该
+插件帧的 `connect-src` 才放行对应 origin：
+
+```json
+{ "id": "my-tools", "entry": "main.mjs",
+  "permissions": { "connect": ["https://api.github.com"] } }
+```
+
+- origin 规则：`https://任意主机` 或 `http://localhost / 127.0.0.1`（scheme://host[:port]，
+  不含路径），单插件至多 8 条；声明后首次加载弹批准框（允许/拒绝，Esc 视为拒绝）。
+- 决策持久化在 `userData/plugin-permissions.json`；插件**改动声明的地址列表后
+  会重新弹框**——旧批准不覆盖新地址。
+- 拒绝不影响插件加载：代码照常运行，只是连不了网。
+
+- **刷新/卸载语义**：启动时加载；面板/＋菜单/设置页打开触发重扫——新插件即时
+  挂载，被删插件的注册物（命令/主题/状态栏项/事件与数据订阅）与沙箱帧**一并
+  销毁**（隔离宿主下插件真正可卸载）；改版本号后重新放回会重建帧重新执行。
 - 入口在主进程校验：相对路径、`.js`/`.mjs`、≤1MB。`tmplug://` 只服务插件目录内
-  白名单类型文件（js/mjs/css/json/png/svg），路径穿越双重拒绝（`..` 段检查 +
-  resolve 后目录前缀校验）。
+  白名单类型文件（js/mjs/css/json/png/svg）与两个合成资源（帧宿主页/帧桥），
+  路径穿越双重拒绝（`..` 段检查 + resolve 后目录前缀校验）。
 
-**安全模型（安装前请读）**——Tier 1 同 realm 信任模型：
+**安全模型（安装前请读）**——Tier 2 隔离宿主：
 
-- **零网络由 CSP 技术强制**：生产构建的 CSP 带 `connect-src 'none'`——插件与
-  应用本体一样，fetch/XHR/WebSocket/sendBeacon 一律被浏览器拒绝。「应用本身
-  永不联网」从约定升级为技术强制。
-- **同 realm = 能力等价**：插件 JS 与界面同上下文运行，能做的事与应用等价
-  （渲染层的 `window.api` 本就可达）。`termManager` API 是文档化的收编入口，
-  不是安全边界。
+- **沙箱隔离**：插件帧 `sandbox="allow-scripts allow-same-origin"` 且与应用页面
+  跨源（每插件独立 `tmplug://` origin）——DOM、`window.api`、应用 localStorage
+  一概不可达，跨桥的只有数据与回调 token，`termManager` 是唯一能力面。
+- **零网络默认 + 声明放行**：逐插件 CSP `default-src 'none'`，`connect-src` 仅含
+  用户批准的 origin；应用本体 CSP 仍是 `connect-src 'none'` 技术强制。
 - **写终端 = 可注入 shell 命令**：`terminals.write` 能向已存在的终端静默注入
-  输入，而 shell 自身有网络。不要安装你不信任的代码插件。
-- 剩余信道如实声明：`window.open` 经应用既有处理器外开系统浏览器（可见动作）；
-  剪贴板经 `window.api` 可达。
-- 真正的隔离（沙箱 iframe + 每插件 CSP + 声明式网络权限）是后续 Tier 2 插件
-  宿主——「市场=插件」生态的载体，代码插件届时可声明权限换取更强隔离。
+  输入，而 shell 自身可以联网。批准网络权限与放行写终端是叠加的两份信任，
+  不要安装你不信任的代码插件。
+- 插件有自己的 origin 存储（localStorage 随插件隔离，卸载重装即清空）；
+  插件帧内异常会回传宿主控制台（`--remote-debugging-port` 可达）。
 
 完整可拷贝示例见 [`docs/examples/code-plugin/`](docs/examples/code-plugin/)；
-API 逐组讲解、上限总表与调试方法见[插件开发指南](docs/plugins.zh-CN.md)。
+API 逐组讲解、权限与 CSP 说明、上限总表与调试方法见[插件开发指南](docs/plugins.zh-CN.md)。
 
 ## Nautilus 右键集成
 
@@ -240,7 +255,8 @@ src/
     ├── TermView.tsx # xterm 实例（输出单点分发、自适应尺寸、字体设置）
     ├── SettingsPage.tsx # 设置页（外观 → 字体/字号 + 预览；终端 → 默认终端等）
     ├── fonts.ts     # 字体栈解析（自动模式 / CJK 回退）
-    ├── pluginHost.ts # 代码级插件宿主（termManager 全局/脚本注入/注册表/事件扇出）
+    ├── pluginHost.ts # 代码级插件宿主（沙箱 iframe + postMessage RPC 服务端/注册表/事件扇出）
+    ├── PluginPermissionModal.tsx # 网络权限批准弹窗（允许/拒绝，Esc=拒绝）
     └── e2e.ts       # E2E 驱动钩子
 ```
 
@@ -471,10 +487,10 @@ Esc 关闭并把焦点还给终端。覆盖四类命令：
 - [x] GPU 渲染（addon-webgl 默认启用，创建失败/上下文丢失自动回退 DOM 渲染器，设置页可关，`--e2e-webgl` 双模式覆盖）
 - [x] 自定义主题（themes 目录数据化配色方案：UI CSS 变量 + xterm 调色板，未声明字段逐项继承内建，深/浅双选择器独立，`--e2e-themes` 覆盖）
 - [x] 声明式插件（manifest 注入 profile/面板命令/主题包——零代码执行零网络，`--e2e-plugins` 覆盖）
-- [x] 代码级插件 API·Tier 1（manifest `entry` 经 `tmplug://` 协议以 module 脚本同 realm 注入 +
-      `termManager` API：命令/动态主题/事件/标签控制/终端读写/状态栏；生产 CSP `connect-src 'none'`
-      把零网络升级为技术强制，`--e2e-code-plugins` 覆盖）
-- [ ] Tier 2 隔离插件宿主（沙箱 iframe + 每插件 CSP + 声明式权限——「市场=插件」生态的载体）
+- [x] 代码级插件 API（manifest `entry`：沙箱 iframe 隔离宿主 + `tmplug://` 每插件独立 origin +
+      postMessage RPC 桥上的 `termManager` API——命令/动态主题/事件/标签控制/终端读写/状态栏；
+      逐插件 CSP 默认零网络，manifest 声明 + 用户批准的 origin 才放行；应用本体 CSP `connect-src
+      'none'` 技术强制，`--e2e-code-plugins` 覆盖隔离/权限/CSP/卸载全链路）
 - [ ] AppImage、rpm 等其他打包格式
 
 ## 备注

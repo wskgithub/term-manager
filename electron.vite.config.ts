@@ -11,14 +11,15 @@ const keepE2E = process.env.TERM_MGR_E2E !== '0'
 // 与 src/renderer/index.html 里的基础版同源：构建时把 meta 内容替换为严格版
 //（default-src 收 'none'、显式 connect-src 'none'、object/base/form 全禁）。
 // 严格版把「应用本体零网络」从约定升级为技术强制——fetch/XHR/WebSocket/
-// sendBeacon 全拒，代码级插件（同 realm）一并被约束。dev 不替换：vite HMR 的
+// sendBeacon 全拒；代码级插件跑在 tmplug:// 沙箱 iframe 里（Tier 2），有
+// 自己的逐插件 CSP，这里只负责放行 frame-src。dev 不替换：vite HMR 的
 // ws 连接依赖 default-src 'self'。替换用 split/join 全量替换（replace 只换首个）
 const CSP_BASE =
   "default-src 'self'; script-src 'self' tmplug:; style-src 'self' 'unsafe-inline'; " +
-  "img-src 'self' tmplug: data:; font-src 'self' tmplug: data:"
+  "img-src 'self' tmplug: data:; font-src 'self' tmplug: data:; frame-src tmplug:"
 const CSP_STRICT =
   "default-src 'none'; script-src 'self' tmplug:; style-src 'self' 'unsafe-inline'; " +
-  "img-src 'self' tmplug: data:; font-src 'self' tmplug: data:; connect-src 'none'; " +
+  "img-src 'self' tmplug: data:; font-src 'self' tmplug: data:; frame-src tmplug:; connect-src 'none'; " +
   "object-src 'none'; base-uri 'none'; form-action 'none'"
 
 function strictCsp(): Plugin {

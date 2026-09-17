@@ -3,13 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <title>Term Manager</title>
-    <!-- CSP 开发/构建同源基础版：tmplug: 是代码级插件（L3）的资源协议。
-         构建期 electron.vite.config.ts 会把本 meta 替换为严格版（default-src
-         'none' + connect-src 'none' 等，零网络的技术强制）；dev 保留宽松版供
-         vite HMR（ws 走 default-src 'self'） -->
+    <!-- CSP 开发/构建同源基础版：tmplug: 是代码级插件（L3）的资源协议，Tier 2
+         下插件跑在 tmplug:// 沙箱 iframe 里（每插件独立 origin + 逐插件 CSP），
+         宿主页只需 frame-src 放行。构建期 electron.vite.config.ts 会把本 meta
+         替换为严格版（default-src 'none' + connect-src 'none' 等，零网络的技术
+         强制）；dev 保留宽松版供 vite HMR（ws 走 default-src 'self'） -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' tmplug:; style-src 'self' 'unsafe-inline'; img-src 'self' tmplug: data:; font-src 'self' tmplug: data:"
+      content="default-src 'self'; script-src 'self' tmplug:; style-src 'self' 'unsafe-inline'; img-src 'self' tmplug: data:; font-src 'self' tmplug: data:; frame-src tmplug:"
     />
   </head>
   <body>

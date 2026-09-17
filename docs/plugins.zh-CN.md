@@ -76,12 +76,15 @@ EOF
 | 有启用开关吗 | 没有——文件夹在即生效。管理界面属后续阶段 |
 | 怎么分发 | git 仓库、压缩包、随便——本项目刻意不做插件市场（见主 README「声明式插件」节末尾） |
 
-代码插件的两个特殊语义：
+代码插件的三个特殊语义：
 
-- **驻留代码无法卸载**：删除插件文件夹后，它注册过的命令等会立即消失，但已加载的 JS
-  闭包无法从内存里摘除（惰性引用留待重启清理）。重命名为「删除后请重启」级别的心智负担即可。
-- **改了代码怎么重新执行**：入口脚本按 `插件id@版本号` 只执行一次。修改 `main.mjs` 后把
-  manifest 的 `version` 也改一下（如 `1.0.0` → `1.0.1`），下次重扫即重新注入；或者重启应用。
+- **卸载是真卸载**：删除插件文件夹后，它注册过的命令等会立即消失，承载它的沙箱 iframe
+  也一并销毁（闭包、定时器、打开的连接全部随帧终结）——不需要重启。
+- **改了代码怎么重新执行**：插件帧按 `插件id@版本号` 只创建一次。修改 `main.mjs` 后把
+  manifest 的 `version` 也改一下（如 `1.0.0` → `1.0.1`），下次重扫即重建帧重新执行；或者重启应用。
+- **网络权限要批准**：manifest 声明了 `permissions.connect` 的插件，首次加载会弹批准框
+  （允许/拒绝；Esc 视为拒绝），决策落盘后不再打扰；改了声明列表会重新询问。见下文
+  [运行模型](#代码级插件入口与运行模型)。
 
 ## manifest.json 字段参考
 
@@ -91,6 +94,7 @@ EOF
 | `name` | ✅ | string | 非空，超 80 字符截断 | 整插件跳过 |
 | `version` | — | string | 非空，≤32 字符 | 忽略该字段 |
 | `entry` | — | string | 见下方「entry 校验」 | 只丢字段，退化为纯声明式插件 |
+| `permissions` | — | object | 见下方「permissions 校验」 | 坏 origin 逐个丢弃，全坏丢字段 |
 | `profiles` | — | array | 每条按 [profile 字段](#profile-字段参考)，上限 50 条 | 坏条目逐个丢弃 |
 | `commands` | — | array | 每条按[动作词汇](#面板命令与动作词汇)，上限 100 条 | 坏条目逐个丢弃 |
 | （子目录）`themes/` | — | 目录 | `themes/*.json`，每个文件一份主题，上限 50 个 | 坏文件整份丢弃 |
@@ -106,6 +110,19 @@ EOF
 - 相对路径，字符集 `^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`，不得含 `..` 段；
 - 以 `.js` 或 `.mjs` 结尾；
 - 文件真实存在且 ≤ 1MB。
+
+**permissions 校验**（v1 词汇只有 `connect`，即网络连接白名单）：
+
+```json
+"permissions": { "connect": ["https://api.github.com", "http://127.0.0.1:8080"] }
+```
+
+- 每条 origin 形如 `scheme://host[:port]`（不含路径）：`https://` 任意主机；`http://`
+  仅放行 `localhost` / `127.0.0.1`；
+- 每条 ≤200 字符，去重保序，上限 8 条；
+- 只对带 `entry` 的插件有意义（纯声明式插件没有代码，无网络诉求）；
+- 声明后首次加载弹批准框，批准的 origin 进插件帧 CSP 的 `connect-src`；改声明
+  列表会重新弹（旧批准不覆盖新地址）。
 
 **校验文化**（沿袭 profiles.json，写插件时按此预期行为）：
 
@@ -230,9 +247,12 @@ plugins/my-tools/
 
 运行模型要点：
 
-1. **加载方式**：入口经应用内建协议 `tmplug://<插件id>/<相对路径>` 以
-   `<script type="module">` 注入渲染层，**与应用界面同 realm 运行**（Tier 1 信任模型，
-   含义见[安全模型](#安全模型安装前必读)）。
+1. **加载方式（隔离宿主）**：应用为每个代码插件创建一个**沙箱 iframe**，加载主进程
+   合成的宿主页 `tmplug://<插件id>/__tmplug_host__?entry=main.mjs`（每插件独立 origin），
+   宿主页里再以 `<script type="module">` 加载你的入口。插件帧与界面**跨源隔离**——碰不到
+   界面 DOM 与 `window.api`，唯一通道是帧内桥暴露的 `termManager` API（postMessage RPC：
+   带返回值的方法是异步的，见下）。沙箱属性为 `allow-scripts allow-same-origin`，帧有自己
+   origin 的 localStorage。
 2. **样板**：第一行拿到命名空间化 API——`init` 的参数必须与 manifest 的 `id` 完全一致：
 
    ```js
@@ -248,8 +268,9 @@ plugins/my-tools/
 4. **运行环境是渲染层，不是 Node**：没有 `require` / `fs` / `process`，也没有 npm 的
    包名解析——`import 'lodash'` 这种裸说明符无法解析。需要第三方库时，用 esbuild 之类
    打包成单文件再当 entry；需要读本地文件时没有 API（这是刻意的）。
-5. **持久化**：v1 没有插件专用存储 API。`localStorage` 可用但与应用同源共享——键名请加
-   `插件id:` 前缀隔离（如 `my-tools:lastRun`）。
+5. **持久化**：v1 没有插件专用存储 API。`localStorage` 可用且**天然隔离**——插件帧的
+   origin 是 `tmplug://<插件id>/`，与界面、与其他插件都不同源（键名无需再加前缀）；删除
+   插件文件夹重装后是全新存储。
 6. **错误隔离**：你的命令执行、事件监听器、数据订阅、状态栏点击回调抛错时，应用会捕获
    并记 console 错误，不会崩溃或拖累其他插件。但**加载失败不重试**（见刷新语义）。
 
@@ -264,6 +285,11 @@ plugins/my-tools/
 tm.version            // '1'
 tm.info               // { id, name, version? } —— 来自 manifest
 ```
+
+> **隔离宿主的异步语义**：API 经 postMessage RPC 落地，带返回值的方法——`registerCommand`、
+> `registerTheme`、`tabs.list`、`tabs.active`——返回 **Promise**（如 `const ok = await
+> tm.registerCommand(…)`、`const tabs = await tm.tabs.list()`）。不关心返回值时可以不
+> await，语义不变；事件/数据订阅返回的取消函数仍是同步函数。
 
 ### 命令：进命令面板
 
@@ -417,8 +443,8 @@ tm.statusbar.setItem('clock', null)   // 删除该项
 | 症状 | 排查 |
 | --- | --- |
 | `termManager.init: 未知插件 id` | init 参数与 manifest `id` 不一致；或 entry 校验失败被丢弃（看主进程 `[plugins]` 日志：路径非法/文件缺失/超 1MB） |
-| 脚本没执行、也没报错 | entry 不在（退化成声明式）；或 `id@version` 已加载过——改 version 再试 |
-| `[plugin-host] 脚本加载失败: tmplug://…` | 路径拼错；import 了白名单外类型（`.txt` 等）；import 的文件超目录边界 |
+| 脚本没执行、也没报错 | entry 不在（退化成声明式）；或 `id@version` 帧已建过——改 version 再试；声明了网络权限但还没批准（弹窗可能被忽略，重开面板/设置页会再弹） |
+| `[plugin-host] 脚本加载失败 / 帧内错误: tmplug://…` | 路径拼错；import 了白名单外类型（`.txt` 等）；import 的文件超目录边界；`帧内错误` 前缀是插件运行期异常的回传（含 stack） |
 | `registerCommand` 返回 false | id 字符集 / label 空 / 超单插件上限（见总表） |
 | 命令在面板搜不到 | 先输更具体的关键词（面板最多显示 60 条匹配）；确认注册时返回了 true |
 | `terminals.write` 没反应 | 标签 id 不在 `tabs.list()`；数据超 16KB；空串 |
@@ -430,28 +456,28 @@ tm.statusbar.setItem('clock', null)   // 删除该项
 
 ## 安全模型（安装前必读）
 
-Tier 1 同 realm 信任模型，三句话：
+Tier 2 隔离宿主信任模型，四句话：
 
-1. **零网络是技术强制不是约定**：生产构建的 CSP 带 `connect-src 'none'`——插件与应用
-   本体一样，fetch / XHR / WebSocket / sendBeacon 一律被拒。「装个插件偷偷上报」这条路
-   在浏览器层就封死了。
-2. **同 realm = 能力等价**：插件 JS 与界面同上下文运行，`window.api` 本就可达。插件能做
-   的任何事应用自己都能做——安装代码插件等于给它与应用同等的本地权限，`termManager`
-   API 是文档化的收编入口，**不是安全边界**。
+1. **沙箱隔离是结构性的**：插件帧 `sandbox="allow-scripts allow-same-origin"` 且与界面
+   跨源（每插件独立 `tmplug://` origin）——DOM、`window.api`、界面的 localStorage 一概
+   不可达；跨桥的只有数据与回调 token。`termManager` API 是**全部**能力面。
+2. **零网络默认，声明放行**：每个插件帧有自己的 CSP（`default-src 'none'`），`connect-src`
+   仅含 manifest 声明且你批准过的 origin——「装个插件偷偷连别处」这条路在浏览器层封死；
+   声明改了会重新问。应用本体的 CSP 仍是 `connect-src 'none'` 技术强制。
 3. **写终端 = 可注入 shell 命令**：`terminals.write` 能静默向终端注入输入，而 shell 自身
-   有网络能力。只安装你信任的代码插件；作为插件作者，请在你的 README 里如实声明你写了什么。
-
-剩余信道如实声明：`window.open` 走应用既有处理器外开系统浏览器（可见动作）；剪贴板经
-`window.api` 可达。真正的隔离（沙箱 iframe + 每插件 CSP + 声明式权限）属后续 Tier 2
-插件宿主——届时代码插件可声明权限换取更强隔离。
+   有网络能力。批准网络权限与允许写终端是叠加的两份信任——只安装你信任的代码插件；作为
+   插件作者，请在你的 README 里如实声明你声明了哪些网络地址、往终端写了什么。
+4. **权限决策是你的**：批准框允许/拒绝二选一（Esc=拒绝）；拒绝不废插件（代码照跑、无
+   网络）；决策持久化在 `userData/plugin-permissions.json`，可手工编辑（授权不能超出声明
+   范围，塞了未声明的 origin 会被静默剔除）。
 
 ## 已知限制与路线图
 
 - 面板一次最多显示 60 条匹配命令（大量标签时可能挤出，收窄搜索词可解）——既有交互行为；
-- 代码插件的驻留 JS 无法卸载（删除后重启才彻底清掉）；
-- 无启用开关 / 插件管理界面（文件夹增删即全部语义）；
-- 无插件专用存储 API（用 localStorage 加前缀，见上文）；
-- Tier 2 隔离插件宿主（沙箱 iframe + 权限声明）在路线图上，见主 README「路线图」。
+- 无启用开关 / 插件管理界面（文件夹增删即全部语义；权限重批只能改声明列表或手工编辑
+  `plugin-permissions.json` 触发）；
+- 无插件专用存储 API（帧内 localStorage 随插件 origin 隔离，够 v1 用）；
+- 权限词汇目前只有网络 connect；本地文件读、系统通知等词汇在路线图上按需扩展。
 
 ## 示例索引
 

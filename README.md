@@ -164,7 +164,7 @@ rules, the theme format, the code-level API, limits and debugging — lives in
 [docs/examples/declarative-plugin/](docs/examples/declarative-plugin/) and
 [docs/examples/code-plugin/](docs/examples/code-plugin/).
 
-## Code-level plugins (experimental)
+## Code-level plugins (isolated host)
 
 Declarative plugins cover *data-shaped* extensions. When you need **behavior** (watching
 output, automated actions, status-bar display), add an `"entry"` to the manifest and the
@@ -176,12 +176,13 @@ plugins/my-tools/
 └─ main.mjs           entry script (ES module; may relatively import other files in the plugin folder)
 ```
 
-The entry is loaded as a module script through the app's built-in `tmplug://<plugin-id>/<relative-path>`
-protocol and runs **in the same realm** as the UI, obtaining a namespaced API from a
-global object:
+Every code plugin runs in its own **sandboxed iframe** (`tmplug://<plugin-id>/` gives each
+plugin a unique origin): the browser sandbox keeps it away from the UI DOM and
+`window.api`; the only channel is the postMessage bridge the app sets up — and the
+`termManager` API exposed over it is the entire capability surface:
 
 ```js
-// main.mjs
+// main.mjs (runs inside the plugin's own sandboxed frame)
 const tm = termManager.init('my-tools')
 
 tm.registerCommand({
@@ -190,11 +191,14 @@ tm.registerCommand({
   run: () => tm.statusbar.setItem('ping', { text: 'pong' })
 })
 tm.registerTheme({ id: 'midnight', name: 'Midnight', type: 'dark', terminal: { background: '#0b0d12' } })
-tm.on('tab-created', (e) => console.log('new tab', e.id))
+tm.on('tab-created', async (e) => console.log('new tab', e.id))
 tm.statusbar.setItem('clock', { text: '⏳', onClick: () => tm.tabs.create() })
 ```
 
-API surface (v1; full types in `src/shared/types.ts`, `TmScopedApi`):
+API surface (v1; full types in `src/shared/types.ts`, `TmScopedApi`). Under the isolated
+host the API travels over RPC: methods that return values (`registerCommand` /
+`registerTheme` / `tabs.list` / `tabs.active`) resolve **Promises**; everything else
+keeps its semantics:
 
 | Group | Capability |
 | --- | --- |
@@ -206,33 +210,48 @@ API surface (v1; full types in `src/shared/types.ts`, `TmScopedApi`):
 | Terminals | `terminals.subscribe(id, cb)` (live output stream, no historical replay) and `terminals.write(id, data)` (input injection, straight to tmux, no broadcast fan-out) |
 | Status bar | `statusbar.setItem(itemId, { text, color?, tooltip?, onClick? } | null)` — the bottom status bar only appears while a plugin item exists |
 
-- **Refresh semantics**: loaded at startup; the palette / `+` menu / settings page trigger
-  rescans — new plugins are injected on the fly, and a deleted plugin's registrations
-  (commands/themes/status items/subscriptions) come down immediately. Same-realm code
-  cannot be unloaded; dormant closures remain until restart, and putting the folder back
-  with a bumped version re-executes it.
+**Declared network permissions**: the per-plugin CSP starts at zero network. Origins that
+are *declared in the manifest* and *approved by the user* are the only ones let into the
+plugin frame's `connect-src`:
+
+```json
+{ "id": "my-tools", "entry": "main.mjs",
+  "permissions": { "connect": ["https://api.github.com"] } }
+```
+
+- Origin rules: `https://` any host, or `http://localhost` / `http://127.0.0.1`
+  (scheme://host[:port], no path); at most 8 per plugin. The first load after declaring
+  shows an approval dialog (allow / deny; Esc counts as deny).
+- Decisions persist in `userData/plugin-permissions.json`. **Changing the declared list
+  re-prompts** — an old approval never covers new addresses.
+- Denying does not block the plugin: the code runs normally, just without network.
+
+- **Refresh/unload semantics**: loaded at startup; the palette / `+` menu / settings page
+  trigger rescans — new plugins mount on the fly, and a deleted plugin's registrations
+  (commands/themes/status items/subscriptions) **and its sandbox frame are destroyed
+  together** (under the isolated host, plugins truly unload). Putting the folder back
+  with a bumped version rebuilds the frame and re-executes it.
 - The entry is validated main-side: relative path, `.js`/`.mjs`, ≤1 MB. `tmplug://` only
-  serves allowlisted file types inside the plugin folder (js/mjs/css/json/png/svg), with
-  path traversal doubly rejected (`..` segment check + resolved-prefix containment).
+  serves allowlisted file types inside the plugin folder (js/mjs/css/json/png/svg) plus
+  two synthesized resources (the frame host page / the frame bridge), with path traversal
+  doubly rejected (`..` segment check + resolved-prefix containment).
 
-**Security model (read before installing)** — this is the Tier 1 same-realm trust model:
+**Security model (read before installing)** — the Tier 2 isolated host:
 
-- **Zero network, enforced by CSP**: production builds carry `connect-src 'none'` —
-  plugins, exactly like the app itself, have fetch/XHR/WebSocket/sendBeacon refused by
-  the browser. "The app never makes network connections" is upgraded from a convention
-  to a technical guarantee.
-- **Same realm = equivalent capability**: plugin JS runs in the page's context and can do
-  whatever the app can (the renderer's `window.api` is reachable anyway). The
-  `termManager` API is the documented, sanctioned surface — not a security boundary.
+- **Sandbox isolation**: plugin frames are `sandbox="allow-scripts allow-same-origin"`
+  and cross-origin to the app page (unique `tmplug://` origin per plugin) — the DOM,
+  `window.api` and the app's localStorage are all unreachable; only data and callback
+  tokens cross the bridge. `termManager` is the sole capability surface.
+- **Zero network by default, declared opt-in**: per-plugin CSP `default-src 'none'`,
+  `connect-src` limited to user-approved origins; the app page's own CSP remains
+  `connect-src 'none'` as a technical guarantee.
 - **Writing to a terminal = shell command injection**: `terminals.write` can silently
-  inject input into an existing terminal, and shells have network access. Do not install
-  code plugins you do not trust.
-- Remaining channels, stated honestly: `window.open` goes through the app's existing
-  handler and opens the system browser (a visible action); the clipboard is reachable
-  via `window.api`.
-- True isolation (sandboxed iframe + per-plugin CSP + declared network permissions) is
-  the later Tier 2 plugin host — the vehicle for the "marketplace as a plugin"
-  ecosystem, where code plugins trade declared permissions for stronger isolation.
+  inject input into an existing terminal, and shells have network access. Granting
+  network permission and allowing terminal writes are two stacking grants of trust —
+  do not install code plugins you do not trust.
+- A plugin gets storage on its own origin (localStorage is per-plugin; uninstalling and
+  reinstalling starts clean); errors inside plugin frames are forwarded to the host
+  console (reachable via `--remote-debugging-port`).
 
 A complete, copyable example lives at [`docs/examples/code-plugin/`](docs/examples/code-plugin/);
 the full API walkthrough, limits and debugging notes are in the
@@ -373,7 +392,8 @@ src/
     ├── TermView.tsx # xterm instances (single-point output dispatch, adaptive sizing, font settings)
     ├── SettingsPage.tsx # settings page (appearance → font/size + preview; terminal → defaults)
     ├── fonts.ts     # font stack resolution (auto mode / CJK fallback)
-    ├── pluginHost.ts # code-level plugin host (termManager global / script injection / registries / event fan-out)
+    ├── pluginHost.ts # code-level plugin host (sandboxed iframes + postMessage RPC server / registries / event fan-out)
+    ├── PluginPermissionModal.tsx # network-permission approval dialog (allow / deny, Esc = deny)
     └── e2e.ts       # E2E driving hooks
 ```
 
@@ -576,13 +596,13 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
       scheme selects per side, covered by `--e2e-themes`)
 - [x] Declarative plugins (manifest-based profiles / palette commands / theme packs —
       zero code execution, zero network, covered by `--e2e-plugins`)
-- [x] Code-level plugin API, Tier 1 (manifest `entry` injected same-realm as a module
-      script over the `tmplug://` protocol + a `termManager` API: commands / dynamic
-      themes / events / tab control / terminal read-write / status bar; production CSP
-      `connect-src 'none'` upgrades zero-network to a technical guarantee, covered by
-      `--e2e-code-plugins`)
-- [ ] Tier 2 isolated plugin host (sandboxed iframe + per-plugin CSP + declared
-      permissions — the vehicle for the "marketplace as a plugin" ecosystem)
+- [x] Code-level plugin API (manifest `entry`: sandboxed-iframe isolated host, one
+      `tmplug://` origin per plugin, `termManager` API over a postMessage RPC bridge —
+      commands / dynamic themes / events / tab control / terminal read-write / status
+      bar; per-plugin CSP starts at zero network and only lets in origins that are
+      declared in the manifest and approved by the user, while the app page CSP stays
+      `connect-src 'none'`. `--e2e-code-plugins` covers isolation, permissions, CSP and
+      unload end-to-end)
 - [ ] AppImage, rpm and other package formats
 
 ## Notes

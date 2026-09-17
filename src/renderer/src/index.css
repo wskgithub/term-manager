@@ -1227,3 +1227,97 @@ body,
 .statusbar-item.clickable:hover {
   background: var(--surface-hover);
 }
+
+/* ── 代码级插件（Tier 2）：隔离 iframe 容器与权限批准弹窗 ── */
+
+/* 0 尺寸零视觉足迹（不用 display:none：避开定时器节流的边缘行为差异） */
+.plugin-frames {
+  position: fixed;
+  left: 0;
+  bottom: 0;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* 权限批准弹窗：全屏遮罩 + 居中卡片，压在面板(110)/菜单(100)/设置页(20)之上 */
+.perm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(4px);
+  user-select: none;
+}
+
+.perm-card {
+  width: min(480px, calc(100vw - 48px));
+  padding: 18px 20px;
+  background: var(--menu-bg);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  animation: pop-in 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.perm-title {
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+
+.perm-text {
+  margin: 0 0 10px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.perm-hosts {
+  margin: 0 0 14px;
+  padding: 8px 12px 8px 28px;
+  background: var(--bg-inset);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  max-height: 140px;
+  overflow: auto;
+}
+
+.perm-hosts code {
+  font-size: 12px;
+  color: var(--text-bright);
+}
+
+.perm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.perm-btn {
+  min-width: 88px;
+  padding: 7px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.perm-btn:hover {
+  background: var(--surface-hover);
+}
+
+.perm-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+
+.perm-btn.primary:hover {
+  background: color-mix(in srgb, var(--accent) 85%, white);
+}

@@ -3,6 +3,7 @@ import { mkdirSync, readdirSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
 import type { PluginAction, PluginCommandDef, PluginInfo, Profile, ThemeDef } from '../shared/types'
 import { parseThemeFile } from '../shared/themes'
+import { PluginPermStore, MAX_PLUGIN_CONNECT, validConnectOrigin } from './pluginPerms'
 import { findOnPath, validProfile } from './profiles'
 
 export type { PluginInfo } from '../shared/types'
@@ -29,6 +30,28 @@ const MAX_ENTRY_BYTES = 1_000_000
 const MAX_PROFILES = 50
 const MAX_COMMANDS = 100
 const MAX_THEMES = 50
+
+/**
+ * entry 路径的完整校验（形状 + 无 .. 段 + 扩展名 + 真实存在 + ≤1MB）。
+ * manifest 加载与 tmplug:// 合成宿主页共用同一条口径——渲染层只传来相对
+ * 路径字符串，协议侧不能比 manifest 侧更松
+ */
+export function validEntryPath(dir: string, entry: string): boolean {
+  if (
+    typeof entry !== 'string' ||
+    !ENTRY_RE.test(entry) ||
+    entry.split('/').includes('..') ||
+    !(entry.endsWith('.js') || entry.endsWith('.mjs'))
+  ) {
+    return false
+  }
+  try {
+    const st = statSync(join(dir, entry))
+    return st.isFile() && st.size <= MAX_ENTRY_BYTES
+  } catch {
+    return false
+  }
+}
 
 interface LoadedPlugin extends PluginInfo {
   // 本地 profile id 集：launch 动作引用合法性的校验依据
@@ -195,23 +218,38 @@ function loadPlugin(dir: string, dirName: string): LoadedPlugin | null {
   // entry：代码级插件入口。字符串形态 + 字符集 + 无 .. 段 + .js/.mjs 扩展名，
   // 且文件真实存在、不超过 1MB——协议侧按相对路径拼接，这里收紧到位
   if (r.entry !== undefined) {
-    const e = r.entry
-    let ok = false
-    if (
-      typeof e === 'string' &&
-      ENTRY_RE.test(e) &&
-      !e.split('/').includes('..') &&
-      (e.endsWith('.js') || e.endsWith('.mjs'))
-    ) {
-      try {
-        const st = statSync(join(dir, e))
-        ok = st.isFile() && st.size <= MAX_ENTRY_BYTES
-      } catch {
-        ok = false
-      }
-      if (ok) info.entry = e
+    if (typeof r.entry === 'string' && validEntryPath(dir, r.entry)) {
+      info.entry = r.entry
+    } else {
+      console.error(`[plugins] ${source}: entry 非法或文件缺失/超限，字段丢弃`)
     }
-    if (!ok) console.error(`[plugins] ${source}: entry 非法或文件缺失/超限，字段丢弃`)
+  }
+
+  // permissions：Tier 2 权限词汇（当前只有 connect 的 origin 白名单）。
+  // 逐条校验，坏 origin 丢弃（去重保序）；全坏或形状不对则整字段丢弃——
+  // 不合法的权限声明不至于废掉整个插件，只是没有网络放行
+  if (r.permissions !== undefined) {
+    const p = r.permissions
+    if (typeof p !== 'object' || p === null || Array.isArray(p)) {
+      console.error(`[plugins] ${source}: permissions 必须是对象，字段丢弃`)
+    } else {
+      const rawConnect = (p as Record<string, unknown>).connect
+      if (rawConnect === undefined) {
+        // 空权限对象合法（无诉求）
+      } else if (!Array.isArray(rawConnect)) {
+        console.error(`[plugins] ${source}: permissions.connect 必须是数组，字段丢弃`)
+      } else {
+        const connect: string[] = []
+        for (const o of rawConnect) {
+          if (validConnectOrigin(o) && !connect.includes(o)) {
+            if (connect.length < MAX_PLUGIN_CONNECT) connect.push(o)
+          } else if (!validConnectOrigin(o)) {
+            console.error(`[plugins] ${source}: permissions.connect 含非法 origin，已丢弃:`, String(o).slice(0, 200))
+          }
+        }
+        if (connect.length) info.permissions = { connect }
+      }
+    }
   }
   return info
 }
@@ -219,6 +257,9 @@ function loadPlugin(dir: string, dirName: string): LoadedPlugin | null {
 export class PluginRegistry {
   private dir = ''
   private plugins: LoadedPlugin[] = []
+  // 权限决策存储（Tier 2）：list() 附带决策状态给渲染层弹批准框用。可选注入
+  // 保持构造简单（测试/无决策场景传 undefined 即一切按未决策处理）
+  constructor(private readonly perms?: PluginPermStore) {}
 
   load(): void {
     this.dir = join(app.getPath('userData'), 'plugins')
@@ -255,15 +296,24 @@ export class PluginRegistry {
   }
 
   list(): PluginInfo[] {
-    return this.plugins.map((p) => ({
-      id: p.id,
-      name: p.name,
-      version: p.version,
-      profiles: p.profiles,
-      commands: p.commands,
-      themes: p.themes,
-      entry: p.entry
-    }))
+    return this.plugins.map((p) => {
+      const info: PluginInfo = {
+        id: p.id,
+        name: p.name,
+        version: p.version,
+        profiles: p.profiles,
+        commands: p.commands,
+        themes: p.themes,
+        entry: p.entry
+      }
+      const declared = p.entry && p.permissions?.connect?.length ? p.permissions.connect : []
+      if (p.entry && p.permissions?.connect?.length) {
+        info.permissions = { connect: declared }
+        // 决策状态只对带 entry 的插件附带：纯声明式插件没有代码，网络声明无意义
+        info.permDecision = { hosts: declared, decided: this.perms?.isDecided(p.id, declared) ?? false }
+      }
+      return info
+    })
   }
 
   /** term:create 解析：渲染层只传「插件:局部」形式的全局 id，命令体永远不收 */
@@ -278,5 +328,17 @@ export class PluginRegistry {
   /** tmplug:// 协议解析：插件 id → 胜出插件目录的绝对路径（渲染层拿不到路径） */
   getDir(id: string): string | undefined {
     return this.plugins.find((p) => p.id === id)?.dir
+  }
+
+  /** tmplug:// 合成宿主页用：插件展示元信息（name/version 内嵌进帧桥） */
+  getMeta(id: string): { name: string; version?: string } | undefined {
+    const p = this.plugins.find((x) => x.id === id)
+    return p ? { name: p.name, version: p.version } : undefined
+  }
+
+  /** tmplug:// 合成宿主页用：entry 插件声明的 connect 白名单（无 entry/未声明为空） */
+  declaredConnect(id: string): string[] {
+    const p = this.plugins.find((x) => x.id === id)
+    return p?.entry && p.permissions?.connect?.length ? p.permissions.connect : []
   }
 }

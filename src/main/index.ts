@@ -2,6 +2,7 @@ import { app, BrowserWindow, clipboard, ipcMain, nativeTheme, protocol, shell } 
 import { execFile } from 'child_process'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
+import { createServer, type Server } from 'http'
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { extname, join, resolve, sep } from 'path'
@@ -9,7 +10,9 @@ import { ProfileRegistry } from './profiles'
 import { SettingsStore, listMonospaceFonts } from './settings'
 import { SessionStore } from './session'
 import { ThemeRegistry } from './themes'
-import { PluginRegistry } from './plugins'
+import { PluginRegistry, validEntryPath } from './plugins'
+import { PluginPermStore } from './pluginPerms'
+import { BRIDGE_BODY } from './tmplugBridge'
 import { TmuxBackend, sweepStaleServers, type TermInfo } from './tmux'
 import type { SessionTab, TabGroup } from '../shared/types'
 
@@ -17,7 +20,9 @@ const registry = new ProfileRegistry()
 const settingsStore = new SettingsStore()
 const sessionStore = new SessionStore()
 const themes = new ThemeRegistry()
-const plugins = new PluginRegistry()
+// 权限决策存储先建（list() 要附决策状态），whenReady 里 load
+const pluginPerms = new PluginPermStore()
+const plugins = new PluginRegistry(pluginPerms)
 // hub：主进程内分发终端事件（基准测试监听），同时转发给渲染进程
 const hub = new EventEmitter()
 hub.setMaxListeners(200)
@@ -37,7 +42,7 @@ let rendererReady = false
 
 // ── tmplug://：代码级插件（L3）的资源协议 ──
 // tmplug://<pluginId>/<相对路径> → 插件目录内白名单类型文件。standard 使 URL
-// 规范解析、每插件独立 origin（为 Tier 2 iframe 隔离宿主铺路）；corsEnabled
+// 规范解析、每插件独立 origin（Tier 2 沙箱 iframe 的隔离地基）；corsEnabled
 // 使 scheme 可作 CORS 请求目标——module 脚本（<script type="module">）的取数
 // 一律按 CORS 模式走，file:// 页面加载 tmplug:// 即跨源，没有该特权时浏览器
 // 直接判模块加载失败（响应头 ACAO 也无济于事）。scheme 注册必须早于 app
@@ -53,6 +58,62 @@ const TMPLUG_MIME: Record<string, string> = {
   '.json': 'application/json; charset=utf-8',
   '.png': 'image/png',
   '.svg': 'image/svg+xml'
+}
+
+// Tier 2 合成资源（不走磁盘）：保留路径名以 __ 开头且（宿主页）无扩展名，
+// 永远不与插件文件白名单（按扩展名放行 .js/.mjs/…）冲突——插件目录里同名
+// 文件被这两个保留名遮蔽，属可接受的行为面
+const TMPLUG_HOST_PATH = '__tmplug_host__'
+const TMPLUG_BRIDGE_PATH = '__tmplug_bridge__.js'
+
+/** 插件帧的逐插件 CSP：默认零网络，connect-src 仅含已授权 ∩ 已声明 */
+function pluginFrameCsp(id: string): string {
+  const granted = pluginPerms.effectiveConnect(id, plugins.declaredConnect(id))
+  return [
+    "default-src 'none'",
+    "script-src 'self'",
+    "worker-src 'self'",
+    "style-src 'self'",
+    "img-src 'self' data:",
+    "font-src 'self' data:",
+    `connect-src ${granted.length ? granted.join(' ') : "'none'"}`,
+    "base-uri 'none'",
+    "form-action 'none'"
+  ].join('; ')
+}
+
+/**
+ * 合成宿主页 tmplug://<id>/__tmplug_host__?entry=<相对路径>：沙箱 iframe 的
+ * 文档本体。CSP 逐插件合成（见 pluginFrameCsp），帧桥与插件 entry 以同源
+ * 资源引用加载（script-src 'self' 即覆盖，无需 unsafe-inline）。entry 经
+ * validEntryPath 复核——渲染层只传来字符串，协议侧与 manifest 侧同口径
+ */
+function servePluginHostPage(u: URL, dir: string, id: string): Response {
+  const entry = u.searchParams.get('entry') ?? ''
+  if (!entry || !validEntryPath(dir, entry)) {
+    return new Response('bad entry', { status: 400 })
+  }
+  const html =
+    '<!doctype html>\n' +
+    '<html><head><meta charset="utf-8"><title>plugin:' + id + '</title>\n' +
+    '<meta http-equiv="Content-Security-Policy" content="' + pluginFrameCsp(id) + '">\n' +
+    '</head><body>\n' +
+    '<script src="/' + TMPLUG_BRIDGE_PATH + '"></script>\n' +
+    '<script type="module" src="/' + entry + '"></script>\n' +
+    '</body></html>'
+  return new Response(html, {
+    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' }
+  })
+}
+
+/** 帧桥 tmplug://<id>/__tmplug_bridge__.js：插件元信息内嵌 + 桥实现（见 tmplugBridge.ts） */
+function servePluginBridge(id: string): Response {
+  const meta = plugins.getMeta(id)
+  if (!meta) return new Response('unknown plugin', { status: 404 })
+  const js = 'window.__TMPLUG_META__ = ' + JSON.stringify({ id, name: meta.name, version: meta.version }) + ';\n' + BRIDGE_BODY
+  return new Response(js, {
+    headers: { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache' }
+  })
 }
 
 /**
@@ -71,6 +132,9 @@ function registerTmplugProtocol(): void {
       const dir = plugins.getDir(u.hostname)
       if (!dir) return new Response('unknown plugin', { status: 404 })
       const rel = decodeURIComponent(u.pathname).replace(/^\/+/, '')
+      // Tier 2 合成资源优先（保留名，永远到不了磁盘查询）
+      if (rel === TMPLUG_HOST_PATH) return servePluginHostPage(u, dir, u.hostname)
+      if (rel === TMPLUG_BRIDGE_PATH) return servePluginBridge(u.hostname)
       if (!rel || rel.split('/').includes('..')) {
         return new Response('bad path', { status: 400 })
       }
@@ -292,10 +356,27 @@ function registerIpc(): void {
     return themes.list()
   })
 
-  // 声明式插件列表：每次调用重扫 plugins 目录（面板/菜单/设置页打开时拉取）
+  // 声明式插件列表：每次调用重扫 plugins 目录（面板/菜单/设置页打开时拉取），
+  // 附带 Tier 2 权限决策状态（entry 插件声明了 connect 才有）
   ipcMain.handle('plugins:list', () => {
     plugins.refresh()
     return plugins.list()
+  })
+
+  // Tier 2 权限批准落盘：origins=null 表示拒绝。授权列表夹在当前声明范围内
+  //（渲染层只回传弹窗里展示的声明项，但 IPC 是信任边界，这里再夹一次）
+  ipcMain.handle('plugins:grant-perm', (_e, id: unknown, origins: unknown) => {
+    if (typeof id !== 'string') return
+    const declared = plugins.declaredConnect(id)
+    if (!declared.length) return
+    if (origins === null) {
+      pluginPerms.decide(id, declared, null)
+      return
+    }
+    if (!Array.isArray(origins)) return
+    const list = origins.filter((o): o is string => typeof o === 'string' && declared.includes(o))
+    if (!list.length) return
+    pluginPerms.decide(id, declared, list)
   })
 
   ipcMain.handle('term:create', async (_e, profileId: string, cwd?: unknown) => {
@@ -1963,10 +2044,13 @@ async function runPluginsSequence(win: BrowserWindow): Promise<void> {
   }
 }
 
-// ── 代码级插件回归（--e2e-code-plugins）──
-// 覆盖：entry 字段下发、脚本经 tmplug:// 真实执行（module 注入）、动态命令进
-// 面板并可执行（副作用+建标签）、事件订阅送达、动态主题进设置下拉并生效、
-// 生产严格 CSP 拦连接（connect-src 'none'）、语法错误脚本不拖累应用与兄弟插件
+// ── 代码级插件回归（--e2e-code-plugins，Tier 2 隔离宿主）──
+// 覆盖：entry/permissions 字段下发、插件在沙箱 iframe 真实执行（帧桥 RPC）、
+// 动态命令进面板并可执行（副作用+建标签）、事件订阅送达、动态主题进设置
+// 下拉并生效、宿主 window 无 termManager（隔离方向 1）、插件帧摸不到宿主
+// DOM/window.api（隔离方向 2）、逐插件 CSP（未声明/被拒的连接被禁、批准的
+// origin 放行）、权限批准弹窗两条路径（允许/拒绝）、语法错误脚本不拖累
+// 应用与兄弟插件、目录删除即卸载（注册物与 realm 一并消失）
 async function runCodePluginsSequence(win: BrowserWindow): Promise<void> {
   const js = <T,>(expr: string): Promise<T> =>
     win.webContents.executeJavaScript(expr, true) as Promise<T>
@@ -1987,32 +2071,121 @@ async function runCodePluginsSequence(win: BrowserWindow): Promise<void> {
     'window.api.getSettings()'
   )
 
-  // 1) entry 字段：好插件与坏脚本插件都带相对路径（主进程只验形状/存在性，
-  //    语法错误是加载期的事），纯声明插件缺省
-  const infos = await js<Array<{ id: string; entry?: string }>>('window.api.listPlugins()')
-  const entryById = new Map(infos.map((p) => [p.id, p.entry]))
+  // 本地 HTTP 上下文：验证逐插件 CSP 的放行/拦截。端口固定——权限批准流依赖
+  // 渲染层启动时的 plugins:list 快照（弹窗里的声明列表来自它），端口必须早在
+  // 模块初始化的夹具落盘阶段就定死，不能等序列运行时再改写 manifest
+  const mkSrv = (port: number, body: string) =>
+    new Promise<Server | null>((res) => {
+      const srv = createServer((_req, rs) => {
+        // 插件帧的 fetch 是跨源请求（tmplug:// → http://127.0.0.1），没有 ACAO
+        // 会被 CORS 拒掉——那测的是 CORS 不是 CSP
+        rs.setHeader('access-control-allow-origin', '*')
+        rs.end(body)
+      })
+      srv.once('error', () => res(null)) // 端口被占：对应断言自然失败，可读的降级
+      srv.listen(port, '127.0.0.1', () => res(srv))
+    })
+  const okSrv = await mkSrv(E2E_NET_OK_PORT, 'NET_OK')
+  const badSrv = await mkSrv(E2E_NET_BAD_PORT, 'NET_BAD')
+  const okPort = E2E_NET_OK_PORT
+  const badPort = E2E_NET_BAD_PORT
+
+  // 插件帧内执行 JS：经 WebFrameMain 定位 tmplug 帧（executeJavaScript 只进主框架）
+  const frameFor = (pid: string) =>
+    win.webContents.mainFrame.frames.find((f) => f.url.startsWith(`tmplug://${pid}/`))
+  const fjs = async <T,>(pid: string, expr: string): Promise<T> => {
+    const f = frameFor(pid)
+    if (!f) throw new Error(`frame not found: ${pid}`)
+    return f.executeJavaScript(expr, true) as Promise<T>
+  }
+
+  // 1) entry / permissions 字段：好插件与坏脚本插件都带相对路径（主进程只验
+  //    形状/存在性，语法错误是加载期的事），纯声明插件缺省；codenet 声明的
+  //    connect 已随端口改写进入下发数据
+  const infos = await js<
+    Array<{ id: string; entry?: string; permissions?: { connect?: string[] }; permDecision?: { decided: boolean } }>
+  >('window.api.listPlugins()')
+  const byId = new Map(infos.map((p) => [p.id, p]))
   check(
     'entry-fields',
-    entryById.get('e2e-codegood') === 'main.mjs' &&
-      entryById.get('e2e-codebad') === 'main.mjs' &&
-      entryById.get('e2e-plain') === undefined,
+    byId.get('e2e-codegood')?.entry === 'main.mjs' &&
+      byId.get('e2e-codebad')?.entry === 'main.mjs' &&
+      byId.get('e2e-plain')?.entry === undefined,
     JSON.stringify(infos.map((p) => ({ id: p.id, entry: p.entry })))
   )
+  check(
+    'permissions-fields',
+    byId.get('e2e-codenet')?.permissions?.connect?.[0] === `http://127.0.0.1:${okPort}` &&
+      byId.get('e2e-codenet')?.permDecision?.decided === false &&
+      byId.get('e2e-codegood')?.permDecision === undefined,
+    JSON.stringify({ codenet: byId.get('e2e-codenet')?.permissions, codegood: byId.get('e2e-codegood')?.permDecision })
+  )
 
-  // 2) 脚本执行：module 脚本异步到达，等插件初始化标记出现
+  // 2) 无权限声明的插件立即可用：module 在沙箱帧内异步到达，等插件初始化
+  //    标记出现（状态栏项是帧桥 RPC 落到宿主注册表的可见结果）
   const scriptLoaded = await waitUntil(
-    async () => (await js<boolean>('Array.isArray(window.__e2eCodeEvents)')) === true,
+    async () => (await js<boolean>("document.querySelector('.statusbar')?.textContent?.includes('CODE_SB') ?? false")) === true,
     8000,
     200
   )
   check('script-executed', scriptLoaded)
-
-  // 3) 状态栏：插件项渲染在底部状态栏
-  const sbText = await js<string>("document.querySelector('.statusbar')?.textContent ?? ''")
-  check('statusbar-item', sbText.includes('CODE_SB'), JSON.stringify(sbText))
   await snap('01-code-statusbar')
 
-  // 4) 动态命令：面板出现 code: 前缀命令，执行后副作用标记 + 新标签
+  // 3) 隔离方向 1：宿主页面不再有 termManager（Tier 2 唯一入口在插件帧内）
+  const hostTm = await js<boolean>('window.termManager === undefined')
+  check('host-no-termManager', hostTm)
+
+  // 4) 隔离方向 2：插件帧摸不到宿主 DOM 与 window.api，父窗口跨源不可达
+  const isoRaw = await fjs<string>(
+    'e2e-codegood',
+    `JSON.stringify({
+      api: typeof window.api !== 'undefined',
+      parentSelf: window.parent === window,
+      parentDoc: (function () { try { void window.parent.document; return 'leak' } catch (e) { return 'isolated' } })()
+    })`
+  )
+  const iso = JSON.parse(isoRaw) as { api: boolean; parentSelf: boolean; parentDoc: string }
+  check(
+    'frame-isolated',
+    !iso.api && !iso.parentSelf && iso.parentDoc === 'isolated',
+    JSON.stringify(iso)
+  )
+
+  // 5) 权限批准：codenet（允许）→ codenet2（拒绝）两个弹窗依次出现并决策
+  const allowShown = await waitUntil(
+    async () => (await js<boolean>("!!document.querySelector('[data-key=perm-allow]')")) === true,
+    5000,
+    200
+  )
+  check('perm-prompt-allow', allowShown)
+  await snap('02-perm-allow')
+  await js("document.querySelector('[data-key=perm-allow]')?.click()")
+  const denyShown = await waitUntil(
+    async () => (await js<boolean>("(document.querySelector('.perm-card strong')?.textContent ?? '').includes('E2E 网络拒绝')")) === true,
+    5000,
+    200
+  )
+  check('perm-prompt-deny', denyShown)
+  await js("document.querySelector('[data-key=perm-deny]')?.click()")
+  const codenetFrame = await waitUntil(async () => frameFor('e2e-codenet') !== undefined, 5000, 200)
+  const codenet2Frame = await waitUntil(async () => frameFor('e2e-codenet2') !== undefined, 5000, 200)
+  check('perm-frames-mounted', codenetFrame && codenet2Frame)
+
+  // 6) 逐插件 CSP：批准的 origin 放行（fetch 成功且读到测试服务器内容），
+  //    未声明的 origin 被拦；拒绝路径（codenet2）全拦；无声明插件（codegood）全拦
+  const probe = (port: number) =>
+    `fetch('http://127.0.0.1:${port}/x').then((r) => r.text()).then((t) => 'ok:' + t).catch(() => 'blocked')`
+  const netOk = await fjs<string>('e2e-codenet', probe(okPort))
+  const netBad = await fjs<string>('e2e-codenet', probe(badPort))
+  const netDenied = await fjs<string>('e2e-codenet2', probe(badPort))
+  const netNoDecl = await fjs<string>('e2e-codegood', probe(okPort))
+  check(
+    'per-plugin-csp',
+    netOk === 'ok:NET_OK' && netBad === 'blocked' && netDenied === 'blocked' && netNoDecl === 'blocked',
+    JSON.stringify({ netOk, netBad, netDenied, netNoDecl })
+  )
+
+  // 7) 动态命令：面板出现 code: 前缀命令，执行后帧内副作用标记 + 新标签
   const before = await json<string[]>('window.__e2eIds()')
   await pressKey(win, 'P', ['ctrl', 'shift'])
   await delay(400)
@@ -2027,7 +2200,7 @@ async function runCodePluginsSequence(win: BrowserWindow): Promise<void> {
   )
   await json(`window.__e2ePaletteClick(${pingIdx})`)
   await delay(300)
-  const ran = await js<boolean>('window.__e2eCodeRan === true')
+  const ran = await fjs<boolean>('e2e-codegood', 'window.__e2eCodeRan === true')
   const after = await json<string[]>('window.__e2eIds()')
   check(
     'command-exec',
@@ -2035,8 +2208,8 @@ async function runCodePluginsSequence(win: BrowserWindow): Promise<void> {
     JSON.stringify({ ran, before: before.length, after: after.length })
   )
 
-  // 5) 事件：tab-created/tab-activated 已送达插件（ping 建的新标签保证有 new: 记录）
-  const eventsRaw = await js<string[] | undefined>('window.__e2eCodeEvents')
+  // 8) 事件：tab-created/tab-activated 已送达插件（ping 建的新标签保证有 new: 记录）
+  const eventsRaw = await fjs<string[] | undefined>('e2e-codegood', 'window.__e2eCodeEvents')
   const events = Array.isArray(eventsRaw) ? eventsRaw : []
   check(
     'events-delivered',
@@ -2044,7 +2217,7 @@ async function runCodePluginsSequence(win: BrowserWindow): Promise<void> {
     JSON.stringify(events)
   )
 
-  // 6) 动态主题：设置页下拉出现命名空间 id（渲染层合并视图），选用后内联
+  // 9) 动态主题：设置页下拉出现命名空间 id（渲染层合并视图），选用后内联
   //    变量与全部终端背景跟随
   await js('window.__e2eSettings(true)')
   await delay(300)
@@ -2063,17 +2236,16 @@ async function runCodePluginsSequence(win: BrowserWindow): Promise<void> {
     dynInSelect && st.dataTheme === 'dark' && st.vars?.bg === '#1a2b3c' && (st.terms ?? []).every((t) => t.bg === '#1a2b3c'),
     JSON.stringify({ dynInSelect, dataTheme: st.dataTheme, vars: st.vars, terms: st.terms?.map((t) => t.bg) })
   )
-  await snap('02-code-dyn-theme')
+  await snap('03-code-dyn-theme')
 
-  // 7) CSP：生产构建注入的严格版把连接通道全禁（应用零网络原则的技术强制，
-  //    代码插件一并被约束）——fetch 必须以异常告终
+  // 10) 宿主页生产 CSP：连接通道全禁（应用零网络原则的技术强制）
   const fetchRes = await js<string>(
-    "fetch('http://127.0.0.1:9/x').then(() => 'ok').catch(() => 'blocked')"
+    `fetch('http://127.0.0.1:${badPort}/x').then(() => 'ok').catch(() => 'blocked')`
   )
   check('csp-connect-blocked', fetchRes === 'blocked', fetchRes)
 
-  // 8) 语法错误脚本不拖累：应用存活（本轮 js 调用本身即证明）、纯声明插件的
-  //    profile 仍在 ＋ 菜单、好插件注册物仍在（状态栏）
+  // 11) 语法错误脚本不拖累：应用存活（本轮 js 调用本身即证明）、纯声明插件的
+  //     profile 仍在 ＋ 菜单、好插件注册物仍在（状态栏）
   await pressKey(win, 'Escape')
   await delay(200)
   const menu = await js<{ open: boolean; items: Array<{ name: string; disabled: boolean }> }>(
@@ -2085,8 +2257,46 @@ async function runCodePluginsSequence(win: BrowserWindow): Promise<void> {
     menu.items.some((i) => i.name.includes('E2E Plain Shell')) && sbStill.includes('CODE_SB'),
     JSON.stringify({ items: menu.items.map((i) => i.name), sbStill })
   )
+  await js('window.__e2eNewTabToggle()') // 菜单是 toggle 语义：再点一次关掉，别挡住下面的设置页路径
 
-  // 9) 还原设置并退出
+  // 12) 卸载：删掉 codegood 目录 → 重扫 → 注册物与 iframe 一并消失（Tier 2
+  //     的 realm 销毁）；放回目录 → 重扫即恢复（帧重建重新执行）
+  await js('window.__e2eSettings(false)')
+  rmSync(join(CODE_UD, 'plugins', 'e2e-codegood'), { recursive: true, force: true })
+  await js('window.api.listPlugins()')
+  await js('window.__e2eSettings(true)') // 设置页打开触发渲染层 refreshProfiles
+  await delay(500)
+  const gone = await waitUntil(
+    async () =>
+      (await js<boolean>("!(document.querySelector('.statusbar')?.textContent ?? '').includes('CODE_SB')")) === true &&
+      frameFor('e2e-codegood') === undefined,
+    5000,
+    200
+  )
+  const goneDiag = gone
+    ? ''
+    : JSON.stringify({
+        sb: await js<string>("document.querySelector('.statusbar')?.textContent ?? ''"),
+        frame: frameFor('e2e-codegood')?.url ?? null,
+        mainHasCodegood: (await js<Array<{ id: string }>>('window.api.listPlugins()')).some((p) => p.id === 'e2e-codegood'),
+        settingsDom: await js<boolean>("!!document.querySelector('.settings')")
+      })
+  check('plugin-unloaded', gone, goneDiag)
+  writeCodeGoodFixture()
+  await js('window.__e2eSettings(false)')
+  await js('window.api.listPlugins()')
+  await js('window.__e2eSettings(true)')
+  const back = await waitUntil(
+    async () =>
+      (await js<boolean>("(document.querySelector('.statusbar')?.textContent ?? '').includes('CODE_SB')")) === true &&
+      frameFor('e2e-codegood') !== undefined,
+    5000,
+    200
+  )
+  check('plugin-reloaded', back)
+
+  // 13) 还原设置并退出
+  await js('window.__e2eSettings(false)')
   const final = await js<{ theme: string; darkTheme: string; lightTheme: string }>(
     `window.api.setSettings({ theme: ${JSON.stringify(prevSettings.theme)}, darkTheme: ${JSON.stringify(
       prevSettings.darkTheme
@@ -2098,6 +2308,8 @@ async function runCodePluginsSequence(win: BrowserWindow): Promise<void> {
     JSON.stringify({ final, prevSettings })
   )
 
+  okSrv?.close()
+  badSrv?.close()
   const allOk = !results.some((r) => r.startsWith('FAIL:'))
   console.log('E2E_CODE_RESULT ' + JSON.stringify({ ok: allOk, results }))
   if (argvHas('--e2e-quit')) {
@@ -2621,8 +2833,14 @@ if (pluginsE2E) {
 
 // --e2e-code-plugins 的自备环境，须在 whenReady 的 plugins.load() 之前就绪：
 // 好的代码级插件（entry + 覆盖 API 全部能力面）、entry 语法错误的插件（脚本
-// 加载失败不得拖累应用与兄弟插件）、无 entry 纯声明式插件（字段缺省语义）
+// 加载失败不得拖累应用与兄弟插件）、无 entry 纯声明式插件（字段缺省语义）、
+// 声明网络权限的两个插件（codenet 允许路径 / codenet2 拒绝路径——权限批准
+// 弹窗与逐插件 CSP 的验证对象）。
+// 本地 HTTP 测试端口固定（见序列内注释）：夹具落盘在模块初始化期，端口必须
+// 此刻定死，渲染层启动时的 plugins:list 快照（弹窗声明列表来源）才能对上
 const CODE_UD = '/tmp/e2e-code-ud'
+const E2E_NET_OK_PORT = 28123
+const E2E_NET_BAD_PORT = 28124
 const CODE_MAIN = [
   "const tm = termManager.init('e2e-codegood')",
   'window.__e2eCodeEvents = []',
@@ -2647,16 +2865,22 @@ const CODE_MAIN = [
   "tm.statusbar.setItem('s1', { text: 'CODE_SB', tooltip: 'from code plugin' })",
   ''
 ].join('\n')
-if (codePluginsE2E) {
-  const base = join(CODE_UD, 'plugins')
-  rmSync(CODE_UD, { recursive: true, force: true })
-  const good = join(base, 'e2e-codegood')
+
+// 卸载断言删目录后原样放回（目录名与内容一致，重扫即恢复）
+function writeCodeGoodFixture(): void {
+  const good = join(CODE_UD, 'plugins', 'e2e-codegood')
   mkdirSync(good, { recursive: true })
   writeFileSync(
     join(good, 'manifest.json'),
     JSON.stringify({ id: 'e2e-codegood', name: 'E2E 代码插件', version: '1.0.0', entry: 'main.mjs' })
   )
   writeFileSync(join(good, 'main.mjs'), CODE_MAIN)
+}
+
+if (codePluginsE2E) {
+  const base = join(CODE_UD, 'plugins')
+  rmSync(CODE_UD, { recursive: true, force: true })
+  writeCodeGoodFixture()
   const bad = join(base, 'e2e-codebad')
   mkdirSync(bad, { recursive: true })
   writeFileSync(
@@ -2674,6 +2898,32 @@ if (codePluginsE2E) {
       profiles: [{ id: 'sh', name: 'E2E Plain Shell', command: 'bash', color: '#999999' }]
     })
   )
+  const codenet = join(base, 'e2e-codenet')
+  mkdirSync(codenet, { recursive: true })
+  writeFileSync(
+    join(codenet, 'manifest.json'),
+    JSON.stringify({
+      id: 'e2e-codenet',
+      name: 'E2E 网络允许',
+      version: '1.0.0',
+      entry: 'main.mjs',
+      permissions: { connect: [`http://127.0.0.1:${E2E_NET_OK_PORT}`] }
+    })
+  )
+  writeFileSync(join(codenet, 'main.mjs'), "termManager.init('e2e-codenet')\n")
+  const codenet2 = join(base, 'e2e-codenet2')
+  mkdirSync(codenet2, { recursive: true })
+  writeFileSync(
+    join(codenet2, 'manifest.json'),
+    JSON.stringify({
+      id: 'e2e-codenet2',
+      name: 'E2E 网络拒绝',
+      version: '1.0.0',
+      entry: 'main.mjs',
+      permissions: { connect: [`http://127.0.0.1:${E2E_NET_BAD_PORT}`] }
+    })
+  )
+  writeFileSync(join(codenet2, 'main.mjs'), "termManager.init('e2e-codenet2')\n")
   app.setPath('userData', CODE_UD)
 }
 
@@ -2694,6 +2944,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
     settingsStore.load()
     sessionStore.load()
     themes.load()
+    pluginPerms.load()
     plugins.load()
     // 启动即按存档主题定向：dark/light 覆盖，system 交给系统偏好；
     // 必须在 createWindow 之前，窗口装饰（darkTheme）取的是此刻的有效值

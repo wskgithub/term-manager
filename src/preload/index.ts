@@ -19,6 +19,10 @@ const api = {
   listFonts: (): Promise<string[]> => ipcRenderer.invoke('settings:fonts'),
   listThemes: (): Promise<ThemeDef[]> => ipcRenderer.invoke('themes:list'),
   listPlugins: (): Promise<PluginInfo[]> => ipcRenderer.invoke('plugins:list'),
+  // Tier 2 权限批准：origins = 授权的 origin 列表（须 ⊆ manifest 声明），
+  // null = 拒绝。落盘后由渲染层重挂插件 iframe（新合成页的 CSP 才含授权）
+  grantPluginPermission: (id: string, origins: string[] | null): Promise<void> =>
+    ipcRenderer.invoke('plugins:grant-perm', id, origins),
   createTerm: (profileId: string, cwd?: string): Promise<TermInfo> =>
     ipcRenderer.invoke('term:create', profileId, cwd),
   cliReady: (): Promise<string[]> => ipcRenderer.invoke('cli:ready'),

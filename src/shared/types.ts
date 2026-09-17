@@ -106,15 +106,36 @@ export interface PluginInfo {
   profiles: Profile[]
   commands: PluginCommandDef[]
   themes: ThemeDef[]
-  // 代码级插件入口（L3）：相对插件目录的 .js/.mjs 路径，渲染层经 tmplug://
-  // 协议以 module 脚本注入执行。缺省 = 纯声明式插件（L2）
+  // 代码级插件入口（L3）：相对插件目录的 .js/.mjs 路径。Tier 2 下渲染层为它
+  // 创建 tmplug:// 沙箱 iframe（隔离宿主），entry 经查询参数传给合成宿主页。
+  // 缺省 = 纯声明式插件（L2）
   entry?: string
+  // manifest 声明的权限（已校验）：主进程据此合成逐插件 CSP，渲染层据此弹批准框
+  permissions?: PluginPermissions
+  // 权限决策状态（仅带 entry 且声明了 connect 的插件附带）：decided=false 时
+  // 渲染层先弹批准框，决策落盘后才挂 iframe（合成的 CSP 取已授权 ∩ 已声明）
+  permDecision?: PluginPermDecision
 }
 
-// ── 代码级插件 API（L3 Tier 1，同 realm）──
-// 插件脚本与应用同 realm 运行（Tier 1 信任模型：真正的边界是 CSP 零网络 +
-// 安装即信任，API 是文档化的收编入口而非安全门；隔离宿主属 Tier 2）。
-// 脚本样板：const tm = termManager.init('my-plugin')
+// ── 代码级插件（L3 Tier 2：沙箱 iframe 隔离宿主）──
+// 每个代码插件跑在独立的 sandbox iframe 里（tmplug://<id>/ 每插件独立 origin），
+// 浏览器沙箱保证它碰不到宿主页面的 DOM 与 window.api——唯一通道是桥上显式
+// 暴露的 termManager API（postMessage RPC）。逐插件 CSP 默认零网络；插件用
+// manifest 声明的权限换放行（用户批准后合成页的 connect-src 才含该 origin）。
+// 脚本样板（在插件 entry 模块里）：const tm = termManager.init('my-plugin')
+
+// manifest 可声明的权限词汇：封闭集合，当前只有网络连接
+export interface PluginPermissions {
+  /** fetch/XHR/WebSocket 可达的 origin 白名单（https 任意主机；http 仅 localhost） */
+  connect?: string[]
+}
+
+// 权限决策状态：hosts 是当前 manifest 声明（已校验）的列表；decided 表示已存在
+// 针对该列表的决策（拒绝也算）。声明列表变更后 decided 回落 false，重新弹框
+export interface PluginPermDecision {
+  hosts: string[]
+  decided: boolean
+}
 
 // 插件可订阅的应用事件（负载按事件名不同）
 export type TmPluginEventName =
@@ -165,19 +186,21 @@ export interface TmStatusbarEntry {
 }
 
 // termManager.init(pluginId) 返回的命名空间化 API：全部注册物自动归属该插件，
-// 卸载（插件目录被删）时一并摘除
+// 卸载（插件目录被删）时一并摘除。Tier 2 隔离宿主下 API 经 postMessage RPC
+// 落地，带返回值的方法（registerCommand/registerTheme/tabs.list/tabs.active）
+// 为 Promise 形态；事件/数据订阅的取消函数在插件帧内本地生效
 export interface TmScopedApi {
   version: '1'
   info: { id: string; name: string; version?: string }
-  registerCommand(def: TmRuntimeCommandDef): boolean
+  registerCommand(def: TmRuntimeCommandDef): Promise<boolean>
   unregisterCommand(id: string): void
-  /** theme.id 为插件内局部 id，实际注册为「pluginId/id」；格式非法返回 false */
-  registerTheme(theme: ThemeFile & { id: string }): boolean
+  /** theme.id 为插件内局部 id，实际注册为「pluginId/id」；格式非法 resolve false */
+  registerTheme(theme: ThemeFile & { id: string }): Promise<boolean>
   unregisterTheme(id: string): void
   on<K extends keyof TmPluginEvents>(event: K, cb: (payload: TmPluginEvents[K]) => void): () => void
   tabs: {
-    list(): TermInfo[]
-    active(): string | undefined
+    list(): Promise<TermInfo[]>
+    active(): Promise<string | undefined>
     activate(id: string): void
     create(profileId?: string, cwd?: string): Promise<TermInfo | undefined>
   }
