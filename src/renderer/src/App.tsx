@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { Terminal } from '@xterm/xterm'
 import {
   api,
@@ -9,6 +9,7 @@ import {
   type Profile,
   type TabGroup,
   type TermInfo,
+  type ThemeDef,
 } from './api'
 import { TabBar } from './TabBar'
 import { Sidebar, type SideDropTarget } from './Sidebar'
@@ -17,7 +18,15 @@ import { CommandPalette } from './CommandPalette'
 import { buildCommands } from './palette'
 import { SettingsPage } from './SettingsPage'
 import { ContextMenu, CopyIcon, PasteIcon } from './ContextMenu'
-import { resolveDark, subscribeScheme, xtermTheme, rememberTheme } from './theme'
+import {
+  applyUiVars,
+  pickScheme,
+  rememberSchemeVars,
+  rememberTheme,
+  resolveDark,
+  subscribeScheme,
+} from './theme'
+import { BUILTIN_THEMES } from '../../shared/themes'
 import { setupE2E } from './e2e'
 
 // 摘出标签并给出插回锚点：原本在组内则锚在原组块末尾之后（原地改组会把同组切成
@@ -39,6 +48,9 @@ export default function App() {
   const [tabs, setTabs] = useState<TermInfo[]>([])
   const [activeId, setActiveId] = useState('')
   const [profiles, setProfiles] = useState<Profile[]>([])
+  // 可选配色方案（内建 + themes 目录自定义），themes:list 每次调用都重扫。
+  // 初值给内建两套：异步拉取前 pickScheme/设置页下拉即有正确内容，无空白帧
+  const [themeDefs, setThemeDefs] = useState<ThemeDef[]>(BUILTIN_THEMES)
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const settingsOpenRef = useRef(false)
@@ -77,15 +89,29 @@ export default function App() {
   // （主进程 themeSource 驱动，含运行中的系统深浅切换），订阅同一通路即可全覆盖
   const theme = settings.theme
   const dark = useSyncExternalStore(subscribeScheme, () => resolveDark(theme))
+  // 生效配色方案：themes 异步加载前列表为空 → pickScheme 回退内建，数据到位自然切换；
+  // memo 保证无关渲染不产生新对象（下面的 [scheme] effect 靠引用相等去重）
+  const scheme = useMemo(
+    () => pickScheme(themeDefs, dark, settings),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [themeDefs, dark, settings.darkTheme, settings.lightTheme]
+  )
   // 深浅落到 <html data-theme>（CSS 变量组挂这里），并记 localStorage 供下次启动预应用
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? 'dark' : 'light'
     rememberTheme(theme)
   }, [dark, theme])
-  // xterm 画布不走 CSS：所有已开终端随深浅整体换调色板
+  // 自定义配色的 UI 变量走 <html> 内联样式覆盖 :root 基线（清除即回退级联），
+  // 同时缓存两侧最近生效值，供 preapplyTheme 防自定义主题首帧闪内建色
   useEffect(() => {
-    for (const t of terms.current.values()) t.options.theme = xtermTheme(dark)
-  }, [dark])
+    applyUiVars(scheme.ui)
+    rememberSchemeVars(dark, scheme)
+  }, [scheme, dark])
+  // xterm 画布不走 CSS：所有已开终端随方案整体换调色板（partial 已在 pickScheme
+  // 与内建合并成套，不会出现缺省色打回 xterm 默认的问题）
+  useEffect(() => {
+    for (const t of terms.current.values()) t.options.theme = scheme.terminal
+  }, [scheme])
 
   // 总开关关闭时广播态全部撤下（设置页即时生效）：组头开关随 UI 消失，
   // 残留的广播组会让输入悄悄复制，必须显式清空
@@ -162,6 +188,10 @@ export default function App() {
     api.getSettings().then((s) => {
       if (alive) setSettings(s)
     })
+    // 配色方案列表：启动拉一次；设置页/面板打开时再重扫（主进程每次重读目录）
+    void api.listThemes().then((ts) => {
+      if (alive) setThemeDefs(ts)
+    })
     const offData = api.onData((id, d) => terms.current.get(id)?.write(d))
     const offExit = api.onExit((id) => {
       terms.current.get(id)?.write('\r\n\x1b[90m[会话已退出]\x1b[0m\r\n')
@@ -232,6 +262,11 @@ export default function App() {
     if (paletteOpen) refreshProfiles()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paletteOpen])
+
+  // 设置页打开时重扫配色方案：运行中新增/编辑的 themes/*.json 无需重启即可选
+  useEffect(() => {
+    if (settingsOpen) void api.listThemes().then(setThemeDefs)
+  }, [settingsOpen])
 
   // 给 TabBar 的默认终端：设置了且本机可用才生效，否则视为未设置（+ 打开菜单）
   const defaultProfileId =
@@ -638,7 +673,7 @@ export default function App() {
               fontFamily={settings.fontFamily}
               fontSize={settings.fontSize}
               gpu={settings.gpuRendering}
-              dark={dark}
+              scheme={scheme}
               onTitle={(title) => shellTitle(t.id, title)}
               onTerminal={registerTerminal}
               onContextMenu={openTermContextMenu}
@@ -656,6 +691,7 @@ export default function App() {
             <SettingsPage
               settings={settings}
               profiles={profiles}
+              themes={themeDefs}
               onChange={applySettings}
               onClose={() => {
                 setSettingsOpen(false)

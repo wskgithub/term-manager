@@ -11,6 +11,10 @@ const FONT_SIZE_MIN = 8
 const FONT_SIZE_MAX = 48
 const FONT_FAMILY_MAX = 200
 const DEFAULT_PROFILE_MAX = 100
+// 配色方案 id：字符集不含空格与控制字符（/ 为插件命名空间 id 预留）；
+// 不校验存在性——方案列表归 ThemeRegistry 管，渲染层解析不到时回退内建
+const SCHEME_ID_MAX = 80
+const SCHEME_ID_RE = /^[A-Za-z0-9/_-]+$/
 const CONFIG_VERSION = 1
 
 interface ConfigFile extends AppSettings {
@@ -47,6 +51,15 @@ function sanitize(input: unknown, base: AppSettings): AppSettings {
   }
   if (raw.theme === 'dark' || raw.theme === 'light' || raw.theme === 'system') {
     out.theme = raw.theme
+  }
+  for (const key of ['darkTheme', 'lightTheme'] as const) {
+    if (typeof raw[key] === 'string') {
+      const id = (raw[key] as string)
+        .replace(/[\u0000-\u001f\u007f]/g, '')
+        .trim()
+        .slice(0, SCHEME_ID_MAX)
+      if (SCHEME_ID_RE.test(id)) out[key] = id
+    }
   }
   if (typeof raw.keepSessionOnExit === 'boolean') {
     out.keepSessionOnExit = raw.keepSessionOnExit
