@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/wskgithub/term-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/wskgithub/term-manager/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/wskgithub/term-manager)](https://github.com/wskgithub/term-manager/releases)
 
 [简体中文](README.zh-CN.md) | **English**
 
