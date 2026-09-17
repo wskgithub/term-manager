@@ -133,6 +133,70 @@ plugins/docker-tools/
   强制）。分发就是 git clone 或下载文件夹。若未来需要插件市场，预期由生态*以插件
   形式*自建——该路线图阶段会带隔离的、声明式权限的插件宿主，不属于本声明式阶段。
 
+## 代码级插件（实验性）
+
+声明式插件覆盖「数据」类扩展；需要**行为**时（监听输出、自动化动作、状态栏展示），
+在 manifest 里加一个 `"entry"`，插件就能带代码运行：
+
+```
+plugins/my-tools/
+├─ manifest.json      { "id": "my-tools", "name": "My Tools", "entry": "main.mjs" }
+└─ main.mjs           入口脚本（ES module，可相对 import 插件目录内其他文件）
+```
+
+入口经应用内建协议 `tmplug://<插件id>/<相对路径>` 以 module 脚本加载，与界面
+**同 realm** 运行，通过全局对象取得命名空间化 API：
+
+```js
+// main.mjs
+const tm = termManager.init('my-tools')
+
+tm.registerCommand({
+  id: 'ping',
+  label: 'My Tools: Ping',
+  run: () => tm.statusbar.setItem('ping', { text: 'pong' })
+})
+tm.registerTheme({ id: 'midnight', name: 'Midnight', type: 'dark', terminal: { background: '#0b0d12' } })
+tm.on('tab-created', (e) => console.log('new tab', e.id))
+tm.statusbar.setItem('clock', { text: '⏳', onClick: () => tm.tabs.create() })
+```
+
+API 面（v1；完整类型见 `src/shared/types.ts` 的 `TmScopedApi`）：
+
+| 分组 | 能力 |
+| --- | --- |
+| 命令 | `registerCommand` / `unregisterCommand`（进命令面板，key 为 `code:插件id:命令id`） |
+| 主题 | `registerTheme` / `unregisterTheme`（动态配色，id 命名空间化 `插件id/局部id`，格式校验与主题文件同源） |
+| 事件 | `on('tab-created' / 'tab-closed' / 'tab-activated' / 'tab-renamed' / 'theme-changed' / 'scheme-changed', cb)`，返回取消函数 |
+| 标签 | `tabs.list() / active() / activate(id) / create(profileId?, cwd?)` |
+| 界面 | `ui.setTheme(mode) / setScheme(id) / toggleSidebar() / openSettings()`（与 manifest 动作词汇同效） |
+| 终端 | `terminals.subscribe(id, cb)`（实时输出流，不含历史回放）、`terminals.write(id, data)`（注入输入，直达 tmux 不走广播扇出） |
+| 状态栏 | `statusbar.setItem(itemId, { text, color?, tooltip?, onClick? } | null)`——底部状态栏仅当有插件项时才出现 |
+
+- **刷新语义**：启动时加载；面板/＋菜单/设置页打开触发重扫——新插件即时注入，
+  被删插件的注册物（命令/主题/状态栏项/事件与数据订阅）即时下架。同 realm 代码
+  无法卸载，删除后的惰性闭包留待重启；改版本号后重新放回会重新执行。
+- 入口在主进程校验：相对路径、`.js`/`.mjs`、≤1MB。`tmplug://` 只服务插件目录内
+  白名单类型文件（js/mjs/css/json/png/svg），路径穿越双重拒绝（`..` 段检查 +
+  resolve 后目录前缀校验）。
+
+**安全模型（安装前请读）**——Tier 1 同 realm 信任模型：
+
+- **零网络由 CSP 技术强制**：生产构建的 CSP 带 `connect-src 'none'`——插件与
+  应用本体一样，fetch/XHR/WebSocket/sendBeacon 一律被浏览器拒绝。「应用本身
+  永不联网」从约定升级为技术强制。
+- **同 realm = 能力等价**：插件 JS 与界面同上下文运行，能做的事与应用等价
+  （渲染层的 `window.api` 本就可达）。`termManager` API 是文档化的收编入口，
+  不是安全边界。
+- **写终端 = 可注入 shell 命令**：`terminals.write` 能向已存在的终端静默注入
+  输入，而 shell 自身有网络。不要安装你不信任的代码插件。
+- 剩余信道如实声明：`window.open` 经应用既有处理器外开系统浏览器（可见动作）；
+  剪贴板经 `window.api` 可达。
+- 真正的隔离（沙箱 iframe + 每插件 CSP + 声明式网络权限）是后续 Tier 2 插件
+  宿主——「市场=插件」生态的载体，代码插件届时可声明权限换取更强隔离。
+
+完整可拷贝示例见 [`docs/examples/code-plugin/`](docs/examples/code-plugin/)。
+
 ## Nautilus 右键集成
 
 文件管理器右键（目录上或目录空白处）有「在 Term Manager 中打开」：在该目录开一个标签。
@@ -153,8 +217,8 @@ src/
 │   ├── tmux.ts      # tmux Control Mode 后端（会话托管/输入/输出/尺寸/附着恢复/屏幕回放）
 │   ├── profiles.ts  # profile 注册表（JSON 持久化）
 │   ├── settings.ts  # 应用设置（字体/字号）+ fc-list 字体枚举
-│   ├── themes.ts    # 配色方案目录加载器（themes/*.json，只读）
-│   ├── plugins.ts   # 声明式插件注册表（plugins/*/manifest.json，纯数据）
+│   ├── themes.ts    # 配色方案目录加载器（themes/*.json，只读；校验在 shared/themes.ts 单源）
+│   ├── plugins.ts   # 插件注册表（plugins/*/manifest.json；含 L3 entry 校验）
 │   └── session.ts   # 会话持久化（sessions.json：附着候选判定 + 标签元数据落盘）
 ├── preload/         # contextBridge API
 └── renderer/src/
@@ -169,6 +233,7 @@ src/
     ├── TermView.tsx # xterm 实例（输出单点分发、自适应尺寸、字体设置）
     ├── SettingsPage.tsx # 设置页（外观 → 字体/字号 + 预览；终端 → 默认终端等）
     ├── fonts.ts     # 字体栈解析（自动模式 / CJK 回退）
+    ├── pluginHost.ts # 代码级插件宿主（termManager 全局/脚本注入/注册表/事件扇出）
     └── e2e.ts       # E2E 驱动钩子
 ```
 
@@ -266,6 +331,14 @@ npx electron out/main/index.js --e2e-themes --e2e-quit --no-sandbox
 # 插件 profile 进 ＋ 菜单并可真实启动回显、面板命令执行（launch/open-settings）、
 # 坏配色引用置灰、插件主题包进配色选择器
 npx electron out/main/index.js --e2e-plugins --e2e-quit --no-sandbox
+```
+
+```bash
+# 代码级插件回归（环境自备：好插件 main.mjs 覆盖 API 全能力面 + 语法错误
+# entry 插件 + 纯声明插件）：断言 entry 下发、脚本经 tmplug:// 真实执行、
+# 动态命令进面板并可执行（建标签）、事件送达、动态主题进下拉并生效、
+# CSP 拦连接（connect-src 'none'）、坏脚本不拖累应用与兄弟插件
+npx electron out/main/index.js --e2e-code-plugins --e2e-quit --no-sandbox
 ```
 
 ```bash
@@ -390,7 +463,11 @@ Esc 关闭并把焦点还给终端。覆盖四类命令：
 - [x] 命令面板（`Ctrl+Shift+P` 模糊搜索执行：标签/profile/切换/分组/广播/主题/侧栏/设置/退出，面板内二段改名，`--e2e-palette` 覆盖）
 - [x] GPU 渲染（addon-webgl 默认启用，创建失败/上下文丢失自动回退 DOM 渲染器，设置页可关，`--e2e-webgl` 双模式覆盖）
 - [x] 自定义主题（themes 目录数据化配色方案：UI CSS 变量 + xterm 调色板，未声明字段逐项继承内建，深/浅双选择器独立，`--e2e-themes` 覆盖）
-- [x] 声明式插件（manifest 注入 profile/面板命令/主题包——零代码执行零网络，`--e2e-plugins` 覆盖；代码级扩展 API 是后续阶段）
+- [x] 声明式插件（manifest 注入 profile/面板命令/主题包——零代码执行零网络，`--e2e-plugins` 覆盖）
+- [x] 代码级插件 API·Tier 1（manifest `entry` 经 `tmplug://` 协议以 module 脚本同 realm 注入 +
+      `termManager` API：命令/动态主题/事件/标签控制/终端读写/状态栏；生产 CSP `connect-src 'none'`
+      把零网络升级为技术强制，`--e2e-code-plugins` 覆盖）
+- [ ] Tier 2 隔离插件宿主（沙箱 iframe + 每插件 CSP + 声明式权限——「市场=插件」生态的载体）
 - [ ] AppImage、rpm 等其他打包格式
 
 ## 备注

@@ -1,9 +1,10 @@
-import { app, BrowserWindow, clipboard, ipcMain, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, clipboard, ipcMain, nativeTheme, protocol, shell } from 'electron'
 import { execFile } from 'child_process'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
-import { join, resolve } from 'path'
+import { readFile } from 'fs/promises'
+import { extname, join, resolve, sep } from 'path'
 import { ProfileRegistry } from './profiles'
 import { SettingsStore, listMonospaceFonts } from './settings'
 import { SessionStore } from './session'
@@ -33,6 +34,68 @@ let mainWindow: BrowserWindow | null = null
 // 渲染层 cli:ready 之前先入队，之后就绪后直接推送，避免事件丢失
 const pendingOpenDirs: string[] = []
 let rendererReady = false
+
+// ── tmplug://：代码级插件（L3）的资源协议 ──
+// tmplug://<pluginId>/<相对路径> → 插件目录内白名单类型文件。standard 使 URL
+// 规范解析、每插件独立 origin（为 Tier 2 iframe 隔离宿主铺路）；corsEnabled
+// 使 scheme 可作 CORS 请求目标——module 脚本（<script type="module">）的取数
+// 一律按 CORS 模式走，file:// 页面加载 tmplug:// 即跨源，没有该特权时浏览器
+// 直接判模块加载失败（响应头 ACAO 也无济于事）。scheme 注册必须早于 app
+// ready（故在模块顶层），handle 在 whenReady 挂
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'tmplug', privileges: { standard: true, corsEnabled: true } }
+])
+
+const TMPLUG_MIME: Record<string, string> = {
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml'
+}
+
+/**
+ * tmplug:// 处理器。id → 目录的解析以 PluginRegistry 为唯一权威（重复 id 先到
+ * 先得，同 id 的影子目录无从越权）；相对路径解码后拒 .. 段，resolve 后必须
+ * 仍在插件目录内（双保险）；扩展名白名单外一律 403。渲染层只拿得到 id 与
+ * entry 相对路径，绝对路径不出主进程
+ */
+function registerTmplugProtocol(): void {
+  protocol.handle('tmplug', (request) => {
+    try {
+      const u = new URL(request.url)
+      if (!/^[a-z0-9-]{1,64}$/.test(u.hostname)) {
+        return new Response('bad plugin id', { status: 400 })
+      }
+      const dir = plugins.getDir(u.hostname)
+      if (!dir) return new Response('unknown plugin', { status: 404 })
+      const rel = decodeURIComponent(u.pathname).replace(/^\/+/, '')
+      if (!rel || rel.split('/').includes('..')) {
+        return new Response('bad path', { status: 400 })
+      }
+      const abs = resolve(dir, rel)
+      if (!abs.startsWith(dir + sep)) return new Response('forbidden', { status: 403 })
+      const mime = TMPLUG_MIME[extname(abs).toLowerCase()]
+      if (!mime) return new Response('unsupported type', { status: 403 })
+      // module 脚本（<script type="module">）一律按 CORS 模式取数：tmplug:// 是
+      // 每插件独立 origin，file:// 页面加载即跨源，无 ACAO 头会被浏览器拒掉
+      return readFile(abs).then(
+        (data) =>
+          new Response(new Uint8Array(data), {
+            headers: {
+              'content-type': mime,
+              'cache-control': 'no-cache',
+              'access-control-allow-origin': '*'
+            }
+          }),
+        () => new Response('not found', { status: 404 })
+      )
+    } catch {
+      return new Response('bad request', { status: 400 })
+    }
+  })
+}
 
 /** 校验外部传入的目录：必须是已存在的本地目录，否则无效（回退 profile.cwd/homedir） */
 function existingDir(p: unknown): string | undefined {
@@ -1900,6 +1963,149 @@ async function runPluginsSequence(win: BrowserWindow): Promise<void> {
   }
 }
 
+// ── 代码级插件回归（--e2e-code-plugins）──
+// 覆盖：entry 字段下发、脚本经 tmplug:// 真实执行（module 注入）、动态命令进
+// 面板并可执行（副作用+建标签）、事件订阅送达、动态主题进设置下拉并生效、
+// 生产严格 CSP 拦连接（connect-src 'none'）、语法错误脚本不拖累应用与兄弟插件
+async function runCodePluginsSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string) => JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const outDir = argvFlag('--e2e-out') ?? join(app.getPath('userData'), 'e2e')
+  mkdirSync(outDir, { recursive: true })
+  const snap = async (name: string) => {
+    const img = await win.webContents.capturePage()
+    writeFileSync(join(outDir, `${name}.png`), img.toPNG())
+    console.log(`E2E_SNAP ${name}`)
+  }
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_CODE ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+  const prevSettings = await js<{ theme: string; darkTheme: string; lightTheme: string }>(
+    'window.api.getSettings()'
+  )
+
+  // 1) entry 字段：好插件与坏脚本插件都带相对路径（主进程只验形状/存在性，
+  //    语法错误是加载期的事），纯声明插件缺省
+  const infos = await js<Array<{ id: string; entry?: string }>>('window.api.listPlugins()')
+  const entryById = new Map(infos.map((p) => [p.id, p.entry]))
+  check(
+    'entry-fields',
+    entryById.get('e2e-codegood') === 'main.mjs' &&
+      entryById.get('e2e-codebad') === 'main.mjs' &&
+      entryById.get('e2e-plain') === undefined,
+    JSON.stringify(infos.map((p) => ({ id: p.id, entry: p.entry })))
+  )
+
+  // 2) 脚本执行：module 脚本异步到达，等插件初始化标记出现
+  const scriptLoaded = await waitUntil(
+    async () => (await js<boolean>('Array.isArray(window.__e2eCodeEvents)')) === true,
+    8000,
+    200
+  )
+  check('script-executed', scriptLoaded)
+
+  // 3) 状态栏：插件项渲染在底部状态栏
+  const sbText = await js<string>("document.querySelector('.statusbar')?.textContent ?? ''")
+  check('statusbar-item', sbText.includes('CODE_SB'), JSON.stringify(sbText))
+  await snap('01-code-statusbar')
+
+  // 4) 动态命令：面板出现 code: 前缀命令，执行后副作用标记 + 新标签
+  const before = await json<string[]>('window.__e2eIds()')
+  await pressKey(win, 'P', ['ctrl', 'shift'])
+  await delay(400)
+  const filtered = await js<{ items: Array<{ key: string; disabled: boolean }> }>(
+    `window.__e2ePaletteInput(${JSON.stringify('E2E Code')})`
+  )
+  const pingIdx = filtered.items.findIndex((i) => i.key === 'code:e2e-codegood:ping')
+  check(
+    'palette-code-command',
+    pingIdx >= 0 && filtered.items[pingIdx]?.disabled !== true,
+    JSON.stringify(filtered.items.map((i) => i.key))
+  )
+  await json(`window.__e2ePaletteClick(${pingIdx})`)
+  await delay(300)
+  const ran = await js<boolean>('window.__e2eCodeRan === true')
+  const after = await json<string[]>('window.__e2eIds()')
+  check(
+    'command-exec',
+    ran && after.length === before.length + 1,
+    JSON.stringify({ ran, before: before.length, after: after.length })
+  )
+
+  // 5) 事件：tab-created/tab-activated 已送达插件（ping 建的新标签保证有 new: 记录）
+  const eventsRaw = await js<string[] | undefined>('window.__e2eCodeEvents')
+  const events = Array.isArray(eventsRaw) ? eventsRaw : []
+  check(
+    'events-delivered',
+    events.some((e) => e.startsWith('new:')) && events.some((e) => e.startsWith('act:')),
+    JSON.stringify(events)
+  )
+
+  // 6) 动态主题：设置页下拉出现命名空间 id（渲染层合并视图），选用后内联
+  //    变量与全部终端背景跟随
+  await js('window.__e2eSettings(true)')
+  await delay(300)
+  const dynInSelect = await js<boolean>(
+    `[...document.querySelectorAll('.settings-panel select[data-setting="darkTheme"] option')].some((o) => o.value === 'e2e-codegood/dyn')`
+  )
+  await js(`window.__e2eScheme('darkTheme', 'e2e-codegood/dyn')`)
+  await delay(300)
+  const st = (await json('window.__e2eSchemeState()')) as {
+    dataTheme?: string
+    vars?: Record<string, string>
+    terms?: Array<{ bg: string | null }>
+  }
+  check(
+    'dynamic-theme-applied',
+    dynInSelect && st.dataTheme === 'dark' && st.vars?.bg === '#1a2b3c' && (st.terms ?? []).every((t) => t.bg === '#1a2b3c'),
+    JSON.stringify({ dynInSelect, dataTheme: st.dataTheme, vars: st.vars, terms: st.terms?.map((t) => t.bg) })
+  )
+  await snap('02-code-dyn-theme')
+
+  // 7) CSP：生产构建注入的严格版把连接通道全禁（应用零网络原则的技术强制，
+  //    代码插件一并被约束）——fetch 必须以异常告终
+  const fetchRes = await js<string>(
+    "fetch('http://127.0.0.1:9/x').then(() => 'ok').catch(() => 'blocked')"
+  )
+  check('csp-connect-blocked', fetchRes === 'blocked', fetchRes)
+
+  // 8) 语法错误脚本不拖累：应用存活（本轮 js 调用本身即证明）、纯声明插件的
+  //    profile 仍在 ＋ 菜单、好插件注册物仍在（状态栏）
+  await pressKey(win, 'Escape')
+  await delay(200)
+  const menu = await js<{ open: boolean; items: Array<{ name: string; disabled: boolean }> }>(
+    'window.__e2eNewTabToggle()'
+  )
+  const sbStill = await js<string>("document.querySelector('.statusbar')?.textContent ?? ''")
+  check(
+    'bad-script-contained',
+    menu.items.some((i) => i.name.includes('E2E Plain Shell')) && sbStill.includes('CODE_SB'),
+    JSON.stringify({ items: menu.items.map((i) => i.name), sbStill })
+  )
+
+  // 9) 还原设置并退出
+  const final = await js<{ theme: string; darkTheme: string; lightTheme: string }>(
+    `window.api.setSettings({ theme: ${JSON.stringify(prevSettings.theme)}, darkTheme: ${JSON.stringify(
+      prevSettings.darkTheme
+    )}, lightTheme: ${JSON.stringify(prevSettings.lightTheme)} })`
+  )
+  check(
+    'settings-restored',
+    final.darkTheme === prevSettings.darkTheme && final.lightTheme === prevSettings.lightTheme,
+    JSON.stringify({ final, prevSettings })
+  )
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_CODE_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  if (argvHas('--e2e-quit')) {
+    await backend.dispose()
+    app.exit(allOk ? 0 : 1)
+  }
+}
+
 // ── GPU 渲染回归（--e2e-webgl 常规 / --e2e-webgl-fallback 回退）──
 // 判据：WebGL 渲染器的主 canvas（无类名，上下文创建成功后才入 DOM）在
 // .xterm-screen 下可查到；addon 的 link 层 canvas（xterm-link-layer）在更早的
@@ -2235,6 +2441,7 @@ const paletteE2E = __E2E__ ? argvHas('--e2e-palette') : false
 const profileRefreshE2E = __E2E__ ? argvHas('--e2e-profile-refresh') : false
 const themesE2E = __E2E__ ? argvHas('--e2e-themes') : false
 const pluginsE2E = __E2E__ ? argvHas('--e2e-plugins') : false
+const codePluginsE2E = __E2E__ ? argvHas('--e2e-code-plugins') : false
 const webglE2E = __E2E__ ? argvHas('--e2e-webgl') || argvHas('--e2e-webgl-fallback') : false
 const isolatedRun =
   argvHas('--smoke') ||
@@ -2245,6 +2452,7 @@ const isolatedRun =
   profileRefreshE2E ||
   themesE2E ||
   pluginsE2E ||
+  codePluginsE2E ||
   webglE2E ||
   sessionE2E !== undefined
 const cliOpenDir = extractOpenDir(process.argv)
@@ -2411,6 +2619,64 @@ if (pluginsE2E) {
   app.setPath('userData', PLUG_UD)
 }
 
+// --e2e-code-plugins 的自备环境，须在 whenReady 的 plugins.load() 之前就绪：
+// 好的代码级插件（entry + 覆盖 API 全部能力面）、entry 语法错误的插件（脚本
+// 加载失败不得拖累应用与兄弟插件）、无 entry 纯声明式插件（字段缺省语义）
+const CODE_UD = '/tmp/e2e-code-ud'
+const CODE_MAIN = [
+  "const tm = termManager.init('e2e-codegood')",
+  'window.__e2eCodeEvents = []',
+  "tm.on('tab-created', (e) => window.__e2eCodeEvents.push('new:' + e.id))",
+  "tm.on('tab-activated', (e) => window.__e2eCodeEvents.push('act:' + e.id))",
+  'tm.registerCommand({',
+  "  id: 'ping',",
+  "  label: 'E2E Code Ping',",
+  "  keywords: 'code ping',",
+  '  run: () => {',
+  '    window.__e2eCodeRan = true',
+  '    void tm.tabs.create()',
+  '  }',
+  '})',
+  'tm.registerTheme({',
+  "  id: 'dyn',",
+  "  name: 'E2E Dyn',",
+  "  type: 'dark',",
+  "  ui: { bg: '#1a2b3c' },",
+  "  terminal: { background: '#1a2b3c', green: '#00ff66' }",
+  '})',
+  "tm.statusbar.setItem('s1', { text: 'CODE_SB', tooltip: 'from code plugin' })",
+  ''
+].join('\n')
+if (codePluginsE2E) {
+  const base = join(CODE_UD, 'plugins')
+  rmSync(CODE_UD, { recursive: true, force: true })
+  const good = join(base, 'e2e-codegood')
+  mkdirSync(good, { recursive: true })
+  writeFileSync(
+    join(good, 'manifest.json'),
+    JSON.stringify({ id: 'e2e-codegood', name: 'E2E 代码插件', version: '1.0.0', entry: 'main.mjs' })
+  )
+  writeFileSync(join(good, 'main.mjs'), CODE_MAIN)
+  const bad = join(base, 'e2e-codebad')
+  mkdirSync(bad, { recursive: true })
+  writeFileSync(
+    join(bad, 'manifest.json'),
+    JSON.stringify({ id: 'e2e-codebad', name: 'E2E 坏脚本', entry: 'main.mjs' })
+  )
+  writeFileSync(join(bad, 'main.mjs'), 'const const = broken\n')
+  const plain = join(base, 'e2e-plain')
+  mkdirSync(plain, { recursive: true })
+  writeFileSync(
+    join(plain, 'manifest.json'),
+    JSON.stringify({
+      id: 'e2e-plain',
+      name: 'E2E 纯声明',
+      profiles: [{ id: 'sh', name: 'E2E Plain Shell', command: 'bash', color: '#999999' }]
+    })
+  )
+  app.setPath('userData', CODE_UD)
+}
+
 if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null })) {
   // 第二实例：目录已通过 additionalData 带给首实例，自己直接退出
   app.quit()
@@ -2433,6 +2699,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
     // 必须在 createWindow 之前，窗口装饰（darkTheme）取的是此刻的有效值
     nativeTheme.themeSource = settingsStore.get().theme
     registerIpc()
+    registerTmplugProtocol()
 
     const smoke = argvHas('--smoke')
     const e2eTabs = argvFlag('--e2e-tabs')
@@ -2492,6 +2759,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
           profileRefreshE2E ||
           themesE2E ||
           pluginsE2E ||
+          codePluginsE2E ||
           webglE2E) &&
         mainWindow
       ) {
@@ -2510,6 +2778,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
               else if (profileRefreshE2E) await runProfileRefreshSequence(win)
               else if (themesE2E) await runThemesSequence(win)
               else if (pluginsE2E) await runPluginsSequence(win)
+              else if (codePluginsE2E) await runCodePluginsSequence(win)
               else if (webglE2E) await runWebglSequence(win)
               else await runE2ESequence(win, n)
             })
