@@ -275,6 +275,15 @@ npx electron out/main/index.js --e2e-sidebar --e2e-quit --no-sandbox
 npx electron out/main/index.js --e2e-palette --e2e-quit --no-sandbox
 ```
 
+```bash
+# Profile runtime-refresh regression (self-contained env: isolated userData + an empty
+# "install dir" on PATH). Writing/removing a fake shell simulates install/uninstall;
+# asserts profiles:list re-probes on every call, the renderer re-fetches when the +
+# menu / command palette opens, newly installed built-in shells get merged in, and
+# changes persist to profiles.json
+npx electron out/main/index.js --e2e-profile-refresh --e2e-quit --no-sandbox
+```
+
 ### Measured performance (20 hosted tabs, 2026-09-09, i5/integrated graphics)
 
 | Metric | Value |
@@ -307,7 +316,9 @@ npx electron out/main/index.js --e2e-palette --e2e-quit --no-sandbox
 - [x] Drag-and-drop tab reordering
 - [x] Profile system: the `+` menu lists local shell types (bash / zsh / fish / pwsh /
       Docker Shell, probed along PATH, unavailable ones grayed out); the default profile
-      is the user's login shell; ssh remotes are user-defined profiles in profiles.json
+      is the user's login shell; ssh remotes are user-defined profiles in profiles.json.
+      Availability refreshes at runtime — opening the `+` menu or the command palette
+      re-probes PATH and merges in newly installed built-in shells, no restart needed
 - [x] tmux Control Mode backend: UTF-8 (StringDecoder for multi-byte characters across
       chunks), adaptive sizing, input debounce batching (5 ms/8 KB), process-failure
       fallback (a missing/killed tmux no longer crashes the main process), cleanup of

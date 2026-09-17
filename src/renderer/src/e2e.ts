@@ -129,6 +129,27 @@ export function setupE2E(ctx: E2ECtx): void {
     })
   }
 
+  // ＋新建菜单状态快照（--e2e-profile-refresh）：open + 各 profile 项（名称/置灰）。
+  // 该套件 userData 未设默认终端，＋ 本体即菜单开关，再点一次即关闭
+  const newTabState = () => ({
+    open: !!document.querySelector('.menu'),
+    items: [...document.querySelectorAll<HTMLElement>('.menu .menu-item')].map((el) => ({
+      name: el.textContent ?? '',
+      disabled: el.classList.contains('disabled'),
+    })),
+  })
+  w.__e2eNewTabState = newTabState
+
+  /** 点 ＋ 切换菜单开/关（真实 onClick；打开会触发 App 的重拉 profile 回调），
+      等刷新与重渲染落定后回状态快照 */
+  w.__e2eNewTabToggle = () => {
+    const toggle =
+      document.querySelector<HTMLButtonElement>('.newtab-caret') ??
+      document.querySelector<HTMLButtonElement>('.newtab-split > .newtab')
+    toggle?.click()
+    return new Promise((resolve) => setTimeout(() => resolve(newTabState()), 250))
+  }
+
   // GUI 层输入兜底：xterm 官方 paste API（onData→IPC→后端→shell→输出→渲染 全链路）。
   // 括号粘贴模式下粘贴的换行不执行，粘贴后补一个真实回车。
   w.__e2ePaste = (text: string) => {

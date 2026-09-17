@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { GearIcon } from './ContextMenu'
 import type { Profile } from './api'
 
@@ -8,17 +8,24 @@ interface Props {
   defaultProfileId: string
   onNewTab: (profileId: string) => void
   onOpenSettings: () => void
+  // 菜单打开瞬间回调：App 借机重拉 profile 列表（主进程重探 PATH），
+  // 运行中安装的 shell 打开菜单即出现/解灰
+  onOpenMenu?: () => void
 }
 
 /** ＋新建下拉（自 TabBar 平移，标签栏与分组侧栏共用）：
     设置了默认终端时 + 为分体按钮——本体直接创建，箭头才开菜单；
     未设置时 + 仍是菜单开关。菜单含 profile 列表与设置入口 */
-export function NewTabMenu({ profiles, defaultProfileId, onNewTab, onOpenSettings }: Props) {
+export function NewTabMenu({ profiles, defaultProfileId, onNewTab, onOpenSettings, onOpenMenu }: Props) {
   const [menuOpen, setMenuOpen] = useState(false)
+  // 打开回调经 ref 取最新闭包，不进 effect 依赖（避免每次渲染重挂监听）
+  const onOpenMenuRef = useRef(onOpenMenu)
+  onOpenMenuRef.current = onOpenMenu
   // ＋下拉菜单的键盘/失焦关闭：此前只有 mouseLeave 一条关闭路径，
   // 键盘用户按 Esc 或切走窗口后菜单会悬着不关
   useEffect(() => {
     if (!menuOpen) return
+    onOpenMenuRef.current?.()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setMenuOpen(false)
     }

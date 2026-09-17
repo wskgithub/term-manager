@@ -69,14 +69,35 @@ function newDefaults(): ConfigFile {
 export class ProfileRegistry {
   private profiles: Profile[] = []
   private file = ''
+  // 最近一次落盘的内容：refresh 比对用，避免无变化时重写 profiles.json
+  private raw = ''
 
   load(): void {
     this.file = join(app.getPath('userData'), 'profiles.json')
-    const raw = existsSync(this.file) ? readFileSync(this.file, 'utf-8') : ''
-    this.profiles = this.readConfig(raw).profiles
+    this.raw = existsSync(this.file) ? readFileSync(this.file, 'utf-8') : ''
+    this.profiles = this.readConfig(this.raw).profiles
+    this.refresh()
+  }
+
+  /**
+   * 重探可用性并补齐新装的内建 shell，启动与运行中（profiles:list 每次调用）
+   * 共用同一条路径。newDefaults 只在首次生成时按 PATH 过滤候选，此后装上的
+   * shell 靠这里的合并补回；已有条目以 profiles.json 为准（改名/改色不覆盖），
+   * 只翻 available——代价是用户手工删掉某内建条目后 shell 仍在机上就会被加回
+   * （内建 shell 类型语义是"自动列出"，自定义条目不受影响）。探测就是几个
+   * existsSync，开销可忽略；落盘沿用「仅变化时回写」，不无谓刷 mtime。
+   */
+  refresh(): void {
+    const known = new Set(this.profiles.map((p) => p.id))
+    for (const c of SHELL_CANDIDATES) {
+      if (!known.has(c.id) && c.command && findOnPath(c.command)) this.profiles.push({ ...c })
+    }
     this.detectAvailability()
-    // 仅在内容变化时回写（探测结果注入/默认值迁移），避免每次启动刷新 mtime
-    if (this.serialize() !== raw) this.save()
+    const next = this.serialize()
+    if (next !== this.raw) {
+      this.raw = next
+      this.save()
+    }
   }
 
   private readConfig(raw: string): ConfigFile {

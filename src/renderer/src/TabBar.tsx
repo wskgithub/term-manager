@@ -26,6 +26,8 @@ interface Props {
   onReorder: (from: number, to: number) => void
   onNewTab: (profileId: string) => void
   onOpenSettings: () => void
+  // ＋菜单打开时重拉 profile 列表（透传给 NewTabMenu）
+  onRefreshProfiles: () => void
   // 打开分组侧栏（侧栏开启时隐藏标签栏，按钮承担切回入口）
   onToggleSidebar: () => void
   // ── 固定/分组 ──
@@ -63,6 +65,7 @@ export function TabBar(props: Props) {
     onReorder,
     onNewTab,
     onOpenSettings,
+    onRefreshProfiles,
     onToggleSidebar,
     onTogglePin,
     onGroupNew,
@@ -290,6 +293,7 @@ export function TabBar(props: Props) {
         defaultProfileId={defaultProfileId}
         onNewTab={onNewTab}
         onOpenSettings={onOpenSettings}
+        onOpenMenu={onRefreshProfiles}
       />
 
       {tabMenu && tabMenuTab && (
