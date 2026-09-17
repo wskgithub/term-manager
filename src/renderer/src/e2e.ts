@@ -476,6 +476,18 @@ export function setupE2E(ctx: E2ECtx): void {
     return false
   }
 
+  /** 第 idx 个终端的末几行文本（套件失败时的诊断输出；idx 越界返回 null） */
+  w.__e2ePaneText = (idx: number): string[] | null => {
+    const t = termsInOrder()[idx]
+    if (!t) return null
+    const b = t.buffer.active
+    const lines: string[] = []
+    for (let i = Math.max(0, b.length - 5); i < b.length; i++) {
+      lines.push(b.getLine(i)?.translateToString(true) ?? '')
+    }
+    return lines
+  }
+
   /** 含 U+FFFD 的终端及行内容（应为空：多字节字符跨 %output chunk 解码损坏的标志） */
   w.__e2eUtf8Bad = () => {
     const bad: Array<{ pane: number; line: string }> = []

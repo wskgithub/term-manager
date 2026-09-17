@@ -89,6 +89,50 @@ PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会�
 - 设置页/命令面板打开时重扫目录——运行中编辑、新增主题无需重启。纯本地
   数据：不执行代码、不联网。
 
+## 声明式插件
+
+插件是**数据不是代码**：`~/.config/term-manager/plugins/` 下一个带 `manifest.json`
+的文件夹即可贡献 profile、命令面板条目和主题包。零代码执行、零网络——安装插件
+即信任其声明的内容（`launch` 动作只在你亲手按名触发时执行）。文件夹在即生效、
+删除即停用。
+
+```
+plugins/docker-tools/
+├─ manifest.json
+└─ themes/night.json        # 可选主题包（与全局主题同格式）
+```
+
+```json
+{
+  "id": "docker-tools",
+  "name": "Docker 工具",
+  "version": "1.0.0",
+  "profiles": [
+    { "id": "shell", "name": "Docker Shell", "command": "docker",
+      "args": ["run", "--rm", "-it", "alpine", "/bin/sh"], "color": "#ffcc80" }
+  ],
+  "commands": [
+    { "id": "prune", "label": "Docker：清理", "keywords": "docker prune",
+      "action": { "type": "launch", "profile": "shell" } },
+    { "id": "open-set", "label": "打开设置", "action": { "type": "open-settings" } }
+  ]
+}
+```
+
+- **profiles**：进 ＋ 菜单 / 侧栏 / 命令面板（也可设为默认终端）。id 命名空间化为
+  `插件id:局部id`，可用性与普通 profile 同口径按 PATH 探测。渲染层永远不向 IPC
+  传命令体——`term:create` 只收 id，由主进程侧解析。
+- **commands**：面板条目，动作词汇封闭：`launch(profile)` / `open-settings` /
+  `toggle-sidebar` / `set-theme(mode)` / `set-scheme(id)`。launch 引用不存在的自家
+  profile 则整条丢弃；set-scheme 的 id 不存在则置灰。
+- **主题包**：插件目录 `themes/*.json` 与全局主题同格式，id 命名空间化
+  （`docker-tools/night`）进配色选择器。
+- 校验沿用 profiles.json 的文化：坏 manifest 跳过、坏条目逐个丢弃（均有日志），
+  重复插件 id 取先（按目录名排序）。面板/＋菜单/设置页打开时重扫目录。
+- 刻意**不做市场、不做更新检查、不做遥测**：应用本身永不联网（渲染层 CSP 机制
+  强制）。分发就是 git clone 或下载文件夹。若未来需要插件市场，预期由生态*以插件
+  形式*自建——该路线图阶段会带隔离的、声明式权限的插件宿主，不属于本声明式阶段。
+
 ## Nautilus 右键集成
 
 文件管理器右键（目录上或目录空白处）有「在 Term Manager 中打开」：在该目录开一个标签。
@@ -110,6 +154,7 @@ src/
 │   ├── profiles.ts  # profile 注册表（JSON 持久化）
 │   ├── settings.ts  # 应用设置（字体/字号）+ fc-list 字体枚举
 │   ├── themes.ts    # 配色方案目录加载器（themes/*.json，只读）
+│   ├── plugins.ts   # 声明式插件注册表（plugins/*/manifest.json，纯数据）
 │   └── session.ts   # 会话持久化（sessions.json：附着候选判定 + 标签元数据落盘）
 ├── preload/         # contextBridge API
 └── renderer/src/
@@ -213,6 +258,14 @@ npx electron out/main/index.js --e2e-profile-refresh --e2e-quit --no-sandbox
 # 而非退回 xterm 默认）、深浅两端独立切换、选中文件被删的防御回退（设置页重扫）、
 # 防首帧闪色的 preapply 缓存
 npx electron out/main/index.js --e2e-themes --e2e-quit --no-sandbox
+```
+
+```bash
+# 声明式插件回归（环境自备：隔离 userData 预写 plugins/ 夹具——好插件含
+# profile/命令/主题包、坏 JSON、未知动作类型、重复 id）：断言 manifest 丢弃路径、
+# 插件 profile 进 ＋ 菜单并可真实启动回显、面板命令执行（launch/open-settings）、
+# 坏配色引用置灰、插件主题包进配色选择器
+npx electron out/main/index.js --e2e-plugins --e2e-quit --no-sandbox
 ```
 
 ```bash
@@ -337,7 +390,7 @@ Esc 关闭并把焦点还给终端。覆盖四类命令：
 - [x] 命令面板（`Ctrl+Shift+P` 模糊搜索执行：标签/profile/切换/分组/广播/主题/侧栏/设置/退出，面板内二段改名，`--e2e-palette` 覆盖）
 - [x] GPU 渲染（addon-webgl 默认启用，创建失败/上下文丢失自动回退 DOM 渲染器，设置页可关，`--e2e-webgl` 双模式覆盖）
 - [x] 自定义主题（themes 目录数据化配色方案：UI CSS 变量 + xterm 调色板，未声明字段逐项继承内建，深/浅双选择器独立，`--e2e-themes` 覆盖）
-- [ ] 声明式插件（manifest 注入 profile/面板命令/主题包——零代码执行零网络；代码级扩展 API 是后续阶段）
+- [x] 声明式插件（manifest 注入 profile/面板命令/主题包——零代码执行零网络，`--e2e-plugins` 覆盖；代码级扩展 API 是后续阶段）
 - [ ] AppImage、rpm 等其他打包格式
 
 ## 备注

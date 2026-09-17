@@ -2,6 +2,7 @@
 // 此处 re-export 供渲染层各组件统一从 './api' 导入
 import type {
   AppSettings,
+  PluginInfo,
   Profile,
   RestoredSession,
   SessionUiSync,
@@ -17,7 +18,8 @@ export type {
   TabGroup,
   RestoredSession,
   SessionUiSync,
-  ThemeDef
+  ThemeDef,
+  PluginInfo
 } from '../../shared/types'
 export { DEFAULT_SETTINGS } from '../../shared/types'
 
@@ -59,6 +61,7 @@ export interface Api {
   setSettings(patch: Partial<AppSettings>): Promise<AppSettings>
   listFonts(): Promise<string[]>
   listThemes(): Promise<ThemeDef[]>
+  listPlugins(): Promise<PluginInfo[]>
   createTerm(profileId: string, cwd?: string): Promise<TermInfo>
   cliReady(): Promise<string[]>
   restoreSession(): Promise<RestoredSession | null>

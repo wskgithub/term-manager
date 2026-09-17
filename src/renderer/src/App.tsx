@@ -6,6 +6,7 @@ import {
   nextGroupColor,
   nextGroupName,
   type AppSettings,
+  type PluginInfo,
   type Profile,
   type TabGroup,
   type TermInfo,
@@ -15,7 +16,7 @@ import { TabBar } from './TabBar'
 import { Sidebar, type SideDropTarget } from './Sidebar'
 import { TermView } from './TermView'
 import { CommandPalette } from './CommandPalette'
-import { buildCommands } from './palette'
+import { buildCommands, type PaletteCommand } from './palette'
 import { SettingsPage } from './SettingsPage'
 import { ContextMenu, CopyIcon, PasteIcon } from './ContextMenu'
 import {
@@ -47,10 +48,13 @@ function takeTabOut(ts: TermInfo[], id: string): { list: TermInfo[]; tab: TermIn
 export default function App() {
   const [tabs, setTabs] = useState<TermInfo[]>([])
   const [activeId, setActiveId] = useState('')
+  // 用户 profiles.json 的条目；插件注入的 profile 在 allProfiles 合并视图里追加
   const [profiles, setProfiles] = useState<Profile[]>([])
-  // 可选配色方案（内建 + themes 目录自定义），themes:list 每次调用都重扫。
+  // 声明式插件（面板命令 + 主题包 + profile 注入体），plugins:list 每次调用都重扫
+  const [pluginInfos, setPluginInfos] = useState<PluginInfo[]>([])
+  // themes 目录的配色方案（不含内建/插件包），themes:list 每次调用都重扫。
   // 初值给内建两套：异步拉取前 pickScheme/设置页下拉即有正确内容，无空白帧
-  const [themeDefs, setThemeDefs] = useState<ThemeDef[]>(BUILTIN_THEMES)
+  const [themeList, setThemeList] = useState<ThemeDef[]>(BUILTIN_THEMES)
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const settingsOpenRef = useRef(false)
@@ -73,14 +77,41 @@ export default function App() {
   const renamed = useRef(new Set<string>())
   // 单点分发：所有终端实例注册在这里，一个 onData 订阅服务全部标签
   const terms = useRef(new Map<string, Terminal>())
+  // 早期输出缓冲：瞬逝命令（echo/一次性脚本）的 %output 可能跑赢 TermView 挂载
+  // 注册，届时 terms.get(id) 为空、直接 write 会静默丢数据（交互 shell 提示符
+  // 到得晚所以从未暴露；插件快捷命令让它成一等场景）。按 id 暂存，注册时冲刷
+  const earlyData = useRef(new Map<string, string[]>())
+  const writeTerm = (id: string, d: string) => {
+    const t = terms.current.get(id)
+    if (t) {
+      t.write(d)
+      return
+    }
+    const buf = earlyData.current.get(id) ?? []
+    if (buf.length < 400) buf.push(d) // 上限防永不注册的 id 泄漏
+    earlyData.current.set(id, buf)
+  }
   const tabsRef = useRef<TermInfo[]>([])
   const activeRef = useRef('')
   tabsRef.current = tabs
   activeRef.current = activeId
   const groupsRef = useRef<TabGroup[]>([])
   groupsRef.current = groups
+  const pluginInfosRef = useRef<PluginInfo[]>([])
+  pluginInfosRef.current = pluginInfos
+  // 合并视图：用户 profiles + 插件注入的 profile（id 已是「插件:局部」全局唯一）。
+  // 菜单/侧栏/面板/默认 profile 全走这一份单一消费面，插件 profile 无需特判
+  const allProfiles = useMemo(
+    () => [...profiles, ...pluginInfos.flatMap((p) => p.profiles)],
+    [profiles, pluginInfos]
+  )
   const profilesRef = useRef<Profile[]>([])
-  profilesRef.current = profiles
+  profilesRef.current = allProfiles
+  // 配色全集 = themes 目录 + 插件主题包（id 命名空间化含 /，不会与全局撞）
+  const themeDefs = useMemo(
+    () => [...themeList, ...pluginInfos.flatMap((p) => p.themes)],
+    [themeList, pluginInfos]
+  )
   // newTab 会被挂载时的闭包（快捷键/onOpenDir）长期持有，设置走 ref 避免拿到过期值
   const settingsRef = useRef(settings)
   settingsRef.current = settings
@@ -154,11 +185,13 @@ export default function App() {
     const offOpenDir = api.onOpenDir((dir) => {
       if (alive) void newTab(undefined, dir)
     })
-    void api.listProfiles().then((ps) => {
+    void Promise.all([api.listProfiles(), api.listPlugins()]).then(([ps, infos]) => {
       if (!alive) return
-      // 同步刷 ref：下面 drain 时 newTab 需要据此选默认 profile
-      profilesRef.current = ps
+      // 同步刷 ref：下面 drain 时 newTab 需要据此选默认 profile（含插件注入的条目）
+      pluginInfosRef.current = infos
+      profilesRef.current = [...ps, ...infos.flatMap((p) => p.profiles)]
       setProfiles(ps)
+      setPluginInfos(infos)
       void api.cliReady().then(async (dirs) => {
         if (!alive) return
         for (const d of dirs) void newTab(undefined, d)
@@ -190,11 +223,11 @@ export default function App() {
     })
     // 配色方案列表：启动拉一次；设置页/面板打开时再重扫（主进程每次重读目录）
     void api.listThemes().then((ts) => {
-      if (alive) setThemeDefs(ts)
+      if (alive) setThemeList(ts)
     })
-    const offData = api.onData((id, d) => terms.current.get(id)?.write(d))
+    const offData = api.onData((id, d) => writeTerm(id, d))
     const offExit = api.onExit((id) => {
-      terms.current.get(id)?.write('\r\n\x1b[90m[会话已退出]\x1b[0m\r\n')
+      writeTerm(id, '\r\n\x1b[90m[会话已退出]\x1b[0m\r\n')
       setExited((s) => {
         const next = new Set(s)
         next.add(id)
@@ -250,10 +283,14 @@ export default function App() {
 
   // 重拉 profile 列表：主进程每次 list 都重探 PATH（并补齐新装的内建 shell），
   // ＋ 菜单与命令面板打开时调用，运行中安装的 shell 无需重启立即可选
+  // 重拉 profile/插件列表：主进程每次 list 都重扫（PATH 重探 + 插件目录重扫），
+  // ＋ 菜单与命令面板打开时调用，运行中新增无需重启立即可选
   const refreshProfiles = () => {
-    void api.listProfiles().then((ps) => {
-      profilesRef.current = ps
+    void Promise.all([api.listProfiles(), api.listPlugins()]).then(([ps, infos]) => {
+      pluginInfosRef.current = infos
+      profilesRef.current = [...ps, ...infos.flatMap((p) => p.profiles)]
       setProfiles(ps)
+      setPluginInfos(infos)
     })
   }
 
@@ -263,15 +300,21 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paletteOpen])
 
-  // 设置页打开时重扫配色方案：运行中新增/编辑的 themes/*.json 无需重启即可选
+  // 设置页打开时重扫配色与插件：运行中新增/编辑的 themes/*.json、增删插件
+  // 目录无需重启即可选（refreshProfiles 连带重拉插件，其主题包进 themeDefs）
   useEffect(() => {
-    if (settingsOpen) void api.listThemes().then(setThemeDefs)
+    if (settingsOpen) {
+      void api.listThemes().then(setThemeList)
+      refreshProfiles()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsOpen])
 
-  // 给 TabBar 的默认终端：设置了且本机可用才生效，否则视为未设置（+ 打开菜单）
+  // 给 TabBar 的默认终端：设置了且本机可用才生效，否则视为未设置（+ 打开菜单）；
+  // 合并视图下插件 profile 亦可被设为默认（id 全局唯一）
   const defaultProfileId =
     settings.defaultProfileId &&
-    profiles.some((p) => p.id === settings.defaultProfileId && p.available !== false)
+    allProfiles.some((p) => p.id === settings.defaultProfileId && p.available !== false)
       ? settings.defaultProfileId
       : ''
 
@@ -280,6 +323,46 @@ export default function App() {
     setSettings((s) => ({ ...s, ...patch }))
     void api.setSettings(patch).then(setSettings)
   }
+
+  // 声明式插件的面板命令段：动作词汇在此映射到 App 既有回调——launch 走
+  // newTab（term:create 主进程侧按 id 解析插件 profile）、open-settings/
+  // toggle-sidebar/set-theme 直连、set-scheme 按方案自身 type 落到对应设置项；
+  // launch 的 profile 不可用或 set-scheme 引用不存在的方案时置灰不执行
+  const pluginCommands: PaletteCommand[] = useMemo(() => {
+    const out: PaletteCommand[] = []
+    for (const info of pluginInfos) {
+      for (const c of info.commands) {
+        const base = { key: `plugin:${info.id}:${c.id}`, label: c.label, keywords: c.keywords, hint: c.hint }
+        if (c.action.type === 'launch') {
+          const pid = `${info.id}:${c.action.profile}`
+          out.push({
+            ...base,
+            disabled: allProfiles.find((p) => p.id === pid)?.available === false,
+            action: () => void newTab(pid)
+          })
+        } else if (c.action.type === 'open-settings') {
+          out.push({ ...base, action: () => setSettingsOpen(true) })
+        } else if (c.action.type === 'toggle-sidebar') {
+          out.push({ ...base, action: () => applySettings({ sidebarVisible: !settingsRef.current.sidebarVisible }) })
+        } else if (c.action.type === 'set-theme') {
+          const mode = c.action.mode
+          out.push({ ...base, action: () => applySettings({ theme: mode }) })
+        } else {
+          const schemeId = c.action.id
+          const def = themeDefs.find((t) => t.id === schemeId)
+          out.push({
+            ...base,
+            disabled: !def,
+            action: def
+              ? () => applySettings(def.type === 'dark' ? { darkTheme: def.id } : { lightTheme: def.id })
+              : undefined
+          })
+        }
+      }
+    }
+    return out
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pluginInfos, allProfiles, themeDefs])
 
   // 组内最后一个成员离开（关闭/移出/固定）时组自动消失
   const pruneGroups = (ts: TermInfo[]) => {
@@ -480,13 +563,21 @@ export default function App() {
     if (t) {
       terms.current.set(id, t)
       // 会话恢复的标签：挂载即拉屏幕回放（capture-pane 快照 + 光标定位序列）。
-      // 新建标签 replayTerm 返回空串，多一次往返无副作用
+      // 新建标签 replayTerm 返回空串，多一次往返无副作用。回放落定后冲刷早期
+      // 缓冲——capture 已含此前内容，先写快照再写其后到达的实时输出，顺序不乱
       void api
         .replayTerm(id)
         .then((text) => {
           if (text) t.write(text)
         })
         .catch((e) => console.error('[term] replay failed:', e))
+        .finally(() => {
+          const buf = earlyData.current.get(id)
+          if (buf) {
+            for (const d of buf) t.write(d)
+            earlyData.current.delete(id)
+          }
+        })
     } else {
       terms.current.delete(id)
     }
@@ -601,7 +692,7 @@ export default function App() {
         <Sidebar
           tabs={tabs}
           activeId={activeId}
-          profiles={profiles}
+          profiles={allProfiles}
           exited={exited}
           defaultProfileId={defaultProfileId}
           groups={groups}
@@ -634,7 +725,7 @@ export default function App() {
           <TabBar
             tabs={tabs}
             activeId={activeId}
-            profiles={profiles}
+            profiles={allProfiles}
             exited={exited}
             defaultProfileId={defaultProfileId}
             groups={groups}
@@ -690,7 +781,7 @@ export default function App() {
           {settingsOpen && (
             <SettingsPage
               settings={settings}
-              profiles={profiles}
+              profiles={allProfiles}
               themes={themeDefs}
               onChange={applySettings}
               onClose={() => {
@@ -728,11 +819,11 @@ export default function App() {
       )}
       {paletteOpen && (
         <CommandPalette
-          commands={buildCommands({
+          commands={[...buildCommands({
             tabs,
             groups,
             activeId,
-            profiles,
+            profiles: allProfiles,
             settings,
             broadcastGroups,
             handlers: {
@@ -748,7 +839,7 @@ export default function App() {
               setTheme: (theme) => applySettings({ theme }),
               quitAll: () => api.quitAll()
             }
-          })}
+          }), ...pluginCommands]}
           activeTitle={tabs.find((t) => t.id === activeId)?.title ?? ''}
           onClose={closePalette}
           onRename={(title) => {

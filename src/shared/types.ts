@@ -78,6 +78,36 @@ export interface ThemeDef extends ThemeFile {
   builtin: boolean
 }
 
+// ── 声明式插件（plugins 目录 manifest，零代码执行零网络）──
+// 面板命令可映射的动作词汇：封闭集合，launch 的 profile 引用主进程侧注册表
+// 解析（渲染层永远只传 id，不传命令体——term:create 不开新 spawn 面）
+export type PluginAction =
+  | { type: 'launch'; profile: string }
+  | { type: 'open-settings' }
+  | { type: 'toggle-sidebar' }
+  | { type: 'set-theme'; mode: ThemeOption }
+  | { type: 'set-scheme'; id: string }
+
+// manifest 里的命令条目（id 为插件内局部 id，主进程校验后原样下发）
+export interface PluginCommandDef {
+  id: string
+  label: string
+  keywords?: string
+  hint?: string
+  action: PluginAction
+}
+
+// plugins:list 下发的插件信息：profiles 的 id 已重写为「插件id:局部id」防与
+// 用户 profiles.json 撞车；themes 的 id 已命名空间化为「插件id/stem」
+export interface PluginInfo {
+  id: string
+  name: string
+  version?: string
+  profiles: Profile[]
+  commands: PluginCommandDef[]
+  themes: ThemeDef[]
+}
+
 export interface AppSettings {
   // 空串 = 自动（渲染层解析为 Nerd Font 优先栈，见 renderer/fonts.ts）
   fontFamily: string
