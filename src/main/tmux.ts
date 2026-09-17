@@ -139,6 +139,14 @@ export class TmuxBackend {
   // 流级解码永远重组不回来——必须把负载字节按 pane 攒着解码，
   // StringDecoder 会把不完整序列留到下一个事件
   private paneDecoders = new Map<string, StringDecoder>()
+  // 早期事件暂存：瞬逝命令（echo/一次性脚本）的 %output 与 %window-close 可能
+  // 先于 new-window 回执到达，而 pane→id / window→id 映射要等回执解析后才建立
+  // ——未知 id 的事件不能直接丢（否则输出与退出通知都静默丢失，交互 shell 的
+  // 提示符到得晚从未暴露；插件快捷命令让它成一等场景）。create() 注册映射后
+  // 原路冲刷输出/补发退出；已清理 pane 的迟到输出仍丢弃
+  private earlyOutputs = new Map<string, Buffer[]>()
+  private earlyWindowCloses = new Set<string>()
+  private gonePanes = new Set<string>()
   // 会话恢复的标签集合：渲染层取走回放（takeReplay）前，其 %output 一律丢弃——
   // takeReplay 时的 capture-pane 快照必然覆盖取走时刻之前的全部屏幕内容
   private replayPending = new Set<string>()
@@ -441,8 +449,21 @@ export class TmuxBackend {
   /** pane 级负载解码：StringDecoder 把不完整的多字节序列留到下一个 %output
       事件，重组 tmux 按事件边界拆开的字符 */
   private emitOutput(pane: string, payload: Buffer): void {
+    if (payload.length === 0) return
     const id = this.paneToTerm.get(pane)
-    if (!id || payload.length === 0) return
+    if (!id) {
+      // 映射未建立：暂存等 create() 冲刷；已清理的 pane 是迟到事件，丢弃。
+      // 暂存有界（pane 数与每 pane 块数都封顶），永不注册的 pane 不会积压
+      if (this.gonePanes.has(pane)) return
+      if (this.earlyOutputs.size >= 32) {
+        const oldest = this.earlyOutputs.keys().next().value
+        if (oldest !== undefined && oldest !== pane) this.earlyOutputs.delete(oldest)
+      }
+      const list = this.earlyOutputs.get(pane) ?? []
+      if (list.length < 64) list.push(payload)
+      this.earlyOutputs.set(pane, list)
+      return
+    }
     // 恢复标签尚未取走回放：丢弃（takeReplay 的 capture 快照必然覆盖此刻之前的
     // 全部屏幕内容，直推反而会与回放内容重复）
     if (this.replayPending.has(id)) return
@@ -495,6 +516,14 @@ export class TmuxBackend {
           this.emit('term:exit', id, 0)
           this.cleanup(id)
         }
+      } else if (!this.earlyWindowCloses.has(win)) {
+        // 映射未建立（瞬逝命令的窗口先于回执关闭）：暂存，create() 补发退出。
+        // 有界：未知窗口本就罕见，超限丢最旧
+        if (this.earlyWindowCloses.size >= 32) {
+          const oldest = this.earlyWindowCloses.values().next().value
+          if (oldest !== undefined) this.earlyWindowCloses.delete(oldest)
+        }
+        this.earlyWindowCloses.add(win)
       }
       return
     }
@@ -548,18 +577,24 @@ export class TmuxBackend {
     // 注意：不要在命令前加 `exec`（tmux 会经 /bin/sh -c "exec …" 包装执行，
     // 该 execvp 包装在受限环境/沙箱会被误杀导致 pane 秒退）；直接把命令 token
     // 交给 tmux（sh -c 直接执行），带参数时避免引号歧义即可。
-    const parts: string[] = []
-    if (profile.command) {
-      parts.push(shQuote(profile.command), ...(profile.args ?? []).map((a) => shQuote(a)))
-    }
-    const cmdline = profile.command ? parts.join(' ') : ''
+    // 关键：new-window 的 shell-command 只取余下的【第一个】tmux token——此前
+    // 把 command/args 逐个 shQuote 后平铺，tmux 只见首词、args 全部被静默丢弃
+    // （带参数的 profile 一直在裸跑首词，如 Docker Shell 实际执行的是裸 docker）。
+    // 正确拼装：argv 先各自 shQuote 保住 shell 层的词边界、join 成一条命令串，
+    // 再整段经 tmuxToken 作为【一个】tmux 参数传入（spike 实测 tmux 双引号串
+    // 原样交给 sh -c，pane_start_command 保留内层单引号）
+    const cmdline = profile.command
+      ? [shQuote(profile.command), ...(profile.args ?? []).map((a) => shQuote(a))].join(' ')
+      : ''
     const envArgs = Object.entries(profile.env ?? {})
       .map(([k, v]) => `-e ${tmuxToken(`${k}=${v}`)}`)
       .join(' ')
     // cwdOverride 来自 CLI/文件管理器右键传入的目录，优先于 profile 自身的 cwd
     const cwd = cwdOverride || profile.cwd || os.homedir()
     const line =
-      `new-window -d -P -F '#{pane_id} #{window_id}' -c ${tmuxToken(cwd)} ${envArgs} ${cmdline}`.trim()
+      `new-window -d -P -F '#{pane_id} #{window_id}' -c ${tmuxToken(cwd)} ${envArgs} ${
+        cmdline ? tmuxToken(cmdline) : ''
+      }`.trim()
     const reply = await this.send(line)
     const ids = (reply[reply.length - 1] ?? '').trim().split(/\s+/)
     const pane = ids[0]
@@ -578,6 +613,21 @@ export class TmuxBackend {
     this.tabs.set(id, { info, pane, window, alive: true })
     this.paneToTerm.set(pane, id)
     this.windowToTerm.set(window, id)
+
+    // 冲刷早于回执到达的输出（原路走 emitOutput：解码、\ek 标题转换语义不变）；
+    // 若窗口在回执前就已关闭（瞬逝命令），按既有通知语义补发退出——渲染层的
+    // 早期缓冲会保证顺序（数据先落、退出消息随后）
+    const early = this.earlyOutputs.get(pane)
+    if (early) {
+      this.earlyOutputs.delete(pane)
+      for (const p of early) this.emitOutput(pane, p)
+    }
+    if (this.earlyWindowCloses.delete(window)) {
+      const tab = this.tabs.get(id)
+      if (tab) tab.alive = false
+      this.emit('term:exit', id, 0)
+      this.cleanup(id)
+    }
 
     // 首个标签建成后再关自动窗口（此时会话仍有窗口，服务器不会退出）
     if (!this.autoWindowKilled && this.autoWindow.startsWith('@')) {
@@ -690,6 +740,10 @@ export class TmuxBackend {
       this.windowToTerm.delete(tab.window)
       this.titleHold.delete(tab.pane)
       this.paneDecoders.delete(tab.pane)
+      // 标记已走：此 pane 之后的迟到 %output 直接丢弃，不再进早期暂存
+      this.gonePanes.add(tab.pane)
+      this.earlyOutputs.delete(tab.pane)
+      if (this.gonePanes.size > 1024) this.gonePanes.clear()
     }
     this.replayPending.delete(id)
     this.tabs.delete(id)
