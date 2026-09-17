@@ -1,0 +1,16 @@
+{
+  "id": "docker-tools",
+  "name": "Docker 工具",
+  "version": "1.0.0",
+  "profiles": [
+    { "id": "shell", "name": "Docker Shell", "command": "docker",
+      "args": ["run", "--rm", "-it", "alpine", "/bin/sh"], "color": "#ffcc80" }
+  ],
+  "commands": [
+    { "id": "prune", "label": "Docker：清理", "keywords": "docker prune",
+      "action": { "type": "launch", "profile": "shell" } },
+    { "id": "open-set", "label": "打开设置", "action": { "type": "open-settings" } },
+    { "id": "night", "label": "Docker：换夜间配色", "keywords": "docker night theme",
+      "action": { "type": "set-scheme", "id": "docker-tools/night" } }
+  ]
+}

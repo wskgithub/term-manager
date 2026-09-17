@@ -157,6 +157,12 @@ plugins/docker-tools/
   by the ecosystem — that tier of the roadmap comes with an isolated, permission-declaring
   plugin host and is not part of this declarative stage.
 
+Writing your own plugin? The complete author reference — manifest fields, validation
+rules, the theme format, the code-level API, limits and debugging — lives in
+**[docs/plugins.md](docs/plugins.md)**, with copyable examples in
+[docs/examples/declarative-plugin/](docs/examples/declarative-plugin/) and
+[docs/examples/code-plugin/](docs/examples/code-plugin/).
+
 ## Code-level plugins (experimental)
 
 Declarative plugins cover *data-shaped* extensions. When you need **behavior** (watching
@@ -227,7 +233,9 @@ API surface (v1; full types in `src/shared/types.ts`, `TmScopedApi`):
   the later Tier 2 plugin host — the vehicle for the "marketplace as a plugin"
   ecosystem, where code plugins trade declared permissions for stronger isolation.
 
-A complete, copyable example lives at [`docs/examples/code-plugin/`](docs/examples/code-plugin/).
+A complete, copyable example lives at [`docs/examples/code-plugin/`](docs/examples/code-plugin/);
+the full API walkthrough, limits and debugging notes are in the
+[plugin development guide](docs/plugins.md).
 
 ## Session persistence
 
