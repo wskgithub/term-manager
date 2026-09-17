@@ -1,0 +1,9 @@
+{
+  "id": "hello-code",
+  "name": "Hello Code（代码级插件示例）",
+  "version": "1.0.0",
+  "entry": "main.mjs",
+  "profiles": [
+    { "id": "sh", "name": "Hello Shell", "command": "bash", "color": "#89b4fa" }
+  ]
+}

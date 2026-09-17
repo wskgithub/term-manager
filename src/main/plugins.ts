@@ -1,9 +1,9 @@
 import { app } from 'electron'
-import { mkdirSync, readdirSync, readFileSync } from 'fs'
+import { mkdirSync, readdirSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
 import type { PluginAction, PluginCommandDef, PluginInfo, Profile, ThemeDef } from '../shared/types'
+import { parseThemeFile } from '../shared/themes'
 import { findOnPath, validProfile } from './profiles'
-import { parseThemeFile } from './themes'
 
 export type { PluginInfo } from '../shared/types'
 
@@ -21,6 +21,10 @@ const LOCAL_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 const PLUGIN_ID_RE = /^[a-z0-9-]{1,64}$/
 // set-scheme 引用的方案 id：与 settings.ts 的 SCHEME_ID_RE 同集（/ 为插件主题）
 const SCHEME_REF_RE = /^[A-Za-z0-9/_-]{1,80}$/
+// 代码级插件入口（L3）：相对路径、白名单字符集、.js/.mjs；
+// 存在性与大小在 loadPlugin 里核（不合法只丢字段，声明式贡献保留）
+const ENTRY_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/
+const MAX_ENTRY_BYTES = 1_000_000
 // 防病态 manifest：单插件贡献条目上限
 const MAX_PROFILES = 50
 const MAX_COMMANDS = 100
@@ -29,6 +33,8 @@ const MAX_THEMES = 50
 interface LoadedPlugin extends PluginInfo {
   // 本地 profile id 集：launch 动作引用合法性的校验依据
   localProfileIds: Set<string>
+  // 插件目录绝对路径：tmplug:// 协议解析的唯一权威（重复 id 先到先得）
+  dir: string
 }
 
 function validCommand(
@@ -181,9 +187,32 @@ function loadPlugin(dir: string, dirName: string): LoadedPlugin | null {
     profiles,
     commands,
     themes,
-    localProfileIds
+    localProfileIds,
+    dir
   }
   if (typeof r.version === 'string' && r.version.trim()) info.version = r.version.slice(0, 32)
+
+  // entry：代码级插件入口。字符串形态 + 字符集 + 无 .. 段 + .js/.mjs 扩展名，
+  // 且文件真实存在、不超过 1MB——协议侧按相对路径拼接，这里收紧到位
+  if (r.entry !== undefined) {
+    const e = r.entry
+    let ok = false
+    if (
+      typeof e === 'string' &&
+      ENTRY_RE.test(e) &&
+      !e.split('/').includes('..') &&
+      (e.endsWith('.js') || e.endsWith('.mjs'))
+    ) {
+      try {
+        const st = statSync(join(dir, e))
+        ok = st.isFile() && st.size <= MAX_ENTRY_BYTES
+      } catch {
+        ok = false
+      }
+      if (ok) info.entry = e
+    }
+    if (!ok) console.error(`[plugins] ${source}: entry 非法或文件缺失/超限，字段丢弃`)
+  }
   return info
 }
 
@@ -232,7 +261,8 @@ export class PluginRegistry {
       version: p.version,
       profiles: p.profiles,
       commands: p.commands,
-      themes: p.themes
+      themes: p.themes,
+      entry: p.entry
     }))
   }
 
@@ -243,5 +273,10 @@ export class PluginRegistry {
       if (hit) return hit
     }
     return undefined
+  }
+
+  /** tmplug:// 协议解析：插件 id → 胜出插件目录的绝对路径（渲染层拿不到路径） */
+  getDir(id: string): string | undefined {
+    return this.plugins.find((p) => p.id === id)?.dir
   }
 }

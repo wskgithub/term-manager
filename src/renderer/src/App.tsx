@@ -29,6 +29,15 @@ import {
 } from './theme'
 import { BUILTIN_THEMES } from '../../shared/themes'
 import { setupE2E } from './e2e'
+import {
+  clickStatusItem,
+  dispatchTermData,
+  emitTmEvent,
+  initPluginHost,
+  loadCodePlugins,
+  onHostChange,
+  type HostSnapshot,
+} from './pluginHost'
 
 // 摘出标签并给出插回锚点：原本在组内则锚在原组块末尾之后（原地改组会把同组切成
 // 前后两段，破坏「同组连续」不变量），未分组则锚在原位置
@@ -73,6 +82,9 @@ export default function App() {
   const [createError, setCreateError] = useState('')
   // 命令面板开关（Ctrl+Shift+P；纯运行时态，不持久化）
   const [paletteOpen, setPaletteOpen] = useState(false)
+  // 代码级插件（L3）的注册物快照：面板命令/动态主题/状态栏项。pluginHost 单
+  // 订阅推送，插件脚本异步注册时经 onHostChange 到达这里
+  const [hostSnap, setHostSnap] = useState<HostSnapshot>({ commands: [], themes: [], statusbar: [] })
   // 用户手动重命名后，shell 上报的标题不再覆盖
   const renamed = useRef(new Set<string>())
   // 单点分发：所有终端实例注册在这里，一个 onData 订阅服务全部标签
@@ -107,11 +119,15 @@ export default function App() {
   )
   const profilesRef = useRef<Profile[]>([])
   profilesRef.current = allProfiles
-  // 配色全集 = themes 目录 + 插件主题包（id 命名空间化含 /，不会与全局撞）
+  // 配色全集 = themes 目录 + 插件主题包 + 代码级插件动态注册（id 命名空间化
+  // 含 /，不会与全局撞）
   const themeDefs = useMemo(
-    () => [...themeList, ...pluginInfos.flatMap((p) => p.themes)],
-    [themeList, pluginInfos]
+    () => [...themeList, ...pluginInfos.flatMap((p) => p.themes), ...hostSnap.themes],
+    [themeList, pluginInfos, hostSnap.themes]
   )
+  // pluginHost 的 setScheme 依赖要读最新 themeDefs（含动态主题），走 ref 免闭包过期
+  const themeDefsRef = useRef(themeDefs)
+  themeDefsRef.current = themeDefs
   // newTab 会被挂载时的闭包（快捷键/onOpenDir）长期持有，设置走 ref 避免拿到过期值
   const settingsRef = useRef(settings)
   settingsRef.current = settings
@@ -154,7 +170,10 @@ export default function App() {
   // 原焦点，但目标终端此刻还 display:none、focus() 无效）与 Ctrl+Tab 切换
   // （旧终端被藏起，焦点不能留在不可见的 textarea 里）之后，键盘输入都应落在新终端
   useEffect(() => {
-    if (activeId) terms.current.get(activeId)?.focus()
+    if (!activeId) return
+    terms.current.get(activeId)?.focus()
+    // 代码级插件事件：首启激活也发（语义上「当前标签」确实激活了）
+    emitTmEvent('tab-activated', { id: activeId })
   }, [activeId])
 
   // 会话持久化上报：标签顺序/固定/分组/活跃/改名态变化后 debounce 全量推送主进程
@@ -181,6 +200,19 @@ export default function App() {
 
   useEffect(() => {
     let alive = true
+    // 代码级插件宿主：先装全局对象与依赖（脚本注入前必须就位），再订阅快照
+    initPluginHost({
+      newTab,
+      activateTab,
+      getTabs: () => tabsRef.current,
+      getActiveId: () => activeRef.current,
+      getThemeDefs: () => themeDefsRef.current,
+      getSettings: () => settingsRef.current,
+      applySettings,
+      openSettings: () => setSettingsOpen(true),
+      writeInput: (id, data) => api.write(id, data)
+    })
+    onHostChange(setHostSnap)
     // 先订阅外部目录请求（Nautilus 右键 / CLI），再做 ready 握手取走排队项
     const offOpenDir = api.onOpenDir((dir) => {
       if (alive) void newTab(undefined, dir)
@@ -192,6 +224,8 @@ export default function App() {
       profilesRef.current = [...ps, ...infos.flatMap((p) => p.profiles)]
       setProfiles(ps)
       setPluginInfos(infos)
+      // 带 entry 的插件在此注入脚本（tmplug:// module，异步执行）
+      loadCodePlugins(infos)
       void api.cliReady().then(async (dirs) => {
         if (!alive) return
         for (const d of dirs) void newTab(undefined, d)
@@ -225,7 +259,10 @@ export default function App() {
     void api.listThemes().then((ts) => {
       if (alive) setThemeList(ts)
     })
-    const offData = api.onData((id, d) => writeTerm(id, d))
+    const offData = api.onData((id, d) => {
+      writeTerm(id, d)
+      dispatchTermData(id, d)
+    })
     const offExit = api.onExit((id) => {
       writeTerm(id, '\r\n\x1b[90m[会话已退出]\x1b[0m\r\n')
       setExited((s) => {
@@ -267,6 +304,7 @@ export default function App() {
     setTabs((ts) => [...ts, info])
     setActiveId(info.id)
     setSettingsOpen(false)
+    emitTmEvent('tab-created', { id: info.id, profileId: info.profileId })
     return info
   }
 
@@ -291,6 +329,8 @@ export default function App() {
       profilesRef.current = [...ps, ...infos.flatMap((p) => p.profiles)]
       setProfiles(ps)
       setPluginInfos(infos)
+      // 代码级插件：新出现的注入、消失的摘注册物（与 plugins:list 同一节拍）
+      loadCodePlugins(infos)
     })
   }
 
@@ -322,6 +362,10 @@ export default function App() {
   const applySettings = (patch: Partial<AppSettings>) => {
     setSettings((s) => ({ ...s, ...patch }))
     void api.setSettings(patch).then(setSettings)
+    // 代码级插件事件：通告本次变更请求（同步语义，非回包确认）
+    if (patch.theme) emitTmEvent('theme-changed', { theme: patch.theme })
+    if (patch.darkTheme) emitTmEvent('scheme-changed', { schemeId: patch.darkTheme })
+    if (patch.lightTheme) emitTmEvent('scheme-changed', { schemeId: patch.lightTheme })
   }
 
   // 声明式插件的面板命令段：动作词汇在此映射到 App 既有回调——launch 走
@@ -387,11 +431,13 @@ export default function App() {
     if (activeRef.current === id) {
       setActiveId(next[Math.min(idx, next.length - 1)]?.id ?? '')
     }
+    emitTmEvent('tab-closed', { id })
   }
 
   const renameTab = (id: string, title: string) => {
     renamed.current.add(id)
     setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, title } : t)))
+    emitTmEvent('tab-renamed', { id, title })
   }
 
   // shell 通过 OSC 序列上报标题（如 ssh 到远端、进入目录时）
@@ -792,6 +838,32 @@ export default function App() {
             />
           )}
         </div>
+        {/* 状态栏（代码级插件的 UI 扩展点）：有插件项才渲染，默认视觉零变化。
+            点击后归还终端焦点（除非回调打开了设置页——设置页是覆盖层，焦点
+            该留在里面）；样式全走主题 CSS 变量自动适配深浅 */}
+        {hostSnap.statusbar.length > 0 && (
+          <footer className="statusbar">
+            {hostSnap.statusbar.map((it) => (
+              <span
+                key={it.key}
+                className={it.clickable ? 'statusbar-item clickable' : 'statusbar-item'}
+                style={it.color ? { color: it.color } : undefined}
+                title={it.tooltip}
+                data-key={it.key}
+                onClick={
+                  it.clickable
+                    ? () => {
+                        clickStatusItem(it.key)
+                        if (!settingsOpenRef.current) focusActiveTerm()
+                      }
+                    : undefined
+                }
+              >
+                {it.text}
+              </span>
+            ))}
+          </footer>
+        )}
       </div>
       {ctxMenu && (
         <ContextMenu
@@ -839,7 +911,7 @@ export default function App() {
               setTheme: (theme) => applySettings({ theme }),
               quitAll: () => api.quitAll()
             }
-          }), ...pluginCommands]}
+          }), ...pluginCommands, ...hostSnap.commands]}
           activeTitle={tabs.find((t) => t.id === activeId)?.title ?? ''}
           onClose={closePalette}
           onRename={(title) => {

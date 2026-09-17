@@ -1190,3 +1190,40 @@ body,
   color: var(--text);
   opacity: 0.6;
 }
+
+/* ── 状态栏（代码级插件的 UI 扩展点；无插件项时 App 不渲染本条）──
+   主体列末尾的细条：surface 底 + 顶 1px 发丝线，项右对齐排布；样式全走
+   主题 CSS 变量，深浅与自定义配色自动跟随。出现/消失由内容区 flex 收缩
+   吸收，终端经 ResizeObserver 自动重适配 */
+.statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  height: 24px;
+  flex: none;
+  padding: 0 10px;
+  background: var(--surface);
+  border-top: 1px solid var(--hairline);
+  font-size: 11px;
+  color: var(--text);
+  opacity: 0.85;
+  user-select: none;
+}
+
+.statusbar-item {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40vw;
+}
+
+.statusbar-item.clickable {
+  cursor: pointer;
+  padding: 0 6px;
+  border-radius: 4px;
+}
+
+.statusbar-item.clickable:hover {
+  background: var(--surface-hover);
+}

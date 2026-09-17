@@ -106,6 +106,103 @@ export interface PluginInfo {
   profiles: Profile[]
   commands: PluginCommandDef[]
   themes: ThemeDef[]
+  // 代码级插件入口（L3）：相对插件目录的 .js/.mjs 路径，渲染层经 tmplug://
+  // 协议以 module 脚本注入执行。缺省 = 纯声明式插件（L2）
+  entry?: string
+}
+
+// ── 代码级插件 API（L3 Tier 1，同 realm）──
+// 插件脚本与应用同 realm 运行（Tier 1 信任模型：真正的边界是 CSP 零网络 +
+// 安装即信任，API 是文档化的收编入口而非安全门；隔离宿主属 Tier 2）。
+// 脚本样板：const tm = termManager.init('my-plugin')
+
+// 插件可订阅的应用事件（负载按事件名不同）
+export type TmPluginEventName =
+  | 'tab-created'
+  | 'tab-closed'
+  | 'tab-activated'
+  | 'tab-renamed'
+  | 'theme-changed'
+  | 'scheme-changed'
+
+export interface TmPluginEvents {
+  'tab-created': { id: string; profileId?: string }
+  'tab-closed': { id: string }
+  'tab-activated': { id: string }
+  'tab-renamed': { id: string; title: string }
+  'theme-changed': { theme: ThemeOption }
+  'scheme-changed': { schemeId: string }
+}
+
+// 运行期注册的面板命令（区别于 manifest 的 PluginCommandDef：动作是函数，
+// 只存在于渲染层，永不过 IPC）
+export interface TmRuntimeCommandDef {
+  id: string
+  label: string
+  keywords?: string
+  hint?: string
+  run: () => void | Promise<void>
+}
+
+// 状态栏项：插件经 statusbar.setItem 放置的展示内容
+export interface TmStatusItem {
+  text: string
+  color?: string
+  tooltip?: string
+  onClick?: () => void
+}
+
+// 状态栏渲染条目（pluginHost 生成、App 消费；onClick 回调留在渲染层注册表内）
+export interface TmStatusbarEntry {
+  key: string // `${pluginId}:${itemId}`，兼作 e2e data-key
+  pluginId: string
+  pluginName: string
+  text: string
+  color?: string
+  tooltip?: string
+  /** 有 onClick 回调的项才呈可点击样式 */
+  clickable?: boolean
+}
+
+// termManager.init(pluginId) 返回的命名空间化 API：全部注册物自动归属该插件，
+// 卸载（插件目录被删）时一并摘除
+export interface TmScopedApi {
+  version: '1'
+  info: { id: string; name: string; version?: string }
+  registerCommand(def: TmRuntimeCommandDef): boolean
+  unregisterCommand(id: string): void
+  /** theme.id 为插件内局部 id，实际注册为「pluginId/id」；格式非法返回 false */
+  registerTheme(theme: ThemeFile & { id: string }): boolean
+  unregisterTheme(id: string): void
+  on<K extends keyof TmPluginEvents>(event: K, cb: (payload: TmPluginEvents[K]) => void): () => void
+  tabs: {
+    list(): TermInfo[]
+    active(): string | undefined
+    activate(id: string): void
+    create(profileId?: string, cwd?: string): Promise<TermInfo | undefined>
+  }
+  ui: {
+    setTheme(mode: ThemeOption): void
+    setScheme(id: string): void
+    toggleSidebar(): void
+    openSettings(): void
+  }
+  terminals: {
+    /** 订阅某标签的实时输出流（不含历史回放）；返回取消函数 */
+    subscribe(id: string, cb: (data: string) => void): () => void
+    /** 向指定标签注入输入（直达 tmux，不走广播扇出） */
+    write(id: string, data: string): void
+  }
+  statusbar: {
+    /** item 传 null 删除该项 */
+    setItem(itemId: string, item: TmStatusItem | null): void
+  }
+}
+
+// 插件脚本可见的全局对象（module 脚本直接读全局名 termManager）
+export interface TermManagerGlobal {
+  version: '1'
+  init(pluginId: string): TmScopedApi
 }
 
 export interface AppSettings {
