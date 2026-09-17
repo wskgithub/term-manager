@@ -133,6 +133,11 @@ plugins/docker-tools/
   强制）。分发就是 git clone 或下载文件夹。若未来需要插件市场，预期由生态*以插件
   形式*自建——该路线图阶段会带隔离的、声明式权限的插件宿主，不属于本声明式阶段。
 
+想自己写插件？完整开发指南——manifest 字段、校验规则、主题格式、代码级 API、
+上限与调试——见 **[docs/plugins.zh-CN.md](docs/plugins.zh-CN.md)**，配套可拷贝示例在
+[docs/examples/declarative-plugin/](docs/examples/declarative-plugin/) 与
+[docs/examples/code-plugin/](docs/examples/code-plugin/)。
+
 ## 代码级插件（实验性）
 
 声明式插件覆盖「数据」类扩展；需要**行为**时（监听输出、自动化动作、状态栏展示），
@@ -195,7 +200,8 @@ API 面（v1；完整类型见 `src/shared/types.ts` 的 `TmScopedApi`）：
 - 真正的隔离（沙箱 iframe + 每插件 CSP + 声明式网络权限）是后续 Tier 2 插件
   宿主——「市场=插件」生态的载体，代码插件届时可声明权限换取更强隔离。
 
-完整可拷贝示例见 [`docs/examples/code-plugin/`](docs/examples/code-plugin/)。
+完整可拷贝示例见 [`docs/examples/code-plugin/`](docs/examples/code-plugin/)；
+API 逐组讲解、上限总表与调试方法见[插件开发指南](docs/plugins.zh-CN.md)。
 
 ## Nautilus 右键集成
 
