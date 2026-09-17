@@ -17,6 +17,8 @@ the same architecture as WindTerm/iTerm2, which makes session persistence a natu
 
 ![Tab groups & pinning](docs/screenshots/tab-groups.png) ![New-tab dropdown: shell profile picker](docs/screenshots/newtab-menu.png)
 
+![Command palette (Ctrl+Shift+P fuzzy search)](docs/screenshots/palette.png)
+
 ![Group sidebar tree view](docs/screenshots/sidebar-tree.png) ![Settings page (light theme)](docs/screenshots/settings-light.png)
 
 All screenshots are produced by the E2E infrastructure driving the real UI (CDP menu
@@ -127,6 +129,28 @@ level — same order as the tab bar, just vertical.
   resized accordingly); group collapse state is shared with the tab bar and persists
   across restarts with the session
 
+## Command palette
+
+`Ctrl+Shift+P` opens a VS Code-style top-center palette (works whether focus is in a
+terminal or not). Fuzzy search (subsequence matching with hit highlighting; Chinese
+commands also match their English keywords), ↑↓ to select, Enter to run, Esc to close
+and hand focus back to the terminal. Four command families:
+
+- **Tab actions**: new tab (default + one entry per profile, with color dots), rename
+  the current tab (a second input step inside the palette, Enter commits), pin/unpin,
+  close (grayed out on pinned tabs — same anti-misclick semantics as the shortcut)
+- **Quick tab switching**: "switch to tab: <title>" — one entry per tab (with
+  pin/group markers), so the palette doubles as a tab switcher, faster than Ctrl+Tab
+  cycling once tabs pile up
+- **Grouping & broadcast**: add to a new group, leave the group, broadcast toggle
+  (gated by the master settings switch; the enabling action is shown in warning color)
+- **App-level**: sidebar toggle, settings page, theme switching (current theme grayed
+  out and marked), quit and terminate all sessions (warning color)
+
+Every command maps onto existing app callbacks (no new IPC or data flow);
+context-sensitive entries appear and flip with state (e.g. "leave group" only exists
+inside a group; close grays out once pinned).
+
 ## Nautilus context-menu integration
 
 The file manager's right-click menu (on a directory or in the empty area of a directory)
@@ -159,6 +183,8 @@ src/
     ├── TabBar.tsx   # rename / drag reorder / profile menu / settings entry
     ├── Sidebar.tsx  # group sidebar tree view (replaces the tab bar when enabled)
     ├── NewTabMenu.tsx # + split button / profile dropdown (shared by tab bar & sidebar)
+    ├── palette.ts   # command palette registry (command building + fuzzy match scoring)
+    ├── CommandPalette.tsx # command palette overlay (keyboard nav + two-step rename)
     ├── menus.tsx    # shared tab/group context-menu builders (data-key is the e2e selector)
     ├── segs.ts      # tab-list segmentation (consecutive same-group runs), shared view model
     ├── TermView.tsx # xterm instances (single-point output dispatch, adaptive sizing, font settings)
@@ -241,6 +267,14 @@ npx electron out/main/index.js --e2e-session=phase2 --e2e-user-data=$U --e2e-ses
 npx electron out/main/index.js --e2e-sidebar --e2e-quit --no-sandbox
 ```
 
+```bash
+# Command palette regression: Ctrl+Shift+P through the real input pipeline (including
+# xterm penetration while a terminal has focus), fuzzy filtering, arrow/Enter/mouse
+# execution, two-step rename, context-sensitive commands (close grayed on pinned tabs,
+# broadcast gated by settings, current theme grayed), Esc close and focus return
+npx electron out/main/index.js --e2e-palette --e2e-quit --no-sandbox
+```
+
 ### Measured performance (20 hosted tabs, 2026-09-09, i5/integrated graphics)
 
 | Metric | Value |
@@ -259,6 +293,7 @@ npx electron out/main/index.js --e2e-sidebar --e2e-quit --no-sandbox
   the fallback — the Tab family never bubbles once claimed by xterm)
 - `Ctrl+Shift+Q` quit and terminate all sessions (the tmux server and its shells end)
 - `Ctrl+Shift+B` toggle the group sidebar (works whether focus is in a terminal or not)
+- `Ctrl+Shift+P` toggle the command palette (same; see [Command palette](#command-palette))
 - `Ctrl+,` toggle settings page (`Esc` or clicking a tab closes it)
 - Double-click a tab to rename (after a manual rename the shell-reported title no longer
   overrides it)
@@ -294,7 +329,10 @@ npx electron out/main/index.js --e2e-sidebar --e2e-quit --no-sandbox
       shipped with the deb)
 - [x] Group sidebar tree view (vertical "group → tab" panel replacing the tab bar; tree
       drag-and-drop for reorder/join/leave, covered by `--e2e-sidebar`)
-- [ ] Command palette, GPU rendering (addon-webgl, optional on capable stacks)
+- [x] Command palette (`Ctrl+Shift+P` fuzzy search & run: tabs/profiles/switching/
+      grouping/broadcast/theme/sidebar/settings/quit, in-palette two-step rename,
+      covered by `--e2e-palette`)
+- [ ] GPU rendering (addon-webgl, optional on capable stacks)
 - [ ] AppImage, rpm and other package formats
 
 ## Notes

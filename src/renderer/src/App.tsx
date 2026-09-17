@@ -13,6 +13,8 @@ import {
 import { TabBar } from './TabBar'
 import { Sidebar, type SideDropTarget } from './Sidebar'
 import { TermView } from './TermView'
+import { CommandPalette } from './CommandPalette'
+import { buildCommands } from './palette'
 import { SettingsPage } from './SettingsPage'
 import { ContextMenu, CopyIcon, PasteIcon } from './ContextMenu'
 import { resolveDark, subscribeScheme, xtermTheme, rememberTheme } from './theme'
@@ -53,6 +55,8 @@ export default function App() {
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; canCopy: boolean } | null>(null)
   // 新建终端失败提示（tmux 死了/profile 失效等），下次成功即清除
   const [createError, setCreateError] = useState('')
+  // 命令面板开关（Ctrl+Shift+P；纯运行时态，不持久化）
+  const [paletteOpen, setPaletteOpen] = useState(false)
   // 用户手动重命名后，shell 上报的标题不再覆盖
   const renamed = useRef(new Set<string>())
   // 单点分发：所有终端实例注册在这里，一个 onData 订阅服务全部标签
@@ -462,6 +466,13 @@ export default function App() {
     })
   }
 
+  // 命令面板关闭（Esc/执行命令/点击外部）：焦点还给活跃终端——面板输入框
+  // 拿着焦点时终端收不到键盘，与菜单关闭归还焦点同一语义
+  const closePalette = () => {
+    setPaletteOpen(false)
+    focusActiveTerm()
+  }
+
   // 快捷键：Ctrl+Shift+T 新建 / Ctrl+Shift+W 关闭 / Ctrl+Tab、Ctrl+Shift+Tab 切换
   // / Ctrl+Shift+Q 退出并终结会话（终端聚焦时 Ctrl+Q 族被 xterm 认领，由
   // TermView 的 customKeyEventHandler 拦截后同样走 quitAll，这里是不在终端时的兜底）
@@ -484,6 +495,11 @@ export default function App() {
         // 才被认领），window 层一条通路即可覆盖终端聚焦/失焦两种情况
         e.preventDefault()
         toggleSidebar()
+      } else if (e.ctrlKey && e.shiftKey && k === 'p') {
+        // 命令面板开关：与 Ctrl+Shift+B 同族，不被 xterm 键位表认领，window 层
+        // 单通路覆盖终端聚焦/失焦（面板开着时焦点在输入框，再按即关闭）
+        e.preventDefault()
+        setPaletteOpen((o) => !o)
       } else if (e.ctrlKey && e.key === 'Tab') {
         e.preventDefault()
         cycleTab(e.shiftKey ? -1 : 1)
@@ -647,6 +663,37 @@ export default function App() {
               action: pasteClipboard
             }
           ]}
+        />
+      )}
+      {paletteOpen && (
+        <CommandPalette
+          commands={buildCommands({
+            tabs,
+            groups,
+            activeId,
+            profiles,
+            settings,
+            broadcastGroups,
+            handlers: {
+              newTab: (pid) => void newTab(pid),
+              togglePin,
+              closeTab,
+              activateTab,
+              addToNewGroup,
+              removeFromGroup,
+              toggleGroupBroadcast,
+              toggleSidebar,
+              openSettings: () => setSettingsOpen(true),
+              setTheme: (theme) => applySettings({ theme }),
+              quitAll: () => api.quitAll()
+            }
+          })}
+          activeTitle={tabs.find((t) => t.id === activeId)?.title ?? ''}
+          onClose={closePalette}
+          onRename={(title) => {
+            const id = activeRef.current
+            if (id && title.trim()) renameTab(id, title)
+          }}
         />
       )}
     </div>

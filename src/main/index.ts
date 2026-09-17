@@ -988,6 +988,335 @@ async function runSidebarSequence(win: BrowserWindow): Promise<void> {
   }
 }
 
+// ── 命令面板回归（--e2e-palette）：真实快捷键通路（sendInputEvent 注入
+// Ctrl+Shift+P，含终端聚焦态穿透 xterm 的实证）+ 面板内模糊过滤、键盘导航、
+// Enter/鼠标执行、二段改名、上下文命令随状态出现（固定置灰关闭、广播随设置
+// 门控、主题当前项置灰）、Esc 关闭与焦点归还。走真实 userData：记原值结束还原 ──
+
+interface PaletteState {
+  open: boolean
+  mode: string
+  value: string
+  count: number
+  selected: number
+  empty: boolean
+  items: Array<{ key: string; label: string; disabled: boolean }>
+}
+
+const PALETTE_THEME_LABEL: Record<string, string> = {
+  dark: '深色',
+  light: '浅色',
+  system: '跟随系统'
+}
+
+async function runPaletteSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string) => JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const outDir = argvFlag('--e2e-out') ?? join(app.getPath('userData'), 'e2e')
+  mkdirSync(outDir, { recursive: true })
+  const snap = async (name: string) => {
+    const img = await win.webContents.capturePage()
+    writeFileSync(join(outDir, `${name}.png`), img.toPNG())
+    console.log(`E2E_SNAP ${name}`)
+  }
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_PALETTE ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+  const state = async (): Promise<PaletteState> =>
+    JSON.parse(await js<string>('JSON.stringify(window.__e2ePaletteState())'))
+  // __e2ePaletteInput/Key/Click 返回 Promise，须由 executeJavaScript 解析
+  const input = (text: string) => js<PaletteState>(`window.__e2ePaletteInput(${JSON.stringify(text)})`)
+  const key = (k: string) => js<PaletteState>(`window.__e2ePaletteKey('${k}')`)
+  const clickItem = (i: number) => js<PaletteState>(`window.__e2ePaletteClick(${i})`)
+  // 幂等开面板：某步 Enter 落空（空过滤/置灰项）时面板保持打开，直接再按
+  // Ctrl+Shift+P 会把它反向关掉——已开就直接复用当前面板
+  const open = async (): Promise<PaletteState> => {
+    let s = await state()
+    if (s.open) return s
+    await pressKey(win, 'P', ['ctrl', 'shift'])
+    await delay(300)
+    return state()
+  }
+  const sessionCount = async () => (await json<{ count: number }>('window.__e2eSessionState()')).count
+  const paneHas = (idx: number, sub: string) =>
+    json<boolean>(`window.__e2ePaneHas(${idx}, ${JSON.stringify(sub)})`)
+
+  // 记录用户原设置（结束还原）：getSettings 返回 Promise，须 executeJavaScript 解析
+  const prevSettings = await js<{ sidebarVisible: boolean; groupBroadcast: boolean; theme: string }>(
+    'window.api.getSettings()'
+  )
+  const themeBefore = await js<string>('document.documentElement.dataset.theme')
+
+  // 1) 裸启动 1 + __e2eStart(2) = 3 个标签；面板初始关闭
+  await js('window.__e2eStart(2)')
+  await waitUntil(
+    async () => await json<boolean>('window.__e2e && window.__e2e.done && window.__e2e.created >= 2'),
+    60000
+  )
+  const s0 = await state()
+  check('boot-closed', !s0.open)
+
+  // 2) 终端聚焦态按 Ctrl+Shift+P：快捷键须穿透 xterm 到达 App（若被键位表认领
+  //    面板不会开），面板开、输入框聚焦、全量列表就绪
+  check('focus-in-terminal', (await js<boolean>('window.__e2eFocus()')) === true)
+  await delay(200)
+  const fs0 = await json<{ focused: number; visible: number; ae: string }>('window.__e2eInputState()')
+  check(
+    'terminal-focused',
+    fs0.ae.includes('xterm-helper-textarea') && fs0.focused === fs0.visible,
+    JSON.stringify(fs0)
+  )
+  const s1 = await open()
+  const ae1 = await js<string>('String(document.activeElement && document.activeElement.className)')
+  check(
+    'shortcut-open',
+    s1.open && s1.mode === 'cmd' && s1.selected === 0 && s1.count >= 10,
+    JSON.stringify({ count: s1.count, selected: s1.selected })
+  )
+  check('input-focused', ae1.includes('palette-input'), ae1)
+  check(
+    'commands-listed',
+    s1.items.some((i) => i.key === 'quit') &&
+      s1.items.filter((i) => i.key.startsWith('switch:')).length === 2,
+    `switch=${s1.items.filter((i) => i.key.startsWith('switch:')).length}`
+  )
+  await snap('01-palette-open')
+
+  // 3) Esc 关闭 + 焦点归还终端（面板输入框拿着焦点时终端收不到键盘）
+  const sEsc = await key('Escape')
+  check('esc-close', !sEsc.open)
+  const fs1 = await json<{ focused: number; visible: number; ae: string }>('window.__e2eInputState()')
+  check(
+    'focus-return',
+    fs1.ae.includes('xterm-helper-textarea') && fs1.focused === fs1.visible,
+    JSON.stringify(fs1)
+  )
+  const mk = `pa${randomUUID().slice(0, 5)}`
+  await typeChars(win, mk)
+  await pressKey(win, 'Enter')
+  check('type-after-esc', await waitUntil(() => paneHas(fs1.visible, mk), 6000))
+
+  // 4) 快捷键 toggle：开 → 再按即关（直接按 P，不经过幂等 open）
+  await open()
+  await pressKey(win, 'P', ['ctrl', 'shift'])
+  await delay(300)
+  check('shortcut-toggle-close', !(await state()).open)
+
+  // 5) 过滤「新建」+ Enter：走 new-tab 命令建第 4 个标签
+  const sNew = await (await open(), input('新建'))
+  check(
+    'filter-newtab',
+    sNew.count >= 2 && sNew.items[0]!.key === 'new-tab',
+    JSON.stringify(sNew.items.map((i) => i.key))
+  )
+  await key('Enter')
+  check('newtab-exec', await waitUntil(async () => (await sessionCount()) === 4, 6000))
+
+  // 6) 按 profile 名过滤建第 5 个标签（取首个可用 profile）
+  const profiles = await js<Array<{ id: string; name: string; available?: boolean }>>(
+    'window.api.listProfiles()'
+  )
+  const prof = profiles.find((p) => p.available !== false)!
+  const sProf = await (await open(), input(prof.name))
+  check(
+    'filter-profile',
+    sProf.items.some((i) => i.key === `new-tab:${prof.id}`),
+    JSON.stringify({ prof: prof.id, items: sProf.items.map((i) => i.key) })
+  )
+  await key('Enter')
+  check('profile-exec', await waitUntil(async () => (await sessionCount()) === 5, 6000))
+
+  // 7) 二段改名：rename 命令切入改名模式（预填当前标题）→ 填新名 Enter →
+  //    标题落库且进入「手动改名后 shell 标题不再覆盖」态；Esc 则返回命令模式不落
+  const sRen1 = await (await open(), input('重命名'))
+  check('rename-entry', sRen1.items[0]?.key === 'rename')
+  await key('Enter')
+  const sRen2 = await state()
+  check('rename-mode', sRen2.open && sRen2.mode === 'rename' && sRen2.value !== '', sRen2.value)
+  await input('面板改名')
+  await key('Enter')
+  await delay(300)
+  const sess1 = await json<{ titles: string[]; renamed: number }>('window.__e2eSessionState()')
+  check('rename-exec', sess1.titles.includes('面板改名') && sess1.renamed >= 1)
+  await open()
+  await input('重命名')
+  await key('Enter')
+  const sRen3 = await key('Escape')
+  check('rename-esc-back', sRen3.open && sRen3.mode === 'cmd')
+  await key('Escape')
+
+  // 8) 标签快速切换：过滤「切换」列出除活跃外的全部 4 个；↑↓ 导航；Enter 切走
+  //    再按新标题切回（visible = 活跃 pane 下标）
+  const sSw = await (await open(), input('切换'))
+  check(
+    'switch-listed',
+    sSw.count === 4 && sSw.items.every((i) => i.key.startsWith('switch:')),
+    JSON.stringify(sSw.items.map((i) => i.key))
+  )
+  const sDown = await key('ArrowDown')
+  check('arrow-down', sDown.selected === 1, `selected=${sDown.selected}`)
+  const sUp = await key('ArrowUp')
+  check('arrow-up', sUp.selected === 0, `selected=${sUp.selected}`)
+  await key('Enter')
+  await delay(400)
+  const fs2 = await json<{ focused: number; visible: number }>('window.__e2eInputState()')
+  check('switch-exec', fs2.visible === 0 && fs2.focused === 0, JSON.stringify(fs2))
+  const sBack = await (await open(), input('面板改名'))
+  check(
+    'switch-filter',
+    sBack.items.length === 1 && sBack.items[0]!.key.startsWith('switch:'),
+    JSON.stringify(sBack.items.map((i) => i.key))
+  )
+  await key('Enter')
+  await delay(400)
+  const fs3 = await json<{ focused: number; visible: number }>('window.__e2eInputState()')
+  check('switch-back', fs3.visible === 4 && fs3.focused === 4, JSON.stringify(fs3))
+
+  // 9) 固定：命令固定当前标签（pinned 计数 +1，标签挪到头部）；固定后关闭命令
+  //    置灰（防误关语义与快捷键/× 一致）；再执行变「取消固定」恢复
+  const sPin = await (await open(), input('固定'))
+  check('pin-entry', sPin.items[0]?.key === 'pin' && !sPin.items[0].disabled)
+  await key('Enter')
+  await delay(300)
+  const sess2 = await json<{ pinned: number }>('window.__e2eSessionState()')
+  check('pin-exec', sess2.pinned === 1)
+  const sClose = await (await open(), input('关闭'))
+  check('close-disabled-when-pinned', sClose.items[0]?.key === 'close' && sClose.items[0].disabled)
+  await key('Escape')
+  const sUnpin = await (await open(), input('取消固定'))
+  check('unpin-entry', sUnpin.items[0]?.key === 'pin' && sUnpin.items[0].label.includes('取消固定'))
+  await key('Enter')
+  await delay(300)
+  const sess3 = await json<{ pinned: number }>('window.__e2eSessionState()')
+  check('unpin-exec', sess3.pinned === 0)
+
+  // 10) 分组与广播：建组命令入新组；广播命令随设置总开关门控（关时过滤「广播」
+  //     为空）→ 设置页真实开启 → 命令出现并执行（广播组计数 1）→ 移出组清空
+  const sGrp = await (await open(), input('新组'))
+  check('group-new-entry', sGrp.items[0]?.key === 'group-new')
+  await key('Enter')
+  await delay(300)
+  const sess4 = await json<{ groups: Array<{ members: number }> }>('window.__e2eSessionState()')
+  check('group-new-exec', sess4.groups.length === 1 && sess4.groups[0].members === 1)
+  const sBc0 = await (await open(), input('广播'))
+  check('broadcast-hidden-when-off', sBc0.count === 0 && sBc0.empty)
+  await key('Escape')
+  const setViaSettingsPage = async (on: boolean): Promise<boolean> => {
+    await js('window.__e2eSettings && window.__e2eSettings(true)')
+    await delay(300)
+    await js(`document.querySelectorAll('.settings-nav-item')[1]?.click()`)
+    await delay(200)
+    const ok = await js<boolean>(
+      `(() => { const cb = document.querySelector('[data-setting="groupBroadcast"]'); ` +
+        `if (!cb) return false; if (cb.checked !== ${on}) cb.click(); return cb.checked === ${on} })()`
+    )
+    await delay(150)
+    await js('window.__e2eSettings && window.__e2eSettings(false)')
+    await delay(150)
+    return ok
+  }
+  check('broadcast-setting-on', (await setViaSettingsPage(true)) === true)
+  const sBc1 = await (await open(), input('广播'))
+  check(
+    'broadcast-cmd-appears',
+    sBc1.items.some((i) => i.key === 'group-broadcast'),
+    JSON.stringify(sBc1.items.map((i) => i.key))
+  )
+  await key('Enter')
+  const bs = await json<{ groups: number }>('window.__e2eBroadcastState()')
+  check('broadcast-exec', bs.groups === 1, JSON.stringify(bs))
+  const sLeave = await (await open(), input('移出'))
+  check('group-leave-entry', sLeave.items[0]?.key === 'group-leave')
+  await key('Enter')
+  await delay(300)
+  const sess5 = await json<{ groups: unknown[] }>('window.__e2eSessionState()')
+  check('group-leave-exec', sess5.groups.length === 0)
+
+  // 11) 主题：三条 + 当前项置灰；「浅色」执行后 html data-theme 立变；按原主题
+  //     名切回应还原
+  const sTheme = await (await open(), input('主题'))
+  check('theme-listed', sTheme.count === 3, JSON.stringify(sTheme.items.map((i) => i.key)))
+  const curTheme = sTheme.items.find((i) => i.key === `theme:${prevSettings.theme}`)
+  check('theme-current-disabled', !!curTheme && curTheme.disabled === true)
+  await input('浅色')
+  await key('Enter')
+  await delay(300)
+  const dt1 = await js<string>('document.documentElement.dataset.theme')
+  check('theme-light', dt1 === 'light', dt1)
+  await snap('02-palette-light')
+  await open()
+  await input(PALETTE_THEME_LABEL[prevSettings.theme] ?? '深色')
+  await key('Enter')
+  await delay(300)
+  const dt2 = await js<string>('document.documentElement.dataset.theme')
+  check('theme-revert', dt2 === themeBefore, `${dt2} vs ${themeBefore}`)
+
+  // 12) 侧栏命令：开（侧栏取代标签栏）/ 关，label 随当前状态翻转
+  const sSide = await (await open(), input('侧栏'))
+  check('sidebar-entry', sSide.items[0]?.key === 'sidebar')
+  await key('Enter')
+  await delay(300)
+  const side1 = await json<{ sidebar: boolean; tabbar: boolean }>('window.__e2eSidebarState()')
+  check('sidebar-exec', side1.sidebar && !side1.tabbar, JSON.stringify(side1))
+  await snap('03-palette-sidebar')
+  const sSide2 = await (await open(), input('侧栏'))
+  check('sidebar-label-flip', sSide2.items[0]?.label.includes('隐藏') === true)
+  await key('Enter')
+  await delay(300)
+  const side2 = await json<{ sidebar: boolean; tabbar: boolean }>('window.__e2eSidebarState()')
+  check('sidebar-back', !side2.sidebar && side2.tabbar, JSON.stringify(side2))
+
+  // 13) 设置命令：Enter 打开设置页，Esc（window 层兜底）关闭
+  const sSet = await (await open(), input('设置'))
+  check('settings-entry', sSet.items[0]?.key === 'settings')
+  await key('Enter')
+  await delay(300)
+  check('settings-exec', (await js<boolean>('!!document.querySelector(".settings")')) === true)
+  await pressKey(win, 'Escape')
+  await delay(300)
+  check('settings-esc', (await js<boolean>('!!document.querySelector(".settings")')) === false)
+
+  // 14) 空结果态：乱串过滤无命中显示空态，Enter 不误执行也不崩，Esc 正常关闭
+  const sEmpty = await (await open(), input('zzqx不存在的命令'))
+  check('empty-state', sEmpty.count === 0 && sEmpty.empty)
+  const sNoop = await key('Enter')
+  check('empty-enter-noop', sNoop.open)
+  await key('Escape')
+
+  // 15) 鼠标点击执行（真实 onClick）：点第二个「新建」项（profile 命令）建标签
+  const c0 = await sessionCount()
+  await open()
+  await input('新建')
+  await clickItem(1)
+  check('mouse-click-exec', await waitUntil(async () => (await sessionCount()) === c0 + 1, 6000))
+
+  // 16) 设置还原（主题/侧栏/广播开关被测试动过，退出前回到用户原值）
+  await js(
+    `window.api.setSettings && window.api.setSettings({ sidebarVisible: ${!!prevSettings.sidebarVisible}, ` +
+      `groupBroadcast: ${!!prevSettings.groupBroadcast}, theme: '${prevSettings.theme}' })`
+  )
+  const final = await js<{ sidebarVisible: boolean; groupBroadcast: boolean; theme: string }>(
+    'window.api.getSettings()'
+  )
+  check(
+    'settings-restored',
+    final.sidebarVisible === prevSettings.sidebarVisible &&
+      final.groupBroadcast === prevSettings.groupBroadcast &&
+      final.theme === prevSettings.theme,
+    JSON.stringify({ final, prev: prevSettings })
+  )
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_PALETTE_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  if (argvHas('--e2e-quit')) {
+    await backend.dispose()
+    app.exit(allOk ? 0 : 1)
+  }
+}
+
 // ── 会话保持两段回归（--e2e-session=phase1 / phase2，共享 --e2e-user-data）──
 // phase1：建标签 + pin + 建组 + 改名 + 输入标记串 → 保留退出（detach）；
 // phase2：附着恢复 → 断言标签数/固定/分组/改名态/屏幕回放/可继续交互 → 终结清场。
@@ -1148,11 +1477,13 @@ async function runSmoke(): Promise<void> {
 // 逻辑一并摇出产物（--smoke/--e2e-tabs/--e2e-input 为历史基线字面量，保留）
 const sessionE2E = __E2E__ ? argvFlag('--e2e-session') : undefined
 const sidebarE2E = __E2E__ ? argvHas('--e2e-sidebar') : false
+const paletteE2E = __E2E__ ? argvHas('--e2e-palette') : false
 const isolatedRun =
   argvHas('--smoke') ||
   argvFlag('--e2e-tabs') !== undefined ||
   argvHas('--e2e-input') ||
   sidebarE2E ||
+  paletteE2E ||
   sessionE2E !== undefined
 const cliOpenDir = extractOpenDir(process.argv)
 
@@ -1236,8 +1567,11 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
         return
       }
 
-      if (__E2E__ && (e2eTabs || argvHas('--e2e-input') || argvHas('--e2e-sidebar')) && mainWindow) {
-        const n = argvHas('--e2e-input') || argvHas('--e2e-sidebar') ? 2 : Math.max(1, Number(e2eTabs) || 20)
+      if (__E2E__ && (e2eTabs || argvHas('--e2e-input') || argvHas('--e2e-sidebar') || argvHas('--e2e-palette')) && mainWindow) {
+        const n =
+          argvHas('--e2e-input') || argvHas('--e2e-sidebar') || argvHas('--e2e-palette')
+            ? 2
+            : Math.max(1, Number(e2eTabs) || 20)
         const win = mainWindow
         win.webContents.once('did-finish-load', () => {
           void delay(800)
@@ -1245,6 +1579,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
               await started
               if (argvHas('--e2e-input')) await runInputSequence(win)
               else if (argvHas('--e2e-sidebar')) await runSidebarSequence(win)
+              else if (argvHas('--e2e-palette')) await runPaletteSequence(win)
               else await runE2ESequence(win, n)
             })
             .catch(async (e) => {
