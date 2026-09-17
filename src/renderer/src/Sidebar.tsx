@@ -30,6 +30,8 @@ interface Props {
   onRenameEnd: (id: string) => void
   onNewTab: (profileId: string) => void
   onOpenSettings: () => void
+  // ＋菜单打开时重拉 profile 列表（透传给 NewTabMenu）
+  onRefreshProfiles: () => void
   onToggleSidebar: () => void
   onDrop: (fromId: string, target: SideDropTarget) => void
   // ── 固定/分组（与 TabBar 同一套 App 回调）──
@@ -68,6 +70,7 @@ export function Sidebar(props: Props) {
     onRenameEnd,
     onNewTab,
     onOpenSettings,
+    onRefreshProfiles,
     onToggleSidebar,
     onDrop,
     onTogglePin,
@@ -227,6 +230,7 @@ export function Sidebar(props: Props) {
           defaultProfileId={defaultProfileId}
           onNewTab={onNewTab}
           onOpenSettings={onOpenSettings}
+          onOpenMenu={onRefreshProfiles}
         />
         <button
           className="side-btn"

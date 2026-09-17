@@ -2,7 +2,7 @@ import { app, BrowserWindow, clipboard, ipcMain, nativeTheme, shell } from 'elec
 import { execFile } from 'child_process'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
-import { mkdirSync, statSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { join, resolve } from 'path'
 import { ProfileRegistry } from './profiles'
 import { SettingsStore, listMonospaceFonts } from './settings'
@@ -201,7 +201,12 @@ function quitTerminating(): void {
 }
 
 function registerIpc(): void {
-  ipcMain.handle('profiles:list', () => registry.list())
+  // 每次列表都重探 PATH：渲染层在 ＋ 菜单/命令面板打开时拉取，
+  // 运行中安装的 shell 无需重启立即可选（补齐/翻灰都由 registry.refresh 做）
+  ipcMain.handle('profiles:list', () => {
+    registry.refresh()
+    return registry.list()
+  })
 
   ipcMain.handle('settings:get', () => settingsStore.get())
   ipcMain.handle('settings:set', (_e, patch: unknown) => {
@@ -1317,6 +1322,150 @@ async function runPaletteSequence(win: BrowserWindow): Promise<void> {
   }
 }
 
+// ── profile 可用性运行中刷新回归（--e2e-profile-refresh，环境自备）──
+// 预置：隔离 userData + profiles.json（含 PATH 上不存在的假 shell 条目），PATH
+// 前插一个空「安装目录」；运行中把假 shell 写进该目录即模拟「装了新 shell」，
+// 删除即卸载。断言：主进程每次 profiles:list 重探、＋菜单/命令面板打开时渲染层
+// 重拉、新装内建 shell 补齐、变化落盘。期望集由主进程同一 PATH/fs 现算，机器无关
+
+interface ProfListEntry {
+  id: string
+  name: string
+  command?: string
+  available?: boolean
+}
+
+// 与 profiles.ts 的 SHELL_CANDIDATES 对应（测试本地常量，随 gate 一起被剥离）
+const PROF_BUILTIN_IDS: Array<[id: string, command: string]> = [
+  ['bash', 'bash'],
+  ['zsh', 'zsh'],
+  ['fish', 'fish'],
+  ['pwsh', 'pwsh'],
+  ['docker-sh', 'docker']
+]
+
+async function runProfileRefreshSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string) => JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const outDir = argvFlag('--e2e-out') ?? join(app.getPath('userData'), 'e2e')
+  mkdirSync(outDir, { recursive: true })
+  const snap = async (name: string) => {
+    const img = await win.webContents.capturePage()
+    writeFileSync(join(outDir, `${name}.png`), img.toPNG())
+    console.log(`E2E_SNAP ${name}`)
+  }
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_PROF ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+  const listProfiles = () => js<ProfListEntry[]>('window.api.listProfiles()')
+  const menu = () =>
+    js<{ open: boolean; items: Array<{ name: string; disabled: boolean }> }>(
+      'window.__e2eNewTabToggle()'
+    )
+  // 主进程视角的期望集：内建候选里 command 在本进程 PATH 上的条目（与
+  // profiles.ts 的 findOnPath 同逻辑；本套件启动时已把 PROF_BIN 前插进 PATH）
+  const onPath = (cmd: string) =>
+    (process.env.PATH ?? '').split(':').some((d) => d && existsSync(join(d, cmd)))
+  const expectedBuiltins = PROF_BUILTIN_IDS.filter(([, cmd]) => onPath(cmd)).map(([id]) => id)
+
+  // 1) 启动态：假 shell 未装（安装目录为空）→ available=false；bash 真 installed
+  const boot = await listProfiles()
+  check(
+    'boot-grayed',
+    boot.some((p) => p.id === 'e2e-sh' && p.available === false) &&
+      boot.some((p) => p.id === 'bash' && p.available === true),
+    JSON.stringify(boot.map((p) => [p.id, p.available]))
+  )
+
+  // 2) ＋菜单里该条目置灰（渲染层初始态；设置入口行健在）
+  let m = await menu()
+  check(
+    'menu-open-grayed',
+    m.open &&
+      m.items.some((i) => i.name.includes('E2E Shell') && i.disabled) &&
+      m.items.some((i) => i.name.includes('设置')),
+    JSON.stringify(m)
+  )
+  await menu() // 关闭
+
+  // 3) handler 级重探（不经 UI）：写入假 shell 模拟安装，直接 invoke 即变可用
+  //    ——证明 profiles:list 每次重探，而不是只有启动 load 探一次
+  writeFileSync(join(PROF_BIN, 'e2e-fake-sh'), '')
+  const afterInstall = await listProfiles()
+  check(
+    'handler-reprobe',
+    afterInstall.some((p) => p.id === 'e2e-sh' && p.available === true),
+    JSON.stringify(afterInstall.find((p) => p.id === 'e2e-sh'))
+  )
+
+  // 4) 菜单重开解灰：渲染层持有的是第 2 步的旧列表，打开瞬间 onOpenMenu 重拉生效
+  m = await menu()
+  check(
+    'menu-refresh-ungray',
+    m.open && m.items.some((i) => i.name.includes('E2E Shell') && !i.disabled),
+    JSON.stringify(m.items)
+  )
+  await snap('01-installed-ungrayed')
+  await menu() // 关闭
+
+  // 5) 内建补齐：本机已装但预置列表缺条的内建 shell（如 zsh/docker）被 refresh 补上
+  const merged = await listProfiles()
+  const ids = new Set(merged.map((p) => p.id))
+  check(
+    'builtin-merged',
+    expectedBuiltins.every((id) => ids.has(id)),
+    `have=[${[...ids]}] want=[${expectedBuiltins}]`
+  )
+
+  // 6) 变化落盘：profiles.json 出现 available 翻转与补齐条目（仅变化时回写）
+  const disk = JSON.parse(readFileSync(join(PROF_UD, 'profiles.json'), 'utf-8')) as {
+    profiles: ProfListEntry[]
+  }
+  check(
+    'persisted',
+    disk.profiles.some((p) => p.id === 'e2e-sh' && p.available === true) &&
+      expectedBuiltins.every((id) => disk.profiles.some((p) => p.id === id)),
+    JSON.stringify(disk.profiles.map((p) => [p.id, p.available]))
+  )
+
+  // 7) 卸载模拟：删掉假 shell 后菜单重开又置灰（渲染态随每次打开刷新，非一次性）
+  rmSync(join(PROF_BIN, 'e2e-fake-sh'))
+  m = await menu()
+  check(
+    'menu-regray-after-rm',
+    m.open && m.items.some((i) => i.name.includes('E2E Shell') && i.disabled),
+    JSON.stringify(m.items.find((i) => i.name.includes('E2E Shell')))
+  )
+  await menu() // 关闭
+
+  // 8) 命令面板同源刷新：面板打开也会重拉（App 的 paletteOpen effect），
+  //    不可用条目不进 profile 命令——过滤 'E2E' 应无 new-tab:e2e-sh
+  await pressKey(win, 'P', ['ctrl', 'shift'])
+  await delay(400)
+  const pal = await json<{ open: boolean }>('window.__e2ePaletteState()')
+  check('palette-open', pal.open)
+  const filtered = await js<{ items: Array<{ key: string }> }>(
+    `window.__e2ePaletteInput(${JSON.stringify('E2E')})`
+  )
+  check(
+    'palette-excludes-unavailable',
+    !filtered.items.some((i) => i.key === 'new-tab:e2e-sh'),
+    JSON.stringify(filtered.items.map((i) => i.key))
+  )
+  await pressKey(win, 'Escape')
+  await delay(200)
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_PROF_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  if (argvHas('--e2e-quit')) {
+    await backend.dispose()
+    app.exit(allOk ? 0 : 1)
+  }
+}
+
 // ── 会话保持两段回归（--e2e-session=phase1 / phase2，共享 --e2e-user-data）──
 // phase1：建标签 + pin + 建组 + 改名 + 输入标记串 → 保留退出（detach）；
 // phase2：附着恢复 → 断言标签数/固定/分组/改名态/屏幕回放/可继续交互 → 终结清场。
@@ -1478,12 +1627,14 @@ async function runSmoke(): Promise<void> {
 const sessionE2E = __E2E__ ? argvFlag('--e2e-session') : undefined
 const sidebarE2E = __E2E__ ? argvHas('--e2e-sidebar') : false
 const paletteE2E = __E2E__ ? argvHas('--e2e-palette') : false
+const profileRefreshE2E = __E2E__ ? argvHas('--e2e-profile-refresh') : false
 const isolatedRun =
   argvHas('--smoke') ||
   argvFlag('--e2e-tabs') !== undefined ||
   argvHas('--e2e-input') ||
   sidebarE2E ||
   paletteE2E ||
+  profileRefreshE2E ||
   sessionE2E !== undefined
 const cliOpenDir = extractOpenDir(process.argv)
 
@@ -1495,6 +1646,35 @@ if (sessionE2E) {
     process.exit(1)
   }
   app.setPath('userData', resolve(dir))
+}
+
+// --e2e-profile-refresh 的自备环境，须在 whenReady 的 registry.load() 之前就绪：
+// 隔离 userData 预写 profiles.json（PATH 上不存在的假 shell 条目 + bash），PATH
+// 前插空的「安装目录」——套件运行中写入/删除该目录里的 e2e-fake-sh 即模拟
+// 安装/卸载（findOnPath 只看 existsSync，不需要可执行位）
+const PROF_UD = '/tmp/e2e-prof-ud'
+const PROF_BIN = '/tmp/e2e-prof-bin'
+if (profileRefreshE2E) {
+  rmSync(PROF_UD, { recursive: true, force: true })
+  rmSync(PROF_BIN, { recursive: true, force: true })
+  mkdirSync(PROF_UD, { recursive: true })
+  mkdirSync(PROF_BIN, { recursive: true })
+  writeFileSync(
+    join(PROF_UD, 'profiles.json'),
+    JSON.stringify(
+      {
+        version: 2,
+        profiles: [
+          { id: 'e2e-sh', name: 'E2E Shell', command: 'e2e-fake-sh', color: '#888888' },
+          { id: 'bash', name: 'bash', command: 'bash', color: '#4fc3f7' }
+        ]
+      },
+      null,
+      2
+    )
+  )
+  process.env.PATH = `${PROF_BIN}:${process.env.PATH ?? ''}`
+  app.setPath('userData', PROF_UD)
 }
 
 if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null })) {
@@ -1567,7 +1747,15 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
         return
       }
 
-      if (__E2E__ && (e2eTabs || argvHas('--e2e-input') || argvHas('--e2e-sidebar') || argvHas('--e2e-palette')) && mainWindow) {
+      if (
+        __E2E__ &&
+        (e2eTabs ||
+          argvHas('--e2e-input') ||
+          argvHas('--e2e-sidebar') ||
+          argvHas('--e2e-palette') ||
+          profileRefreshE2E) &&
+        mainWindow
+      ) {
         const n =
           argvHas('--e2e-input') || argvHas('--e2e-sidebar') || argvHas('--e2e-palette')
             ? 2
@@ -1580,6 +1768,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
               if (argvHas('--e2e-input')) await runInputSequence(win)
               else if (argvHas('--e2e-sidebar')) await runSidebarSequence(win)
               else if (argvHas('--e2e-palette')) await runPaletteSequence(win)
+              else if (profileRefreshE2E) await runProfileRefreshSequence(win)
               else await runE2ESequence(win, n)
             })
             .catch(async (e) => {

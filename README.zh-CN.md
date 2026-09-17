@@ -170,6 +170,13 @@ npx electron out/main/index.js --e2e-sidebar --e2e-quit --no-sandbox
 npx electron out/main/index.js --e2e-palette --e2e-quit --no-sandbox
 ```
 
+```bash
+# profile 可用性运行中刷新回归（环境自备：隔离 userData + PATH 里的空"安装目录"）：
+# 运行中写入/删除假 shell 模拟安装/卸载，断言 profiles:list 每次重探、＋菜单与
+# 命令面板打开时渲染层重拉、新装内建 shell 补齐、变化落盘 profiles.json
+npx electron out/main/index.js --e2e-profile-refresh --e2e-quit --no-sandbox
+```
+
 ### 实测性能（20 标签托管，2026-09-09，i5/集成显卡）
 
 | 指标 | 数值 |
@@ -255,7 +262,7 @@ Esc 关闭并把焦点还给终端。覆盖四类命令：
 - [x] 多标签、点击切换、关闭、退出置灰提示
 - [x] 双击重命名（标题覆盖语义）
 - [x] 标签拖拽排序
-- [x] profile 系统：`+` 菜单列出本机 shell 类型（bash / zsh / fish / pwsh / Docker Shell，按 PATH 探测、未安装置灰），默认 profile 为用户登录 shell；ssh 等远程连接由用户在 profiles.json 自定义 profile 实现
+- [x] profile 系统：`+` 菜单列出本机 shell 类型（bash / zsh / fish / pwsh / Docker Shell，按 PATH 探测、未安装置灰），默认 profile 为用户登录 shell；ssh 等远程连接由用户在 profiles.json 自定义 profile 实现。可用性支持运行中刷新：打开 `+` 菜单或命令面板时重探 PATH 并补齐新装的内建 shell，无需重启
 - [x] tmux Control Mode 后端：UTF-8（StringDecoder 处理跨 chunk 多字节字符）、自适应尺寸、输入防抖合批（5ms/8KB）、
       进程异常兜底（tmux 缺失/被杀不再崩主进程）、启动时清理崩溃实例遗留的 tmux 服务器（socket 名内嵌 pid 探活）
 - [x] 设置页（外观：字体选择/字号，fc-list 枚举本机等宽字体，即时生效 + 持久化）

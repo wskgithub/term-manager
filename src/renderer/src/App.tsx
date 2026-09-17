@@ -218,6 +218,21 @@ export default function App() {
     activateTab(ts[(i + dir + ts.length) % ts.length].id)
   }
 
+  // 重拉 profile 列表：主进程每次 list 都重探 PATH（并补齐新装的内建 shell），
+  // ＋ 菜单与命令面板打开时调用，运行中安装的 shell 无需重启立即可选
+  const refreshProfiles = () => {
+    void api.listProfiles().then((ps) => {
+      profilesRef.current = ps
+      setProfiles(ps)
+    })
+  }
+
+  // 命令面板的 profile 命令与 ＋ 菜单同源：面板打开瞬间同步刷新一次
+  useEffect(() => {
+    if (paletteOpen) refreshProfiles()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paletteOpen])
+
   // 给 TabBar 的默认终端：设置了且本机可用才生效，否则视为未设置（+ 打开菜单）
   const defaultProfileId =
     settings.defaultProfileId &&
@@ -560,6 +575,7 @@ export default function App() {
           onRenameEnd={(id) => terms.current.get(id)?.focus()}
           onNewTab={(pid) => void newTab(pid)}
           onOpenSettings={() => setSettingsOpen(true)}
+          onRefreshProfiles={refreshProfiles}
           onToggleSidebar={toggleSidebar}
           onDrop={sidebarDrop}
           onTogglePin={togglePin}
@@ -593,6 +609,7 @@ export default function App() {
             onReorder={reorder}
             onNewTab={(pid) => void newTab(pid)}
             onOpenSettings={() => setSettingsOpen(true)}
+            onRefreshProfiles={refreshProfiles}
             onToggleSidebar={toggleSidebar}
             onTogglePin={togglePin}
             onGroupNew={addToNewGroup}
