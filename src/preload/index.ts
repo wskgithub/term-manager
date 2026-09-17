@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AppSettings,
+  PluginInfo,
   Profile,
   RestoredSession,
   SessionUiSync,
@@ -17,6 +18,7 @@ const api = {
     ipcRenderer.invoke('settings:set', patch),
   listFonts: (): Promise<string[]> => ipcRenderer.invoke('settings:fonts'),
   listThemes: (): Promise<ThemeDef[]> => ipcRenderer.invoke('themes:list'),
+  listPlugins: (): Promise<PluginInfo[]> => ipcRenderer.invoke('plugins:list'),
   createTerm: (profileId: string, cwd?: string): Promise<TermInfo> =>
     ipcRenderer.invoke('term:create', profileId, cwd),
   cliReady: (): Promise<string[]> => ipcRenderer.invoke('cli:ready'),

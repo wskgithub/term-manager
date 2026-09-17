@@ -8,6 +8,7 @@ import { ProfileRegistry } from './profiles'
 import { SettingsStore, listMonospaceFonts } from './settings'
 import { SessionStore } from './session'
 import { ThemeRegistry } from './themes'
+import { PluginRegistry } from './plugins'
 import { TmuxBackend, sweepStaleServers, type TermInfo } from './tmux'
 import type { SessionTab, TabGroup } from '../shared/types'
 
@@ -15,6 +16,7 @@ const registry = new ProfileRegistry()
 const settingsStore = new SettingsStore()
 const sessionStore = new SessionStore()
 const themes = new ThemeRegistry()
+const plugins = new PluginRegistry()
 // hub：主进程内分发终端事件（基准测试监听），同时转发给渲染进程
 const hub = new EventEmitter()
 hub.setMaxListeners(200)
@@ -227,8 +229,16 @@ function registerIpc(): void {
     return themes.list()
   })
 
+  // 声明式插件列表：每次调用重扫 plugins 目录（面板/菜单/设置页打开时拉取）
+  ipcMain.handle('plugins:list', () => {
+    plugins.refresh()
+    return plugins.list()
+  })
+
   ipcMain.handle('term:create', async (_e, profileId: string, cwd?: unknown) => {
-    const profile = registry.get(profileId)
+    // 插件注入的 profile 同走此口：渲染层永远只传 id 引用（「插件:局部」），
+    // 命令体一律由主进程侧注册表解析——不给渲染层开「任意命令直传」的面
+    const profile = registry.get(profileId) ?? plugins.getProfile(profileId)
     if (!profile) throw new Error(`profile not found: ${profileId}`)
     const info = await backend.create(profile, existingDir(cwd))
     persistSession() // 新窗口立即可恢复（不等渲染层 debounce 上报）
@@ -1710,6 +1720,186 @@ async function runThemesSequence(win: BrowserWindow): Promise<void> {
   }
 }
 
+// ── 声明式插件回归（--e2e-plugins，环境自备）──
+// 断言：manifest 校验的丢弃路径（坏 JSON/未知动作类型/launch 坏引用/重复 id）、
+// profile 注入进 ＋ 菜单、term:create 按「插件:局部」id 解析插件 profile（终端
+// 真实回显）、面板命令段执行（launch/open-settings）、set-scheme 引用不存在方案
+// 时置灰、插件主题包进 themes:list 且可选用（与主题数据化打通）
+interface PluginListEntry {
+  id: string
+  name: string
+  profiles: Array<{ id: string; name: string; available?: boolean }>
+  commands: Array<{ id: string; label: string }>
+  themes: Array<{ id: string; type: string }>
+}
+
+async function runPluginsSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string) => JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const outDir = argvFlag('--e2e-out') ?? join(app.getPath('userData'), 'e2e')
+  mkdirSync(outDir, { recursive: true })
+  const snap = async (name: string) => {
+    const img = await win.webContents.capturePage()
+    writeFileSync(join(outDir, `${name}.png`), img.toPNG())
+    console.log(`E2E_SNAP ${name}`)
+  }
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_PLUG ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+  const paneHas = (idx: number, sub: string) =>
+    json<boolean>(`window.__e2ePaneHas(${idx}, ${JSON.stringify(sub)})`)
+  // 回显到达轮询：echo 经 tmux 控制协议回来有毫秒级延迟
+  const waitPane = async (idx: number, sub: string) => {
+    for (let i = 0; i < 12; i++) {
+      if (await paneHas(idx, sub)) return true
+      await delay(250)
+    }
+    return false
+  }
+
+  const prevSettings = await js<{ theme: string; darkTheme: string; lightTheme: string }>(
+    'window.api.getSettings()'
+  )
+
+  // 1) 注册表集合：坏 JSON 与重复 id 整插件丢弃；e2e-tools 的坏引用命令被丢弃、
+  //    好命令保留；profile id 已重写为「插件:局部」并探测 available。
+  //    顺序按目录名排序：e2e-bad 在 e2e-tools 前
+  const plugins = await js<PluginListEntry[]>('window.api.listPlugins()')
+  const ids = plugins.map((p) => p.id)
+  const tools = plugins.find((p) => p.id === 'e2e-tools')
+  const bad = plugins.find((p) => p.id === 'e2e-bad')
+  check(
+    'plugins-listed',
+    ids.join(',') === 'e2e-bad,e2e-tools' &&
+      tools?.profiles.length === 1 &&
+      tools.profiles[0]?.id === 'e2e-tools:hello' &&
+      tools.profiles[0]?.available === true &&
+      tools.commands.map((c) => c.id).join(',') === 'run-hello,open-set,bad-scheme' &&
+      tools.themes.map((t) => t.id).join(',') === 'e2e-tools/e2e-night' &&
+      bad?.commands.length === 0,
+    JSON.stringify(plugins.map((p) => ({ id: p.id, cmds: p.commands.map((c) => c.id) })))
+  )
+
+  // 2) ＋菜单出现插件 profile（合并视图直通 NewTabMenu），真实点击启动——
+  //    走 onNewTab → newTab → term:create（主进程按「插件:局部」id 解析插件
+  //    profile），终端真实回显插件命令输出
+  const menu = await js<{ open: boolean; items: Array<{ name: string; disabled: boolean }> }>(
+    'window.__e2eNewTabToggle()'
+  )
+  check(
+    'menu-plugin-profile',
+    menu.open && menu.items.some((i) => i.name.includes('E2E Hello') && !i.disabled),
+    JSON.stringify(menu.items.map((i) => i.name))
+  )
+  const clicked = await js<boolean>(
+    `(() => { const el = [...document.querySelectorAll('.menu .menu-item')].find((e) => (e.textContent ?? '').includes('E2E Hello')); if (el) el.click(); return !!el })()`
+  )
+  const echoed = clicked ? await waitPane(1, 'PLUGIN_READY') : false
+  const idsNow = await json<string[]>('window.__e2eIds()')
+  const pane1 = await json<string[] | null>('window.__e2ePaneText(1)')
+  check(
+    'menu-launch-plugin-profile',
+    clicked && echoed,
+    JSON.stringify({ clicked, ids: idsNow.length, pane1 })
+  )
+
+  // 3) 面板命令段：过滤后插件命令可执行、坏引用命令已被丢弃不出现、
+  //    set-scheme 引用不存在方案时置灰、零命令插件（e2e-bad）不贡献任何条目
+  const before = await json<string[]>('window.__e2eIds()')
+  await pressKey(win, 'P', ['ctrl', 'shift'])
+  await delay(400)
+  const filtered = await js<{ open: boolean; items: Array<{ key: string; disabled: boolean }> }>(
+    `window.__e2ePaletteInput(${JSON.stringify('E2E 插件')})`
+  )
+  const runIdx = filtered.items.findIndex((i) => i.key === 'plugin:e2e-tools:run-hello')
+  check(
+    'palette-plugin-commands',
+    runIdx >= 0 &&
+      !filtered.items[runIdx]?.disabled &&
+      filtered.items.some((i) => i.key === 'plugin:e2e-tools:open-set') &&
+      filtered.items.some((i) => i.key === 'plugin:e2e-tools:bad-scheme' && i.disabled) &&
+      !filtered.items.some((i) => i.key.startsWith('plugin:e2e-bad')),
+    JSON.stringify(filtered.items.map((i) => [i.key, i.disabled]))
+  )
+  // launch 动作经真实点击执行：面板关闭、新标签建立、回显到达
+  await json(`window.__e2ePaletteClick(${runIdx})`)
+  await delay(250)
+  const after = await json<string[]>('window.__e2eIds()')
+  const echoed2 = await waitPane(2, 'PLUGIN_READY')
+  check(
+    'palette-launch-exec',
+    after.length === before.length + 1 && echoed2,
+    JSON.stringify({ before: before.length, after: after.length })
+  )
+  await snap('01-plugin-launched')
+
+  // 4) open-settings 动作：面板命令打开设置页（走 App 的 setSettingsOpen）
+  await pressKey(win, 'P', ['ctrl', 'shift'])
+  await delay(400)
+  const setFiltered = await js<{ items: Array<{ key: string }> }>(
+    `window.__e2ePaletteInput(${JSON.stringify('E2E 插件：打开设置')})`
+  )
+  const setIdx = setFiltered.items.findIndex((i) => i.key === 'plugin:e2e-tools:open-set')
+  await json(`window.__e2ePaletteClick(${setIdx})`)
+  await delay(300)
+  check(
+    'palette-open-settings',
+    setIdx >= 0 && (await js<boolean>('!!document.querySelector(".settings")')) === true,
+    JSON.stringify(setFiltered.items.map((i) => i.key))
+  )
+
+  // 5) 插件主题包：全局 themes:list 不含插件主题（分离供给，渲染层合并）——
+  //    判据读设置页下拉的真实呈现（合并视图）：深色下拉有命名空间 id、浅色无；
+  //    经真实下拉选用后内联变量与全部终端背景跟随
+  const nightInSelect = await js<boolean>(
+    `[...document.querySelectorAll('.settings-panel select[data-setting="darkTheme"] option')].some((o) => o.value === 'e2e-tools/e2e-night')`
+  )
+  const nightNotInLight = await js<boolean>(
+    `[...document.querySelectorAll('.settings-panel select[data-setting="lightTheme"] option')].every((o) => o.value !== 'e2e-tools/e2e-night')`
+  )
+  await js(`window.__e2eScheme('darkTheme', 'e2e-tools/e2e-night')`)
+  await delay(300)
+  const s = (await json('window.__e2eSchemeState()')) as {
+    dataTheme?: string
+    vars?: Record<string, string>
+    terms?: Array<{ bg: string | null }>
+  }
+  check(
+    'plugin-theme-selectable',
+    nightInSelect &&
+      nightNotInLight &&
+      s.dataTheme === 'dark' &&
+      s.vars?.bg === '#0f172a' &&
+      (s.terms ?? []).every((t) => t.bg === '#0f172a'),
+    JSON.stringify({ nightInSelect, nightNotInLight, dataTheme: s.dataTheme, vars: s.vars, terms: s.terms?.map((t) => t.bg) })
+  )
+  await snap('02-plugin-night')
+
+  // 6) 还原设置并退出（Esc 关设置页，焦点归还终端）
+  const final = await js<{ theme: string; darkTheme: string; lightTheme: string }>(
+    `window.api.setSettings({ theme: ${JSON.stringify(prevSettings.theme)}, darkTheme: ${JSON.stringify(
+      prevSettings.darkTheme
+    )}, lightTheme: ${JSON.stringify(prevSettings.lightTheme)} })`
+  )
+  check(
+    'settings-restored',
+    final.darkTheme === prevSettings.darkTheme && final.lightTheme === prevSettings.lightTheme,
+    JSON.stringify({ final, prevSettings })
+  )
+  await pressKey(win, 'Escape')
+  await delay(200)
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_PLUG_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  if (argvHas('--e2e-quit')) {
+    await backend.dispose()
+    app.exit(allOk ? 0 : 1)
+  }
+}
+
 // ── GPU 渲染回归（--e2e-webgl 常规 / --e2e-webgl-fallback 回退）──
 // 判据：WebGL 渲染器的主 canvas（无类名，上下文创建成功后才入 DOM）在
 // .xterm-screen 下可查到；addon 的 link 层 canvas（xterm-link-layer）在更早的
@@ -2044,6 +2234,7 @@ const sidebarE2E = __E2E__ ? argvHas('--e2e-sidebar') : false
 const paletteE2E = __E2E__ ? argvHas('--e2e-palette') : false
 const profileRefreshE2E = __E2E__ ? argvHas('--e2e-profile-refresh') : false
 const themesE2E = __E2E__ ? argvHas('--e2e-themes') : false
+const pluginsE2E = __E2E__ ? argvHas('--e2e-plugins') : false
 const webglE2E = __E2E__ ? argvHas('--e2e-webgl') || argvHas('--e2e-webgl-fallback') : false
 const isolatedRun =
   argvHas('--smoke') ||
@@ -2053,6 +2244,7 @@ const isolatedRun =
   paletteE2E ||
   profileRefreshE2E ||
   themesE2E ||
+  pluginsE2E ||
   webglE2E ||
   sessionE2E !== undefined
 const cliOpenDir = extractOpenDir(process.argv)
@@ -2159,6 +2351,66 @@ if (themesE2E) {
   app.setPath('userData', THEMES_UD)
 }
 
+// --e2e-plugins 的自备环境，须在 whenReady 的 plugins.load() 之前就绪：隔离
+// userData 预写 plugins 目录夹具。好插件 e2e-tools（1 个 bash 回显 profile +
+// launch/open-settings/坏引用三命令 + 1 个主题文件）、坏 JSON 插件、命令动作
+// 类型非法的插件（插件保留、坏命令丢弃）、目录名排在后的重复 id 插件（后者弃）。
+// 注意重复 id 夹具目录名以 zz 开头：目录按名排序取先，必须让真插件排在前面
+const PLUG_UD = '/tmp/e2e-plugins-ud'
+if (pluginsE2E) {
+  const mkPlugin = (name: string, manifest: string) => {
+    const dir = join(PLUG_UD, 'plugins', name)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'manifest.json'), manifest)
+    return dir
+  }
+  rmSync(PLUG_UD, { recursive: true, force: true })
+  const toolsDir = mkPlugin(
+    'e2e-tools',
+    JSON.stringify({
+      id: 'e2e-tools',
+      name: 'E2E 工具箱',
+      version: '1.0.0',
+      profiles: [
+        {
+          id: 'hello',
+          name: 'E2E Hello',
+          command: 'echo',
+          args: ['PLUGIN_READY'],
+          color: '#66c2a5'
+        }
+      ],
+      commands: [
+        { id: 'run-hello', label: 'E2E 插件：跑 Hello', keywords: 'plugin hello', action: { type: 'launch', profile: 'hello' } },
+        { id: 'open-set', label: 'E2E 插件：打开设置', action: { type: 'open-settings' } },
+        { id: 'bad-ref', label: '坏引用命令', action: { type: 'launch', profile: 'ghost' } },
+        { id: 'bad-scheme', label: 'E2E 插件：坏配色', action: { type: 'set-scheme', id: 'ghost/scheme' } }
+      ]
+    })
+  )
+  mkdirSync(join(toolsDir, 'themes'), { recursive: true })
+  writeFileSync(
+    join(toolsDir, 'themes', 'e2e-night.json'),
+    JSON.stringify({
+      name: 'E2E 夜蓝',
+      type: 'dark',
+      ui: { bg: '#0f172a' },
+      terminal: { background: '#0f172a', foreground: '#cdd6f4' }
+    })
+  )
+  mkPlugin('e2e-broken', '{ not json')
+  mkPlugin(
+    'e2e-bad',
+    JSON.stringify({
+      id: 'e2e-bad',
+      name: 'E2E 坏动作',
+      commands: [{ id: 'evil', label: '未知动作', action: { type: 'rm-rf' } }]
+    })
+  )
+  mkPlugin('zz-e2e-dup', JSON.stringify({ id: 'e2e-tools', name: '重复 id 冒名' }))
+  app.setPath('userData', PLUG_UD)
+}
+
 if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null })) {
   // 第二实例：目录已通过 additionalData 带给首实例，自己直接退出
   app.quit()
@@ -2176,6 +2428,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
     settingsStore.load()
     sessionStore.load()
     themes.load()
+    plugins.load()
     // 启动即按存档主题定向：dark/light 覆盖，system 交给系统偏好；
     // 必须在 createWindow 之前，窗口装饰（darkTheme）取的是此刻的有效值
     nativeTheme.themeSource = settingsStore.get().theme
@@ -2238,6 +2491,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
           argvHas('--e2e-palette') ||
           profileRefreshE2E ||
           themesE2E ||
+          pluginsE2E ||
           webglE2E) &&
         mainWindow
       ) {
@@ -2255,6 +2509,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
               else if (argvHas('--e2e-palette')) await runPaletteSequence(win)
               else if (profileRefreshE2E) await runProfileRefreshSequence(win)
               else if (themesE2E) await runThemesSequence(win)
+              else if (pluginsE2E) await runPluginsSequence(win)
               else if (webglE2E) await runWebglSequence(win)
               else await runE2ESequence(win, n)
             })

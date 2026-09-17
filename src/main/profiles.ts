@@ -25,7 +25,8 @@ interface ConfigFile {
   profiles: Profile[]
 }
 
-function findOnPath(command: string): boolean {
+// PATH 探测（声明式插件的 profile 注入复用：同样只看 existsSync）
+export function findOnPath(command: string): boolean {
   const path = process.env['PATH'] ?? ''
   for (const dir of path.split(':')) {
     if (dir && existsSync(join(dir, command))) return true
@@ -40,8 +41,9 @@ function shellOrder(p: Profile): number {
 }
 
 // profiles.json 可被手工编辑：字段级形状校验，坏条目整条丢弃并告警，
-// 而不是留到拼装 tmux 命令时才 TypeError（id/name 必填非空，可选字段类型不符即弃）
-function validProfile(p: unknown): p is Profile {
+// 而不是留到拼装 tmux 命令时才 TypeError（id/name 必填非空，可选字段类型不符即弃）。
+// 插件 manifest 的 profiles 条目同构，由 plugins.ts 复用
+export function validProfile(p: unknown): p is Profile {
   if (typeof p !== 'object' || p === null) return false
   const r = p as Record<string, unknown>
   if (typeof r.id !== 'string' || !r.id) return false

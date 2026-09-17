@@ -107,6 +107,56 @@ follow-system switches between the two.
 - Files are re-scanned whenever the settings page or command palette opens — edit or add
   themes while running, no restart needed. Pure local data: no code execution, no network.
 
+## Declarative plugins
+
+Plugins are **data, not code**: a folder with a `manifest.json` under
+`~/.config/term-manager/plugins/` contributes profiles, command-palette entries and theme
+packs. Zero code execution, zero network — installing a plugin means trusting the content
+it declares (a `launch` action runs only when you trigger it yourself by name). A plugin
+is active while its folder exists; delete the folder to remove it.
+
+```
+plugins/docker-tools/
+├─ manifest.json
+└─ themes/night.json        # optional theme pack (same format as global themes)
+```
+
+```json
+{
+  "id": "docker-tools",
+  "name": "Docker 工具",
+  "version": "1.0.0",
+  "profiles": [
+    { "id": "shell", "name": "Docker Shell", "command": "docker",
+      "args": ["run", "--rm", "-it", "alpine", "/bin/sh"], "color": "#ffcc80" }
+  ],
+  "commands": [
+    { "id": "prune", "label": "Docker：清理", "keywords": "docker prune",
+      "action": { "type": "launch", "profile": "shell" } },
+    { "id": "open-set", "label": "打开设置", "action": { "type": "open-settings" } }
+  ]
+}
+```
+
+- **profiles** appear in the `+` menu / sidebar / palette (and can be set as the default
+  terminal). Ids are namespaced to `plugin-id:local-id`, availability probed on PATH like
+  any profile. The renderer never sends command bodies over IPC — `term:create` only
+  accepts ids resolved main-side.
+- **commands** are palette entries with a closed action vocabulary: `launch(profile)` /
+  `open-settings` / `toggle-sidebar` / `set-theme(mode)` / `set-scheme(id)`. `launch`
+  referencing a non-existent profile of the same plugin drops the command; a `set-scheme`
+  id that no longer exists grays the entry out.
+- **theme packs**: `themes/*.json` inside the plugin folder use the same format as global
+  themes, with namespaced ids (`docker-tools/night`) selectable in the scheme selects.
+- Validation follows the profiles.json culture: bad manifests are skipped, bad entries
+  dropped individually with a log; duplicate plugin ids keep the first (directory order).
+  The directory is re-scanned whenever the palette, `+` menu or settings page opens.
+- Deliberately **no marketplace, no updater, no telemetry**: the app itself never makes
+  network connections (renderer CSP enforces it). Distribution is a git clone or a
+  downloaded folder. A marketplace, if ever wanted, is expected to be built *as a plugin*
+  by the ecosystem — that tier of the roadmap comes with an isolated, permission-declaring
+  plugin host and is not part of this declarative stage.
+
 ## Session persistence
 
 Closing the window keeps the tmux sessions alive by default: running jobs (builds, ssh,
@@ -227,6 +277,7 @@ src/
 │   ├── profiles.ts  # profile registry (JSON persistence)
 │   ├── settings.ts  # app settings (font/size) + fc-list font enumeration
 │   ├── themes.ts    # color-scheme directory loader (themes/*.json, read-only)
+│   ├── plugins.ts   # declarative plugin registry (plugins/*/manifest.json, data-only)
 │   └── session.ts   # session persistence (sessions.json: attach candidate + tab metadata)
 ├── preload/         # contextBridge API
 └── renderer/src/
@@ -347,6 +398,15 @@ npx electron out/main/index.js --e2e-themes --e2e-quit --no-sandbox
 ```
 
 ```bash
+# Declarative plugin regression (self-contained env: isolated userData with a plugins/
+# fixture — a good plugin with profile/commands/theme-pack, broken JSON, an unknown
+# action type, a duplicate id). Asserts manifest drop paths, plugin profiles in the +
+# menu with real launch & echo, palette command execution (launch / open-settings),
+# unknown-scheme graying, and plugin theme packs reaching the scheme selects
+npx electron out/main/index.js --e2e-plugins --e2e-quit --no-sandbox
+```
+
+```bash
 # GPU rendering regression (discriminator: the WebGL main canvas only enters the DOM
 # after context creation succeeds). Normal mode asserts default-on, live settings
 # toggling without recreating terminal instances, new terminals following the setting,
@@ -422,8 +482,9 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
 - [x] Custom themes (color schemes as data files in the themes directory: UI CSS
       variables + xterm palette with field-level inheritance from builtins, dark/light
       scheme selects per side, covered by `--e2e-themes`)
-- [ ] Declarative plugins (manifest-based profiles / palette commands / theme packs —
-      zero code execution, zero network; code-level extension API is a later stage)
+- [x] Declarative plugins (manifest-based profiles / palette commands / theme packs —
+      zero code execution, zero network, covered by `--e2e-plugins`; code-level extension
+      API is a later stage)
 - [ ] AppImage, rpm and other package formats
 
 ## Notes
