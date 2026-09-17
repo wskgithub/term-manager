@@ -440,4 +440,54 @@ export function setupE2E(ctx: E2ECtx): void {
     }
     return bad
   }
+
+  // ── 命令面板回归（--e2e-palette）：面板开合由主进程 sendInputEvent 注入
+  //    Ctrl+Shift+P（真实快捷键通路），这里只做面板内驱动与状态快照 ──
+
+  /** 面板状态快照（读 DOM）：open/mode(rename 二段)/value/count/selected/items */
+  const paletteState = () => {
+    const items = [...document.querySelectorAll<HTMLElement>('.palette .palette-item')]
+    return {
+      open: !!document.querySelector('.palette'),
+      mode: document.querySelector('.palette .palette-mode') ? 'rename' : 'cmd',
+      value: document.querySelector<HTMLInputElement>('.palette .palette-input')?.value ?? '',
+      count: items.length,
+      selected: items.findIndex((el) => el.classList.contains('active')),
+      empty: !!document.querySelector('.palette .palette-empty'),
+      items: items.map((el) => ({
+        key: el.dataset.key ?? '',
+        label: el.querySelector('.pal-label')?.textContent ?? '',
+        disabled: el.classList.contains('disabled'),
+      })),
+    }
+  }
+  w.__e2ePaletteState = paletteState
+
+  /** 以 React 受控等价方式填查询词/新名（原生 setter + input 事件，同重命名先例），
+      等重渲染后回状态快照 */
+  w.__e2ePaletteInput = (text: string) => {
+    const input = document.querySelector<HTMLInputElement>('.palette .palette-input')
+    if (!input) return Promise.resolve(paletteState())
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    setter?.call(input, text)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    return new Promise((resolve) => setTimeout(() => resolve(paletteState()), 100))
+  }
+
+  /** 面板输入框派发键盘事件（ArrowDown/ArrowUp/Enter；Escape 由 window 捕获层处理，
+      派发在输入框上同样先经过捕获层） */
+  w.__e2ePaletteKey = (key: string) => {
+    const input = document.querySelector<HTMLInputElement>('.palette .palette-input')
+    if (!input) return Promise.resolve(paletteState())
+    input.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+    return new Promise((resolve) => setTimeout(() => resolve(paletteState()), 100))
+  }
+
+  /** 点击第 idx 个命令项（真实 onClick 链路） */
+  w.__e2ePaletteClick = (idx: number) => {
+    const el = document.querySelectorAll<HTMLElement>('.palette .palette-item')[idx]
+    if (!el) return Promise.resolve(paletteState())
+    el.click()
+    return new Promise((resolve) => setTimeout(() => resolve(paletteState()), 120))
+  }
 }

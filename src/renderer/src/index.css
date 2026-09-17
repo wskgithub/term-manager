@@ -1062,3 +1062,131 @@ body,
   overflow: hidden;
   max-height: 200px;
 }
+
+/* ── 命令面板（Ctrl+Shift+P）：VS Code 风格顶部居中浮层，portal 到 body，
+   盖过设置页(z20)与右键菜单(z100)；视觉语言与 .ctx-menu 同源
+   （menu-bg 毛玻璃 + hairline + shadow + pop-in） ── */
+.palette {
+  position: fixed;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 32px));
+  z-index: 110;
+  background: var(--menu-bg);
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  animation: pop-in 0.12s ease-out;
+}
+
+/* 二段改名模式的模式行 */
+.palette-mode {
+  padding: 8px 14px 0;
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.palette-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px 14px;
+  background: transparent;
+  border: none;
+  outline: none;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-bright);
+  font: inherit;
+  font-size: 13px;
+}
+
+.palette-input::placeholder {
+  color: var(--text);
+  opacity: 0.55;
+}
+
+.palette-list {
+  max-height: 46vh;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.palette-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.palette-list::-webkit-scrollbar-thumb {
+  background: var(--thumb);
+  border-radius: 4px;
+}
+
+.palette-list::-webkit-scrollbar-thumb:hover {
+  background: var(--thumb-hover);
+}
+
+.palette-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: var(--text);
+  cursor: default;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.palette-item:hover {
+  background: var(--hover-wash);
+}
+
+.palette-item.active {
+  background: var(--surface);
+  color: var(--text-bright);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.palette-item.disabled {
+  opacity: 0.45;
+}
+
+/* 破坏性命令（退出终结/开启广播）以警示色标出 */
+.palette-item.danger:not(.disabled) .pal-label {
+  color: var(--warn);
+}
+
+.palette-item .pal-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 模糊匹配命中字符 */
+.palette-item .hl {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.palette-item .pal-hint {
+  flex: none;
+  font-size: 11px;
+  color: var(--text);
+  opacity: 0.55;
+}
+
+.palette-empty {
+  padding: 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text);
+  opacity: 0.6;
+}

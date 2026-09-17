@@ -15,6 +15,8 @@ PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会�
 
 ![标签分组与固定](docs/screenshots/tab-groups.png) ![＋ 下拉菜单：shell profile 选择](docs/screenshots/newtab-menu.png)
 
+![命令面板（Ctrl+Shift+P 模糊搜索）](docs/screenshots/palette.png)
+
 ![分组侧栏树视图](docs/screenshots/sidebar-tree.png) ![设置页（浅色主题）](docs/screenshots/settings-light.png)
 
 截图由 E2E 基础设施真实驱动 UI 生成（CDP 点击菜单/重命名/粘贴命令，非摆拍拼图）。
@@ -88,6 +90,8 @@ src/
     ├── NewTabMenu.tsx # ＋分体按钮/profile 下拉（标签栏与侧栏共用）
     ├── menus.tsx    # 标签/组右键菜单条目构建（data-key 即 e2e 选择器）
     ├── segs.ts      # 标签列表分段（连续同组合并），两视图共用模型
+    ├── palette.ts   # 命令面板注册表（命令构建 + 模糊匹配打分）
+    ├── CommandPalette.tsx # 命令面板浮层（键盘导航 + 二段改名）
     ├── TermView.tsx # xterm 实例（输出单点分发、自适应尺寸、字体设置）
     ├── SettingsPage.tsx # 设置页（外观 → 字体/字号 + 预览；终端 → 默认终端等）
     ├── fonts.ts     # 字体栈解析（自动模式 / CJK 回退）
@@ -159,6 +163,13 @@ npx electron out/main/index.js --e2e-session=phase2 --e2e-user-data=$U --e2e-ses
 npx electron out/main/index.js --e2e-sidebar --e2e-quit --no-sandbox
 ```
 
+```bash
+# 命令面板回归：真实输入管线的 Ctrl+Shift+P（含终端聚焦态穿透 xterm）、模糊过滤、
+# ↑↓/Enter/鼠标执行、二段改名、上下文命令随状态出现（固定置灰关闭、广播随设置
+# 门控、主题当前项置灰）、Esc 关闭与焦点归还终端
+npx electron out/main/index.js --e2e-palette --e2e-quit --no-sandbox
+```
+
 ### 实测性能（20 标签托管，2026-09-09，i5/集成显卡）
 
 | 指标 | 数值 |
@@ -176,6 +187,7 @@ npx electron out/main/index.js --e2e-sidebar --e2e-quit --no-sandbox
   焦点在终端外时由 window 级监听兜底——Tab 族按键被 xterm 认领后不会冒泡）
 - `Ctrl+Shift+Q` 退出并终结全部会话（tmux 服务器与其上的 shell 一并结束）
 - `Ctrl+Shift+B` 开关分组侧栏（终端聚焦与否都生效）
+- `Ctrl+Shift+P` 命令面板（再按关闭；终端聚焦与否都生效，见[命令面板](#命令面板)）
 - `Ctrl+,` 打开/关闭设置页（`Esc` 或点击标签关闭）
 - 双击标签重命名（手动重命名后 shell 上报的标题不再覆盖）
 - 标签右键菜单：固定/取消固定（常驻左端、窄化、无关闭钮）、添加到新组/移入既有组/移出组、关闭
@@ -219,6 +231,25 @@ npx electron out/main/index.js --e2e-sidebar --e2e-quit --no-sandbox
 - 侧栏开合时终端区实时重排（tmux 面板随之 resize）；组折叠态与标签栏共享、
   随会话跨重启保留
 
+## 命令面板
+
+`Ctrl+Shift+P` 呼出 VS Code 风格的顶部居中面板（终端聚焦与否都生效），模糊搜索
+（子序列匹配 + 命中高亮，中文命令也支持英文关键词命中）后 ↑↓ 选择、Enter 执行，
+Esc 关闭并把焦点还给终端。覆盖四类命令：
+
+- **标签操作**：新建标签（默认 + 各 profile，带色点）、重命名当前标签（面板内
+  二段输入，Enter 提交）、固定/取消固定、关闭（固定标签置灰，防误关语义与
+  快捷键一致）
+- **标签快速切换**：「切换到标签：<标题>」每标签一条（附固定/组名标记）——
+  面板兼作标签切换器，标签多时比 Ctrl+Tab 循环快
+- **分组与广播**：添加到新组、移出组、广播输入开关（随设置总开关门控，开启
+  动作以警示色标出）
+- **应用层**：分组侧栏开关、设置页、主题切换（当前主题置灰标注）、退出并终结
+  全部会话（警示色）
+
+命令动作全部映射到应用现有回调（无新增 IPC/数据流），上下文相关项随状态
+出现与翻转（如在组内才出现移出、固定后关闭变置灰）。
+
 ## 已实现 / 路线图
 
 - [x] 多标签、点击切换、关闭、退出置灰提示
@@ -235,7 +266,8 @@ npx electron out/main/index.js --e2e-sidebar --e2e-quit --no-sandbox
 - [x] electron-builder deb 打包（桌面入口/图标/依赖元数据齐全）
 - [x] Nautilus 右键菜单集成（在目录中打开 + 单实例复用窗口，随 deb 分发）
 - [x] 标签分组侧栏树视图（纵向「组 → 标签」面板取代标签栏；树内拖拽重排/入组/出组，`--e2e-sidebar` 覆盖）
-- [ ] 命令面板、GPU 渲染（addon-webgl，硬渲染环境可选）
+- [x] 命令面板（`Ctrl+Shift+P` 模糊搜索执行：标签/profile/切换/分组/广播/主题/侧栏/设置/退出，面板内二段改名，`--e2e-palette` 覆盖）
+- [ ] GPU 渲染（addon-webgl，硬渲染环境可选）
 - [ ] AppImage、rpm 等其他打包格式
 
 ## 备注
