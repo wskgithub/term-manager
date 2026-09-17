@@ -523,6 +523,9 @@ export default function App() {
         setSettingsOpen((open) => !open)
       } else if (e.key === 'Escape' && settingsOpenRef.current) {
         setSettingsOpen(false)
+        // 焦点归还：焦点曾在设置页控件上（点过复选框/下拉或 Tab 导航），随卸载
+        // 掉到 body 的话终端键盘输入会静默失效——同菜单/重命名关闭的归还语义
+        focusActiveTerm()
       }
     }
     window.addEventListener('keydown', onKey)
@@ -654,7 +657,11 @@ export default function App() {
               settings={settings}
               profiles={profiles}
               onChange={applySettings}
-              onClose={() => setSettingsOpen(false)}
+              onClose={() => {
+                setSettingsOpen(false)
+                // × 关闭与 Esc 同语义：归还焦点到活跃终端（防 body 吞键盘）
+                focusActiveTerm()
+              }}
             />
           )}
         </div>

@@ -1280,15 +1280,41 @@ async function runPaletteSequence(win: BrowserWindow): Promise<void> {
   const side2 = await json<{ sidebar: boolean; tabbar: boolean }>('window.__e2eSidebarState()')
   check('sidebar-back', !side2.sidebar && side2.tabbar, JSON.stringify(side2))
 
-  // 13) 设置命令：Enter 打开设置页，Esc（window 层兜底）关闭
+  // 13) 设置命令：Enter 打开设置页；关闭（Esc 与 × 两条路）都必须归还焦点到
+  //     活跃终端——焦点曾落在设置控件上时随卸载掉到 body，终端键盘输入会静默
+  //     失效（合成 el.click() 不移焦点测不出，须先真实 .focus() 进设置页）
   const sSet = await (await open(), input('设置'))
   check('settings-entry', sSet.items[0]?.key === 'settings')
   await key('Enter')
   await delay(300)
   check('settings-exec', (await js<boolean>('!!document.querySelector(".settings")')) === true)
+  await js('document.querySelector(\'[data-setting="gpuRendering"]\')?.focus()')
+  await delay(150)
   await pressKey(win, 'Escape')
   await delay(300)
-  check('settings-esc', (await js<boolean>('!!document.querySelector(".settings")')) === false)
+  const escState = await json<{ focused: number; visible: number }>('window.__e2eInputState()')
+  check(
+    'settings-esc',
+    (await js<boolean>('!!document.querySelector(".settings")')) === false &&
+      escState.focused === escState.visible &&
+      escState.focused >= 0,
+    JSON.stringify(escState)
+  )
+  // × 路径：重新打开设置、真实聚焦进控件后点关闭按钮
+  await js('window.__e2eSettings && window.__e2eSettings(true)')
+  await delay(400)
+  await js('document.querySelector(\'[data-setting="gpuRendering"]\')?.focus()')
+  await delay(150)
+  await js('document.querySelector(".settings-close")?.click()')
+  await delay(300)
+  const xState = await json<{ focused: number; visible: number; ae: string }>('window.__e2eInputState()')
+  check(
+    'settings-x-close-focus',
+    (await js<boolean>('!!document.querySelector(".settings")')) === false &&
+      xState.focused === xState.visible &&
+      xState.ae.includes('xterm-helper-textarea'),
+    JSON.stringify(xState)
+  )
 
   // 14) 空结果态：乱串过滤无命中显示空态，Enter 不误执行也不崩，Esc 正常关闭
   const sEmpty = await (await open(), input('zzqx不存在的命令'))
