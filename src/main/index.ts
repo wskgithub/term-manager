@@ -720,6 +720,274 @@ async function runInputSequence(win: BrowserWindow): Promise<void> {
   }
 }
 
+// ── 分组侧栏回归（--e2e-sidebar）：真实 DOM 链路覆盖开关三条通路（标签栏按钮/
+// 侧栏✕/Ctrl+Shift+B）、树结构与标签数组一致性、菜单建组/移入/改名、树内拖拽
+// 入组/出组/同父重排（合成 DragEvent）、折叠、点选激活+焦点跟随、开关侧栏的
+// 终端 resize 生效（cols 收窄）。走真实 userData：记原值结束还原 ──
+
+interface SidebarState {
+  setting: boolean
+  sidebar: boolean
+  tabbar: boolean
+  termCols: number[]
+  rows: Array<
+    | { kind: 'tab'; title: string; active: boolean }
+    | { kind: 'group'; name: string; count: number; collapsed: boolean; members: Array<{ title: string; active: boolean }> }
+  >
+}
+
+async function runSidebarSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string) => JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const outDir = argvFlag('--e2e-out') ?? join(app.getPath('userData'), 'e2e')
+  mkdirSync(outDir, { recursive: true })
+  const snap = async (name: string) => {
+    const img = await win.webContents.capturePage()
+    writeFileSync(join(outDir, `${name}.png`), img.toPNG())
+    console.log(`E2E_SNAP ${name}`)
+  }
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_SIDEBAR ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+  const state = async (): Promise<SidebarState> =>
+    JSON.parse(await js<string>('JSON.stringify(window.__e2eSidebarState())'))
+  const paneHas = (idx: number, sub: string) =>
+    json<boolean>(`window.__e2ePaneHas(${idx}, ${JSON.stringify(sub)})`)
+  const tab = (idx: number, action: string) =>
+    js<boolean>(`window.__e2eSidebarTab && window.__e2eSidebarTab(${idx}, '${action}')`)
+  const group = (action: string) =>
+    js<boolean>(`window.__e2eSidebarGroup && window.__e2eSidebarGroup('${action}')`)
+
+  // 记录用户原设置（结束还原）：getSettings 返回 Promise，须 executeJavaScript 解析
+  const prevSettings = await js<{ sidebarVisible: boolean; groupBroadcast: boolean }>(
+    'window.api.getSettings()'
+  )
+
+  // 1) 启动态：标签栏在（含侧栏入口按钮）、无侧栏
+  const s0 = await state()
+  check(
+    'boot-tabbar',
+    s0.tabbar && !s0.sidebar && !s0.setting && !!(await js<boolean>('!!document.querySelector(".tabbar .side-toggle")')),
+    JSON.stringify({ tabbar: s0.tabbar, sidebar: s0.sidebar })
+  )
+
+  // 2) 标签栏按钮开侧栏：侧栏取代标签栏，设置持久化，可见终端 cols 收窄
+  //    （ResizeObserver → fit → tmux resize 全链路）
+  const colsBefore = s0.termCols[0] ?? 0
+  const t1 = await js<{ sidebar: boolean; tabbar: boolean }>('window.__e2eSidebarToggle(true)')
+  await delay(250)
+  const s1 = await state()
+  check(
+    'open-btn-toggle',
+    t1.sidebar && !t1.tabbar && s1.setting,
+    JSON.stringify({ t1, setting: s1.setting })
+  )
+  check('resize-narrower', (s1.termCols[0] ?? 0) < colsBefore, `${colsBefore} -> ${s1.termCols[0]}`)
+  await snap('01-sidebar-open')
+
+  // 3) 建 3 个标签（+裸启动 1 个 = 4）：树 = 4 行根级标签
+  await js('window.__e2eStart(3)')
+  await waitUntil(
+    async () => await json<boolean>('window.__e2e && window.__e2e.done && window.__e2e.created >= 3'),
+    60000
+  )
+  const s2 = await state()
+  check(
+    'tree-flat',
+    s2.rows.length === 4 && s2.rows.every((r) => r.kind === 'tab'),
+    JSON.stringify(s2.rows.map((r) => (r.kind === 'tab' ? r.title : 'group')))
+  )
+
+  // 4) 右键菜单建组（含组名 Enter 提交）+ 移入第二名成员：与标签栏菜单同构建器。
+  //    树行序随标签数组同步：[T0, 组{T1}, T2, T3] → [T0, 组{T1,T2}, T3]
+  check('group-create', (await tab(1, 'new-group')) && (await group('commit-name')))
+  await delay(300)
+  const s3 = await state()
+  check(
+    'group-created-state',
+    s3.rows.length === 4 &&
+      s3.rows[1]!.kind === 'group' &&
+      s3.rows[1].count === 1 &&
+      s3.rows[1].members.length === 1,
+    JSON.stringify(s3.rows)
+  )
+  check('group-move', (await tab(2, 'move')) === true)
+  await delay(300)
+  const s4 = await state()
+  check(
+    'group-moved-state',
+    s4.rows.length === 3 &&
+      s4.rows[0]!.kind === 'tab' &&
+      s4.rows[1]!.kind === 'group' &&
+      s4.rows[1].count === 2 &&
+      s4.rows[1].members.length === 2,
+    JSON.stringify(s4.rows)
+  )
+  await snap('02-sidebar-group')
+
+  // 5) 双击改名（React 受控填值 + Enter 提交）
+  check('rename-in-tree', (await tab(0, 'rename')) === true)
+  await delay(300)
+  const s5 = await state()
+  check(
+    'rename-committed',
+    s5.rows[0]!.kind === 'tab' && s5.rows[0].title === '侧栏改名',
+    JSON.stringify(s5.rows[0])
+  )
+
+  // 6) 树内拖拽（合成 DragEvent）：组外标签拖到组头 = 入组；成员拖到未分组行 =
+  //    出组；两个未分组行互拖 = 同父重排。全程 .side-tab DOM 序：T0=0 起按数组序
+  check('drag-into-group', (await js<boolean>('window.__e2eSidebarDrag(3, "group", 0)')) === true)
+  await delay(300)
+  const s6 = await state()
+  check(
+    'drag-into-state',
+    s6.rows.length === 2 &&
+      s6.rows[0]!.kind === 'tab' &&
+      s6.rows[1]!.kind === 'group' &&
+      s6.rows[1].count === 3,
+    JSON.stringify(s6.rows)
+  )
+  check('drag-out-of-group', (await js<boolean>('window.__e2eSidebarDrag(2, "tab", 0)')) === true)
+  await delay(300)
+  const s7 = await state()
+  check(
+    'drag-out-state',
+    s7.rows.length === 3 &&
+      s7.rows[0]!.kind === 'tab' &&
+      s7.rows[1]!.kind === 'tab' &&
+      s7.rows[2]!.kind === 'group' &&
+      s7.rows[2].count === 2 &&
+      s7.rows[2].members.length === 2,
+    JSON.stringify(s7.rows)
+  )
+  // 出组后根级行 = T2(DOM 0) 与 T0(DOM 1)：拖 T0 到 T2 上 = 同父重排
+  check('drag-reorder', (await js<boolean>('window.__e2eSidebarDrag(1, "tab", 0)')) === true)
+  await delay(300)
+  const s8 = await state()
+  check(
+    'drag-reorder-state',
+    s8.rows.length === 3 &&
+      s8.rows[0]!.kind === 'tab' &&
+      s8.rows[0].title === '侧栏改名' &&
+      s8.rows[1]!.kind === 'tab' &&
+      s8.rows[2]!.kind === 'group',
+    JSON.stringify(s8.rows)
+  )
+  await snap('03-sidebar-dragged')
+
+  // 7) 组折叠/展开（与标签栏共用 collapsed 态，随会话持久化）
+  check('collapse-toggle', (await group('toggle')) === true)
+  await delay(200)
+  const s9 = await state()
+  const collapsedGroup = s9.rows.find((r) => r.kind === 'group')
+  check(
+    'collapse-state',
+    !!collapsedGroup && collapsedGroup.kind === 'group' && collapsedGroup.collapsed && collapsedGroup.members.length === 0,
+    JSON.stringify(s9.rows)
+  )
+  check('expand-toggle', (await group('toggle')) === true)
+
+  // 8) 点树节点激活：焦点必须落进对应终端（侧栏行不可聚焦，点击后由 App
+  //    [activeId] effect 聚焦），后续键盘输入到达被点标签
+  check('click-activate', (await tab(0, 'click')) === true)
+  await delay(400)
+  const st = await json<{ panes: number; focused: number; visible: number; ae: string }>(
+    'window.__e2eInputState()'
+  )
+  check(
+    'click-focus-follows',
+    st.focused === st.visible && st.focused >= 0 && st.ae.includes('xterm-helper-textarea'),
+    JSON.stringify(st)
+  )
+  const mk = `sb${randomUUID().slice(0, 5)}`
+  await typeChars(win, mk)
+  await pressKey(win, 'Enter')
+  check('type-after-click', await waitUntil(() => paneHas(st.visible, mk), 6000))
+
+  // 9) 广播开关在侧栏组头同样受设置总开关门控（正反向）——完整广播路由已由
+  //    --e2e-input 覆盖，这里只验侧栏 UI 接线
+  check('broadcast-hidden-when-off', !(await js<boolean>('!!document.querySelector(".side-group-head .g-broadcast")')))
+  const setViaSettingsPage = async (on: boolean): Promise<boolean> => {
+    await js('window.__e2eSettings && window.__e2eSettings(true)')
+    await delay(300)
+    await js(`document.querySelectorAll('.settings-nav-item')[1]?.click()`)
+    await delay(200)
+    const ok = await js<boolean>(
+      `(() => { const cb = document.querySelector('[data-setting="groupBroadcast"]'); ` +
+        `if (!cb) return false; if (cb.checked !== ${on}) cb.click(); return cb.checked === ${on} })()`
+    )
+    await delay(150)
+    await js('window.__e2eSettings && window.__e2eSettings(false)')
+    await delay(150)
+    return ok
+  }
+  if (prevSettings.groupBroadcast) await setViaSettingsPage(false)
+  check('broadcast-btn-appears', (await setViaSettingsPage(true)) === true)
+  const bc1 = await js<boolean>('!!document.querySelector(".side-group-head .g-broadcast.on")')
+  check('broadcast-off-initially', !bc1)
+  check('broadcast-toggle-on-off', ((await group('broadcast')) === true) &&
+    (await js<boolean>('!!document.querySelector(".side-group-head .g-broadcast.on")')) === true)
+  check('broadcast-toggle-back', ((await group('broadcast')) === true) &&
+    (await js<boolean>('!!document.querySelector(".side-group-head .g-broadcast.on")')) === false)
+  await js(`window.api.setSettings && window.api.setSettings({ groupBroadcast: ${!!prevSettings.groupBroadcast} })`)
+
+  // 10) Ctrl+Shift+B（终端聚焦态，sendInputEvent 可信事件）：快捷键须穿透
+  //     xterm 到达 App（若被认领则侧栏不会关），关闭后标签栏回归、设置落盘。
+  //     设置页交互会把焦点留在 body，先点树行收回终端焦点（activateTab 对已
+  //     激活标签同步聚焦），保证快捷键真实走「焦点在终端内」的通路
+  check('refocus-before-shortcut', (await tab(0, 'click')) === true)
+  await delay(300)
+  const fs = await json<{ focused: number; visible: number; ae: string }>('window.__e2eInputState()')
+  check(
+    'focus-in-terminal',
+    fs.ae.includes('xterm-helper-textarea') && fs.focused === fs.visible,
+    JSON.stringify(fs)
+  )
+  await pressKey(win, 'B', ['ctrl', 'shift'])
+  await delay(300)
+  const s10 = await state()
+  check('shortcut-close', !s10.sidebar && s10.tabbar && !s10.setting, JSON.stringify({ sidebar: s10.sidebar, tabbar: s10.tabbar }))
+  // 关闭后输入仍到达（快捷键处理没有弄丢焦点/没有把 \x02 打进 shell）
+  const mk2 = `sc${randomUUID().slice(0, 5)}`
+  await typeChars(win, mk2)
+  await pressKey(win, 'Enter')
+  check('type-after-shortcut', await waitUntil(() => paneHas(fs.visible, mk2), 6000))
+  await snap('04-shortcut-back')
+
+  // 11) 快捷键再开 + 侧栏 ✕ 关：三条开关通路全覆盖
+  await pressKey(win, 'B', ['ctrl', 'shift'])
+  await delay(300)
+  const reopened = await state()
+  check('shortcut-reopen', reopened.sidebar && !reopened.tabbar)
+  const t2 = await js<{ sidebar: boolean; tabbar: boolean }>('window.__e2eSidebarToggle(false)')
+  check('close-btn-toggle', !t2.sidebar && t2.tabbar, JSON.stringify(t2))
+
+  // 12) 设置还原（侧栏开着退出会改变下次启动布局，必须回到原值）
+  await js(
+    `window.api.setSettings && window.api.setSettings({ sidebarVisible: ${!!prevSettings.sidebarVisible} })`
+  )
+  const final = await js<{ sidebarVisible: boolean; groupBroadcast: boolean }>(
+    'window.api.getSettings()'
+  )
+  check(
+    'settings-restored',
+    final.sidebarVisible === prevSettings.sidebarVisible &&
+      final.groupBroadcast === prevSettings.groupBroadcast,
+    JSON.stringify({ final, prev: prevSettings })
+  )
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_SIDEBAR_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  if (argvHas('--e2e-quit')) {
+    await backend.dispose()
+    app.exit(allOk ? 0 : 1)
+  }
+}
+
 // ── 会话保持两段回归（--e2e-session=phase1 / phase2，共享 --e2e-user-data）──
 // phase1：建标签 + pin + 建组 + 改名 + 输入标记串 → 保留退出（detach）；
 // phase2：附着恢复 → 断言标签数/固定/分组/改名态/屏幕回放/可继续交互 → 终结清场。
@@ -876,13 +1144,15 @@ async function runSmoke(): Promise<void> {
 }
 
 // smoke / e2e 属于独立测试进程，不能和正在运行的 GUI 实例抢单实例锁。
-// sessionE2E（--e2e-session 两段回归）套 __E2E__ 门：剥离构建把参数名与
-// userData 重定向逻辑一并摇出产物
+// sessionE2E/sidebarE2E 套 __E2E__ 门：剥离构建把参数名与 userData 重定向
+// 逻辑一并摇出产物（--smoke/--e2e-tabs/--e2e-input 为历史基线字面量，保留）
 const sessionE2E = __E2E__ ? argvFlag('--e2e-session') : undefined
+const sidebarE2E = __E2E__ ? argvHas('--e2e-sidebar') : false
 const isolatedRun =
   argvHas('--smoke') ||
   argvFlag('--e2e-tabs') !== undefined ||
   argvHas('--e2e-input') ||
+  sidebarE2E ||
   sessionE2E !== undefined
 const cliOpenDir = extractOpenDir(process.argv)
 
@@ -966,14 +1236,15 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
         return
       }
 
-      if (__E2E__ && (e2eTabs || argvHas('--e2e-input')) && mainWindow) {
-        const n = argvHas('--e2e-input') ? 2 : Math.max(1, Number(e2eTabs) || 20)
+      if (__E2E__ && (e2eTabs || argvHas('--e2e-input') || argvHas('--e2e-sidebar')) && mainWindow) {
+        const n = argvHas('--e2e-input') || argvHas('--e2e-sidebar') ? 2 : Math.max(1, Number(e2eTabs) || 20)
         const win = mainWindow
         win.webContents.once('did-finish-load', () => {
           void delay(800)
             .then(async () => {
               await started
               if (argvHas('--e2e-input')) await runInputSequence(win)
+              else if (argvHas('--e2e-sidebar')) await runSidebarSequence(win)
               else await runE2ESequence(win, n)
             })
             .catch(async (e) => {

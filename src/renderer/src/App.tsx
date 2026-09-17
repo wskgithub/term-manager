@@ -11,6 +11,7 @@ import {
   type TermInfo,
 } from './api'
 import { TabBar } from './TabBar'
+import { Sidebar, type SideDropTarget } from './Sidebar'
 import { TermView } from './TermView'
 import { SettingsPage } from './SettingsPage'
 import { ContextMenu, CopyIcon, PasteIcon } from './ContextMenu'
@@ -344,6 +345,44 @@ export default function App() {
     })
   }
 
+  // 分组侧栏开关（持久化设置；侧栏开启时标签栏隐藏，侧栏承担全部管理）
+  const toggleSidebar = () => {
+    applySettings({ sidebarVisible: !settingsRef.current.sidebarVisible })
+  }
+
+  // 侧栏树拖拽落点执行（不变量仍由本组件单点维护）：
+  // 组头落点 = 入组（固定标签永不入组、同组无意义，静默忽略）；标签行落点 =
+  // 同父（固定态与分组都相同）重排；分组标签落到未分组行 = 出组后插到目标旁
+  //（单次数组操作完成，避免两次 setTabs 之间索引漂移）
+  const sidebarDrop = (fromId: string, target: SideDropTarget) => {
+    const ts = tabsRef.current
+    const from = ts.find((t) => t.id === fromId)
+    if (!from) return
+    if (target.kind === 'group') {
+      if (from.pinned || from.groupId === target.groupId) return
+      moveToGroup(fromId, target.groupId)
+      return
+    }
+    const to = ts.find((t) => t.id === target.id)
+    if (!to || to.id === fromId) return
+    if (from.pinned === to.pinned && from.groupId === to.groupId) {
+      reorder(ts.findIndex((t) => t.id === fromId), ts.findIndex((t) => t.id === to.id))
+      return
+    }
+    // 其余组合（未分组入组行走菜单/拖组头、固定↔未固定交叉）静默忽略
+    if (!from.groupId || to.groupId || from.pinned !== to.pinned) return
+    const { list, tab, insertAt } = takeTabOut(ts, fromId)
+    const cleared = [...list.slice(0, insertAt), { ...tab, groupId: undefined }, ...list.slice(insertAt)]
+    const src = cleared.findIndex((t) => t.id === fromId)
+    const dst = cleared.findIndex((t) => t.id === to.id)
+    if (src < 0 || dst < 0) return
+    const next = [...cleared]
+    const [moved] = next.splice(src, 1)
+    next.splice(dst, 0, moved)
+    setTabs(next)
+    pruneGroups(next)
+  }
+
   // 键盘输入路由：普通标签直达自己的 pane；广播组内的标签则同段输入发往全组
   //（含自身）。粘贴走 xterm paste → onData，同样被广播——向多机贴同一段命令
   // 正是广播的用途，属用户显式动作
@@ -440,6 +479,11 @@ export default function App() {
       } else if (e.ctrlKey && e.shiftKey && k === 'q') {
         e.preventDefault()
         api.quitAll()
+      } else if (e.ctrlKey && e.shiftKey && k === 'b') {
+        // 分组侧栏开关：Ctrl+Shift+B 不在 xterm 键位表（Ctrl+B 位移符不带 Shift
+        // 才被认领），window 层一条通路即可覆盖终端聚焦/失焦两种情况
+        e.preventDefault()
+        toggleSidebar()
       } else if (e.ctrlKey && e.key === 'Tab') {
         e.preventDefault()
         cycleTab(e.shiftKey ? -1 : 1)
@@ -466,7 +510,8 @@ export default function App() {
         getTabs: () => tabsRef.current,
         getGroups: () => groupsRef.current,
         getRenamed: () => [...renamed.current],
-        getBroadcast: () => [...broadcastRef.current]
+        getBroadcast: () => [...broadcastRef.current],
+        getSidebarVisible: () => settingsRef.current.sidebarVisible
       })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -482,66 +527,103 @@ export default function App() {
 
   return (
     <div className="app">
-      <TabBar
-        tabs={tabs}
-        activeId={activeId}
-        profiles={profiles}
-        exited={exited}
-        defaultProfileId={defaultProfileId}
-        groups={groups}
-        broadcastEnabled={settings.groupBroadcast}
-        broadcastGroups={broadcastGroups}
-        onSelect={activateTab}
-        onClose={closeTab}
-        onRename={renameTab}
-        onRenameEnd={(id) => terms.current.get(id)?.focus()}
-        onReorder={reorder}
-        onNewTab={(pid) => void newTab(pid)}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onTogglePin={togglePin}
-        onGroupNew={addToNewGroup}
-        onGroupMove={moveToGroup}
-        onGroupLeave={removeFromGroup}
-        onGroupRename={renameGroup}
-        onGroupColor={setGroupColor}
-        onGroupDissolve={dissolveGroup}
-        onGroupBroadcast={toggleGroupBroadcast}
-        onGroupToggle={toggleGroupCollapse}
-        // 组头重命名提交/取消后归还焦点（同标签重命名：焦点丢失会漏按键进终端）
-        onGroupRenameEnd={focusActiveTerm}
-        // 标签/组右键菜单任意关闭（动作执行、点击外部、Escape）后把焦点还给活跃终端
-        onMenuClose={focusActiveTerm}
-      />
-      <div className="content">
-        {tabs.map((t) => (
-          <TermView
-            key={t.id}
-            termId={t.id}
-            active={t.id === activeId}
-            fontFamily={settings.fontFamily}
-            fontSize={settings.fontSize}
-            dark={dark}
-            onTitle={(title) => shellTitle(t.id, title)}
-            onTerminal={registerTerminal}
-            onContextMenu={openTermContextMenu}
-            onInput={(d) => sendInput(t.id, d)}
-            onCycleTab={cycleTab}
-          />
-        ))}
-        {broadcastTargets > 1 && (
-          <div className="broadcast-badge" title="关闭广播：组头广播开关或组右键菜单">
-            ⩕ 广播输入中 · 本组 {broadcastTargets} 个终端同步接收
-          </div>
-        )}
-        {createError && <div className="create-error">新建终端失败：{createError}</div>}
-        {settingsOpen && (
-          <SettingsPage
-            settings={settings}
+      {/* 分组侧栏与标签栏互斥呈现（同一份数据的两个视图），避免双份信息占空间 */}
+      {settings.sidebarVisible && (
+        <Sidebar
+          tabs={tabs}
+          activeId={activeId}
+          profiles={profiles}
+          exited={exited}
+          defaultProfileId={defaultProfileId}
+          groups={groups}
+          broadcastEnabled={settings.groupBroadcast}
+          broadcastGroups={broadcastGroups}
+          onSelect={activateTab}
+          onClose={closeTab}
+          onRename={renameTab}
+          onRenameEnd={(id) => terms.current.get(id)?.focus()}
+          onNewTab={(pid) => void newTab(pid)}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onToggleSidebar={toggleSidebar}
+          onDrop={sidebarDrop}
+          onTogglePin={togglePin}
+          onGroupNew={addToNewGroup}
+          onGroupMove={moveToGroup}
+          onGroupLeave={removeFromGroup}
+          onGroupRename={renameGroup}
+          onGroupColor={setGroupColor}
+          onGroupDissolve={dissolveGroup}
+          onGroupBroadcast={toggleGroupBroadcast}
+          onGroupToggle={toggleGroupCollapse}
+          onGroupRenameEnd={focusActiveTerm}
+          onMenuClose={focusActiveTerm}
+        />
+      )}
+      <div className="app-body">
+        {!settings.sidebarVisible && (
+          <TabBar
+            tabs={tabs}
+            activeId={activeId}
             profiles={profiles}
-            onChange={applySettings}
-            onClose={() => setSettingsOpen(false)}
+            exited={exited}
+            defaultProfileId={defaultProfileId}
+            groups={groups}
+            broadcastEnabled={settings.groupBroadcast}
+            broadcastGroups={broadcastGroups}
+            onSelect={activateTab}
+            onClose={closeTab}
+            onRename={renameTab}
+            onRenameEnd={(id) => terms.current.get(id)?.focus()}
+            onReorder={reorder}
+            onNewTab={(pid) => void newTab(pid)}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onToggleSidebar={toggleSidebar}
+            onTogglePin={togglePin}
+            onGroupNew={addToNewGroup}
+            onGroupMove={moveToGroup}
+            onGroupLeave={removeFromGroup}
+            onGroupRename={renameGroup}
+            onGroupColor={setGroupColor}
+            onGroupDissolve={dissolveGroup}
+            onGroupBroadcast={toggleGroupBroadcast}
+            onGroupToggle={toggleGroupCollapse}
+            // 组头重命名提交/取消后归还焦点（同标签重命名：焦点丢失会漏按键进终端）
+            onGroupRenameEnd={focusActiveTerm}
+            // 标签/组右键菜单任意关闭（动作执行、点击外部、Escape）后把焦点还给活跃终端
+            onMenuClose={focusActiveTerm}
           />
         )}
+        <div className="content">
+          {tabs.map((t) => (
+            <TermView
+              key={t.id}
+              termId={t.id}
+              active={t.id === activeId}
+              fontFamily={settings.fontFamily}
+              fontSize={settings.fontSize}
+              dark={dark}
+              onTitle={(title) => shellTitle(t.id, title)}
+              onTerminal={registerTerminal}
+              onContextMenu={openTermContextMenu}
+              onInput={(d) => sendInput(t.id, d)}
+              onCycleTab={cycleTab}
+            />
+          ))}
+          {broadcastTargets > 1 && (
+            <div className="broadcast-badge" title="关闭广播：组头广播开关或组右键菜单">
+              ⩕ 广播输入中 · 本组 {broadcastTargets} 个终端同步接收
+            </div>
+          )}
+          {createError && <div className="create-error">新建终端失败：{createError}</div>}
+          {settingsOpen && (
+            <SettingsPage
+              settings={settings}
+              profiles={profiles}
+              onChange={applySettings}
+              onClose={() => setSettingsOpen(false)}
+            />
+          )}
+        </div>
       </div>
       {ctxMenu && (
         <ContextMenu

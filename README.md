@@ -17,7 +17,7 @@ the same architecture as WindTerm/iTerm2, which makes session persistence a natu
 
 ![Tab groups & pinning](docs/screenshots/tab-groups.png) ![New-tab dropdown: shell profile picker](docs/screenshots/newtab-menu.png)
 
-![Settings page (light theme)](docs/screenshots/settings-light.png) ![Main view (light theme)](docs/screenshots/main-light.png)
+![Group sidebar tree view](docs/screenshots/sidebar-tree.png) ![Settings page (light theme)](docs/screenshots/settings-light.png)
 
 All screenshots are produced by the E2E infrastructure driving the real UI (CDP menu
 clicks, renames, pasted commands) — not staged mockups.
@@ -63,6 +63,9 @@ Windows Terminal: category navigation on the left — "Appearance" and "Terminal
   (`JetBrainsMono Nerd Font` → `FiraCode Nerd Font` → … → CJK monospace fallback);
   choosing a Latin-only font automatically appends a CJK fallback.
 - **Font size**: 8–48 px, stepper or direct input.
+- **Group sidebar** (Appearance page): show the "group → tab" tree panel on the left
+  (replacing the top tab bar; **off by default**, toggle any time with `Ctrl+Shift+B` —
+  see [Group sidebar](#group-sidebar) below).
 - **Session** (Terminal page): the "keep sessions on exit" toggle (on by default, see
   [Session persistence](#session-persistence) below).
 - **Group broadcast** (Terminal page): the "broadcast input to group" toggle
@@ -106,6 +109,24 @@ once), so the design is deliberately defensive:
   badge sits in the top-right of the terminal area whenever the active tab belongs to
   a broadcasting group
 
+## Group sidebar
+
+With many tabs the horizontal tab bar runs out of room. The **group sidebar** (Settings →
+Appearance, off by default; `Ctrl+Shift+B` or the button at the left edge of the tab bar
+toggles it) replaces the tab bar with a vertical tree panel: pinned tabs on top, groups
+as collapsible tree nodes (colored dot, name, member count), ungrouped tabs at the root
+level — same order as the tab bar, just vertical.
+
+- Full management parity with the tab bar: click to switch, double-click to rename,
+  right-click context menus (pin/group/move/close, rename/recolor/dissolve/broadcast),
+  `+` new-tab dropdown and settings entry in the sidebar header
+- **Tree drag-and-drop**: reorder within the same parent, drop a tab onto a group node
+  to join it, drop a group member onto an ungrouped row to leave it (the pin/group
+  ordering invariants are maintained centrally by the app state)
+- The terminal area is re-fit live when the sidebar opens/closes (tmux panes are
+  resized accordingly); group collapse state is shared with the tab bar and persists
+  across restarts with the session
+
 ## Nautilus context-menu integration
 
 The file manager's right-click menu (on a directory or in the empty area of a directory)
@@ -136,8 +157,12 @@ src/
 └── renderer/src/
     ├── App.tsx      # tab state machine + single-point data fan-out + hotkeys + settings state
     ├── TabBar.tsx   # rename / drag reorder / profile menu / settings entry
+    ├── Sidebar.tsx  # group sidebar tree view (replaces the tab bar when enabled)
+    ├── NewTabMenu.tsx # + split button / profile dropdown (shared by tab bar & sidebar)
+    ├── menus.tsx    # shared tab/group context-menu builders (data-key is the e2e selector)
+    ├── segs.ts      # tab-list segmentation (consecutive same-group runs), shared view model
     ├── TermView.tsx # xterm instances (single-point output dispatch, adaptive sizing, font settings)
-    ├── SettingsPage.tsx # settings page (appearance → font/size + preview)
+    ├── SettingsPage.tsx # settings page (appearance → font/size + preview; terminal → defaults)
     ├── fonts.ts     # font stack resolution (auto mode / CJK fallback)
     └── e2e.ts       # E2E driving hooks
 ```
@@ -208,6 +233,14 @@ M=$(npx electron out/main/index.js --e2e-session=phase1 --e2e-user-data=$U --no-
 npx electron out/main/index.js --e2e-session=phase2 --e2e-user-data=$U --e2e-sess-marker=$M --no-sandbox
 ```
 
+```bash
+# Group sidebar regression: all three toggle paths (tab-bar button / sidebar close /
+# Ctrl+Shift+B through the real input pipeline), tree structure vs the tab array,
+# menu-driven grouping + rename, synthetic-drag into/out-of-group and same-parent
+# reorder, collapse, click-to-activate focus ownership, live terminal re-fit on toggle
+npx electron out/main/index.js --e2e-sidebar --e2e-quit --no-sandbox
+```
+
 ### Measured performance (20 hosted tabs, 2026-09-09, i5/integrated graphics)
 
 | Metric | Value |
@@ -225,6 +258,7 @@ npx electron out/main/index.js --e2e-session=phase2 --e2e-user-data=$U --e2e-ses
   by the xterm keyboard hook; when focus is outside terminals a window-level listener is
   the fallback — the Tab family never bubbles once claimed by xterm)
 - `Ctrl+Shift+Q` quit and terminate all sessions (the tmux server and its shells end)
+- `Ctrl+Shift+B` toggle the group sidebar (works whether focus is in a terminal or not)
 - `Ctrl+,` toggle settings page (`Esc` or clicking a tab closes it)
 - Double-click a tab to rename (after a manual rename the shell-reported title no longer
   overrides it)
@@ -258,7 +292,8 @@ npx electron out/main/index.js --e2e-session=phase2 --e2e-user-data=$U --e2e-ses
 - [x] electron-builder deb packaging (desktop entry / icons / dependency metadata included)
 - [x] Nautilus context-menu integration (open-in-directory + single-instance window reuse,
       shipped with the deb)
-- [ ] Group sidebar tree view
+- [x] Group sidebar tree view (vertical "group → tab" panel replacing the tab bar; tree
+      drag-and-drop for reorder/join/leave, covered by `--e2e-sidebar`)
 - [ ] Command palette, GPU rendering (addon-webgl, optional on capable stacks)
 - [ ] AppImage, rpm and other package formats
 

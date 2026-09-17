@@ -177,6 +177,24 @@ export function SettingsPage({ settings, profiles, onChange, onClose }: Props) {
                 <div>{PREVIEW_GLYPHS}</div>
               </div>
             </div>
+            <div className="settings-section">布局</div>
+            <div className="settings-row">
+              <label className="settings-label">分组侧栏</label>
+              <label className="settings-checkbox">
+                <input
+                  type="checkbox"
+                  data-setting="sidebarVisible"
+                  checked={settings.sidebarVisible}
+                  onChange={(e) => onChange({ sidebarVisible: e.target.checked })}
+                />
+                <span>左侧显示「组 → 标签」树形面板并隐藏顶部标签栏，适合大量标签时导航与管理</span>
+              </label>
+            </div>
+            <div className="settings-row">
+              <span className="settings-hint">
+                随时可用 Ctrl+Shift+B 或标签栏左缘按钮切换，开关状态跨重启保留
+              </span>
+            </div>
           </div>
         )}
         {section === 'terminal' && (
