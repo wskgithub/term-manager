@@ -1049,6 +1049,12 @@ async function runPaletteSequence(win: BrowserWindow): Promise<void> {
   const paneHas = (idx: number, sub: string) =>
     json<boolean>(`window.__e2ePaneHas(${idx}, ${JSON.stringify(sub)})`)
 
+  // 真实显示器上物理鼠标指针可能恰好停在面板列表区域：Chromium 会给指针下的
+  // 命令项派发 mouseenter，面板的悬停选中会把初始选中从 0 挪走（悬停选中本身
+  // 是正常产品行为）。先合成一次鼠标移动把指针带离面板区，断言才不受环境影响
+  win.webContents.sendInputEvent({ type: 'mouseMove', x: 640, y: 600 })
+  await delay(150)
+
   // 记录用户原设置（结束还原）：getSettings 返回 Promise，须 executeJavaScript 解析
   const prevSettings = await js<{ sidebarVisible: boolean; groupBroadcast: boolean; theme: string }>(
     'window.api.getSettings()'
