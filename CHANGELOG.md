@@ -3,7 +3,7 @@
 All notable changes to Term Manager are documented in this file.
 本项目的所有重要变更都记录在此文件中。
 
-## Unreleased
+## 0.3.0 — 2026-09-17
 
 ### English
 
