@@ -35,6 +35,8 @@ interface Props {
   onCyclePane: (dir: 'left' | 'right' | 'up' | 'down') => void
   // 点击 pane（App 更新 activePanes 并同步 tmux 侧 active）
   onPaneFocus: (id: string) => void
+  // Ctrl+Shift+Enter 放大/还原活跃 pane（透传给 TermView 的快捷键拦截）
+  onZoomToggle: () => void
 }
 
 export function PaneLayout({
@@ -53,7 +55,8 @@ export function PaneLayout({
   onInput,
   onCycleTab,
   onCyclePane,
-  onPaneFocus
+  onPaneFocus,
+  onZoomToggle
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   // cell 尺寸估算（TermView fit 后的容器像素 ÷ cols）：布局像素换算与 window
@@ -128,8 +131,24 @@ export function PaneLayout({
         pct: true as const,
         boxes: [{ id: list[0]!.id }],
         rects: null as null | Map<string, { left: number; top: number; width: number; height: number }>,
-        grips: [] as Grip[]
+        grips: [] as Grip[],
+        zoomedId: null as string | null
       }
+    }
+    // 窗格放大态：被放大 pane 满铺整个容器（百分比，不经 cell 换算——tmux 侧
+    // 它就是 window 总尺寸，与我们上报的容器尺寸同源）；其余 pane 保留挂载但
+    // 隐藏（卸载会销毁 xterm 实例丢 buffer，退出放大要还原），fit 守卫拦住隐藏
+    // 期间的拟合。把手不出现（无可见缝隙）
+    const zm = list.find((p) => p.zoomed)
+    if (zm) {
+      const rects = new Map<string, { left: number; top: number; width: number; height: number }>()
+      for (const p of list) {
+        rects.set(
+          p.id,
+          p.id === zm.id ? { left: 0, top: 0, width: size.w, height: size.h } : { left: 0, top: 0, width: 0, height: 0 }
+        )
+      }
+      return { pct: false as const, boxes: list, rects, grips: [] as Grip[], zoomedId: zm.id }
     }
     const W = Math.max(...list.map((p) => p.x + p.cols))
     const H = Math.max(...list.map((p) => p.y + p.rows))
@@ -183,7 +202,7 @@ export function PaneLayout({
         }
       }
     }
-    return { pct: false as const, boxes: list, rects, grips }
+    return { pct: false as const, boxes: list, rects, grips, zoomedId: null as string | null }
   }, [panes, cell, size, tabId])
 
   // 把手拖拽：pointer capture + window 级 move/up（合成事件与真实输入管线都
@@ -265,6 +284,7 @@ export function PaneLayout({
                 onInput={(d) => onInput(b.id, d)}
                 onCycleTab={onCycleTab}
                 onCyclePane={onCyclePane}
+                onZoomToggle={onZoomToggle}
               />
             </div>
           ))
@@ -273,10 +293,19 @@ export function PaneLayout({
             return (
               <div
                 key={p.id}
-                // 活跃边框只在多 pane 时点亮（单 pane 全幅边框是噪音）
+                // 活跃边框只在多 pane 时点亮（单 pane 全幅边框是噪音）；zoom 态
+                // 下被放大 pane 恒为活跃 pane，满幅边框正好充当「在放大中」的提示
                 className={`pane-box${p.id === activePaneId && layout.boxes.length > 1 ? ' active' : ''}`}
-                style={{ left: r.left, top: r.top, width: r.width, height: r.height }}
+                // zoom 态：非被放大的 pane 隐藏保活（见 layout 注释）
+                style={{
+                  display: layout.zoomedId && p.id !== layout.zoomedId ? 'none' : undefined,
+                  left: r.left,
+                  top: r.top,
+                  width: r.width,
+                  height: r.height
+                }}
                 data-pane-id={p.id}
+                data-zoomed={p.zoomed ? '1' : undefined}
                 onMouseDown={() => onPaneFocus(p.id)}
               >
                 <TermView
@@ -293,7 +322,14 @@ export function PaneLayout({
                   onInput={(d) => onInput(p.id, d)}
                   onCycleTab={onCycleTab}
                   onCyclePane={onCyclePane}
+                  onZoomToggle={onZoomToggle}
                 />
+                {/* 放大指示徽标：zoom 满铺时 pane 边框被 xterm 画布盖住（分屏态
+                    靠 pane 间缝隙露出活跃边框，满铺时三边无缝），需要一个明确的
+                    「在放大中」提示与退出方式 */}
+                {p.zoomed && (
+                  <div className="pane-zoom-badge">已放大 · Ctrl+Shift+Enter 退出</div>
+                )}
               </div>
             )
           })}

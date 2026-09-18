@@ -505,6 +505,8 @@ function registerIpc(): void {
     backend.resizePane(id, cols, rows)
   )
   ipcMain.on('pane:select', (_e, id: string) => backend.selectPane(id))
+  // 窗格放大/还原（resize-pane -Z 的 toggle）：zoom 态在 tmux 侧，无需动会话存档
+  ipcMain.on('pane:zoom', (_e, id: string) => backend.zoomPane(id))
   ipcMain.on('pane:kill', (_e, id: string) => {
     backend.killPane(id)
     persistSession() // 唯一 pane 时降级为关标签（window 集合变化）
@@ -1169,6 +1171,8 @@ async function runSearchSequence(win: BrowserWindow): Promise<void> {
 interface SplitPaneInfo {
   id: string
   active: boolean
+  visible: boolean
+  zoomed: boolean
   left: number
   top: number
   w: number
@@ -1185,6 +1189,9 @@ interface SplitGripInfo {
 interface SplitState {
   panes: SplitPaneInfo[]
   grips: SplitGripInfo[]
+  viewW: number
+  viewH: number
+  zoomBadge: boolean
 }
 
 async function runSplitsSequence(win: BrowserWindow): Promise<void> {
@@ -1421,6 +1428,210 @@ async function runSplitsSequence(win: BrowserWindow): Promise<void> {
 
   const allOk = !results.some((r) => r.startsWith('FAIL:'))
   console.log('E2E_SPLITS_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  if (argvHas('--e2e-quit')) {
+    await backend.dispose()
+    app.exit(allOk ? 0 : 1)
+  }
+}
+
+// ── 窗格放大回归（--e2e-zoom）：Ctrl+Shift+Enter 的 toggle 通路（TermView 拦截）、
+// 满铺几何与输入落点、焦点保持、切标签往返保持放大态、退出还原原布局、
+// Ctrl+Alt+方向导航自动退出放大（tmux select-pane 语义）、放大态关 pane 降级、
+// 单 pane 守卫 ──
+
+async function runZoomSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string) => JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_ZOOM ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+  const outDir = argvFlag('--e2e-out') ?? join(app.getPath('userData'), 'e2e')
+  mkdirSync(outDir, { recursive: true })
+  const snap = async (name: string) => {
+    const img = await win.webContents.capturePage()
+    writeFileSync(join(outDir, `zoom-${name}.png`), img.toPNG())
+    console.log(`E2E_SNAP zoom-${name}`)
+  }
+  const split = (): Promise<SplitState> => json<SplitState>('window.__e2eSplitState()')
+  const tabsCount = () => json<number>('document.querySelectorAll(".tab").length')
+  const paneHas = (paneId: string, sub: string) =>
+    json<boolean>(
+      `window.__e2ePaneHas(window.__e2eIds().indexOf(${JSON.stringify(paneId)}), ${JSON.stringify(sub)})`
+    )
+  const inputState = (): Promise<{ focused: number; visibleCount: number }> =>
+    json<{ focused: number; visibleCount: number }>('window.__e2eInputState()')
+  const paneIdx = async (paneId: string) => json<number>(`window.__e2eIds().indexOf(${JSON.stringify(paneId)})`)
+  // 方向键导航走 CDP debugger（sendInputEvent 对方向键派发的 DOM 事件
+  // key/code/keyCode 全空，按键名判定不可能；CDP 事件与真实键盘同形）
+  const cdpArrow = async (code: string, vk: number) => {
+    try {
+      win.webContents.debugger.attach('1.3')
+    } catch {
+      // 已附着
+    }
+    for (const type of ['keyDown', 'keyUp'] as const) {
+      await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', {
+        type,
+        modifiers: type === 'keyDown' ? 2 | 1 : 0, // ctrl | alt
+        code,
+        key: code,
+        windowsVirtualKeyCode: vk,
+        nativeVirtualKeyCode: vk
+      })
+    }
+  }
+
+  await js('window.__e2eStart(1)')
+  await waitUntil(
+    async () => await json<boolean>('window.__e2e && window.__e2e.done && window.__e2e.created >= 1'),
+    60000
+  )
+
+  // 0) 分屏出双 pane 基线（记录未 zoom 几何供还原断言）
+  await pressKey(win, 'D', ['ctrl', 'shift'])
+  await waitUntil(async () => (await split()).panes.length === 2, 8000)
+  const s0 = await split()
+  const leftId = s0.panes[0]!.id
+  const rightId = s0.panes[1]!.id
+  check('seed-split', s0.panes.length === 2 && s0.panes.every((p) => p.visible), JSON.stringify(s0.panes.map((p) => p.visible)))
+  const beforeCols = s0.panes.map((p) => p.cols)
+
+  // 1) Ctrl+Shift+Enter 放大：只留被放大 pane 可见（其余保活隐藏）、带 zoom 标记
+  //    且恰为活跃 pane
+  await pressKey(win, 'Enter', ['ctrl', 'shift'])
+  const zoomed = await waitUntil(
+    async () => {
+      const s = await split()
+      return s.panes.length === 2 && s.panes.filter((p) => p.visible).length === 1
+    },
+    8000,
+    300
+  )
+  const s1 = await split()
+  const zPane = s1.panes.find((p) => p.zoomed)
+  check(
+    'zoom-toggle',
+    zoomed && !!zPane && zPane.id === rightId && zPane.active && zPane.visible && s1.grips.length === 0 && s1.zoomBadge,
+    JSON.stringify(s1.panes.map((p) => [p.zoomed, p.active, p.visible]))
+  )
+
+  // 2) 满铺几何：zoomed pane 铺满容器（tmux 侧它就是 window 总尺寸）
+  check(
+    'zoom-geom-full',
+    !!zPane && zPane.left === 0 && zPane.top === 0 && Math.abs(zPane.w - s1.viewW) <= 2 && Math.abs(zPane.h - s1.viewH) <= 2,
+    `pane ${zPane?.w}x${zPane?.h} vs view ${s1.viewW}x${s1.viewH}`
+  )
+  await snap('zoomed')
+
+  // 3) 输入到达被放大 pane，不泄漏到隐藏 pane
+  await typeChars(win, 'zmk1')
+  await delay(600)
+  check('zoom-input', await paneHas(rightId, 'zmk1'))
+  check('zoom-no-leak', !(await paneHas(leftId, 'zmk1')))
+
+  // 4) 焦点保持在被放大 pane（布局重排不重挂载，输入焦点不漂移）
+  const st = await inputState()
+  check('zoom-focus-kept', st.focused === (await paneIdx(rightId)), JSON.stringify(st))
+
+  // 5) 切标签往返：放大态保持（zoom 存于 tmux，随 tab 显隐不丢）
+  await pressKey(win, 'Tab', ['ctrl'])
+  await delay(400)
+  await pressKey(win, 'Tab', ['ctrl'])
+  const still = await waitUntil(
+    async () => {
+      const s = await split()
+      return s.panes.length === 2 && s.panes.filter((p) => p.visible).length === 1 && s.panes.find((p) => p.zoomed)?.id === rightId
+    },
+    8000,
+    300
+  )
+  check('zoom-tab-switch-keep', still)
+
+  // 6) 再按 Ctrl+Shift+Enter 退出放大：双 pane 可见、几何还原到放大前
+  await pressKey(win, 'Enter', ['ctrl', 'shift'])
+  const unzoomed = await waitUntil(
+    async () => {
+      const s = await split()
+      return s.panes.length === 2 && s.panes.every((p) => p.visible) && !s.panes.some((p) => p.zoomed)
+    },
+    8000,
+    300
+  )
+  const s2 = await split()
+  check(
+    'zoom-unzoom-restore',
+    unzoomed &&
+      !s2.zoomBadge &&
+      s2.panes.every((p, i) => Math.abs(p.cols - beforeCols[i]!) <= 1) &&
+      s2.grips.some((g) => g.dir === 'v'),
+    JSON.stringify({ before: beforeCols, after: s2.panes.map((p) => p.cols) })
+  )
+
+  // 7) 重新放大后 Ctrl+Alt+Left 导航：tmux select-pane 其它 pane 自动退出放大
+  //    （快照几何算目标 = 左 pane），焦点随之迁移。被放大的是右 pane（分屏后
+  //    新 pane 活跃），向左有邻居
+  await pressKey(win, 'Enter', ['ctrl', 'shift'])
+  await waitUntil(
+    async () => {
+      const s = await split()
+      return s.panes.filter((p) => p.visible).length === 1 && s.panes.some((p) => p.zoomed)
+    },
+    8000,
+    300
+  )
+  await cdpArrow('ArrowLeft', 37)
+  const navOk = await waitUntil(
+    async () => {
+      const s = await split()
+      return s.panes.length === 2 && s.panes.every((p) => p.visible) && !s.panes.some((p) => p.zoomed)
+    },
+    8000,
+    300
+  )
+  const s3 = await split()
+  check(
+    'zoom-nav-unzooms',
+    navOk && s3.panes.find((p) => p.active)?.id === leftId,
+    JSON.stringify(s3.panes.map((p) => [p.active, p.visible]))
+  )
+
+  // 8) 放大态下 Ctrl+Shift+W：关的是被放大 pane（导航后活跃 = 左 pane），标签
+  //    存活回到单 pane（active 边框按单 pane 规则熄灭，断言不查它）
+  const tabsBefore = await tabsCount()
+  await pressKey(win, 'Enter', ['ctrl', 'shift'])
+  await waitUntil(
+    async () => {
+      const s = await split()
+      return s.panes.filter((p) => p.visible).length === 1 && s.panes.some((p) => p.zoomed)
+    },
+    8000,
+    300
+  )
+  await pressKey(win, 'W', ['ctrl', 'shift'])
+  const closed = await waitUntil(async () => (await split()).panes.length === 1, 8000)
+  await delay(400)
+  const s4 = await split()
+  check(
+    'zoom-close-pane',
+    closed && s4.panes.length === 1 && s4.panes[0]!.visible && !s4.panes[0]!.zoomed && (await tabsCount()) === tabsBefore,
+    JSON.stringify(s4.panes)
+  )
+
+  // 9) 单 pane 标签上按放大：无动作（满铺与放大无差别，守卫拦截）
+  await pressKey(win, 'Enter', ['ctrl', 'shift'])
+  await delay(600)
+  const s5 = await split()
+  check(
+    'zoom-single-noop',
+    s5.panes.length === 1 && s5.panes[0]!.visible && !s5.panes[0]!.zoomed && (await tabsCount()) === tabsBefore,
+    JSON.stringify(s5.panes)
+  )
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_ZOOM_RESULT ' + JSON.stringify({ ok: allOk, results }))
   if (argvHas('--e2e-quit')) {
     await backend.dispose()
     app.exit(allOk ? 0 : 1)
@@ -3190,6 +3401,15 @@ async function runSessionPhase1(win: BrowserWindow): Promise<void> {
   )
   console.log(`E2E_SESS1 split ${splitOk ? 'ok' : 'FAIL'}`)
 
+  // 放大标签 2 的活跃 pane（真实 Ctrl+Shift+Enter 链路）：zoom 态存于 tmux 侧，
+  // phase2 断言随会话恢复原样重建
+  await pressKey(win, 'Enter', ['ctrl', 'shift'])
+  const zoomOk = await waitUntil(
+    async () => (await json<boolean>('window.__e2eSplitState().zoomBadge')) === true,
+    8000
+  )
+  console.log(`E2E_SESS1 zoom ${zoomOk ? 'ok' : 'FAIL'}`)
+
   // UI 态：pin 标签0 → 标签1 建组并命名 → 标签2 移入 → 标签0 改名
   const menu = async (idx: number, action: string) =>
     (await js<boolean>(`window.__e2eTabMenu && window.__e2eTabMenu(${idx}, '${action}')`)) === true
@@ -3290,6 +3510,21 @@ async function runSessionPhase2(win: BrowserWindow): Promise<void> {
     })()`
   )
   check('split-panes-registered', splitPaneId.length > 0)
+  // 放大恢复：zoom 态存于 tmux（resize-pane -Z），附着对账后标签 2 仍在放大中
+  //（恰一个 pane 带 zoom 标记 + 放大徽标在位；不依赖该标签此刻是否可见）
+  check(
+    'zoom-restored',
+    await json<boolean>(
+      `(function () {
+        const v = [...document.querySelectorAll('.tab-view')].find(
+          (x) => x.querySelectorAll('.pane-box').length === 2
+        )
+        if (!v) return false
+        const boxes = [...v.querySelectorAll('.pane-box')]
+        return boxes.filter((b) => b.dataset.zoomed === '1').length === 1 && !!v.querySelector('.pane-zoom-badge')
+      })()`
+    )
+  )
   if (splitPaneId) {
     const probe2 = `SESS2S_${randomUUID().slice(0, 8)}`
     let probe2Seen = false
@@ -3349,6 +3584,7 @@ const sessionE2E = __E2E__ ? argvFlag('--e2e-session') : undefined
 const sidebarE2E = __E2E__ ? argvHas('--e2e-sidebar') : false
 const paletteE2E = __E2E__ ? argvHas('--e2e-palette') : false
 const splitsE2E = __E2E__ ? argvHas('--e2e-splits') : false
+const zoomE2E = __E2E__ ? argvHas('--e2e-zoom') : false
 const profileRefreshE2E = __E2E__ ? argvHas('--e2e-profile-refresh') : false
 const themesE2E = __E2E__ ? argvHas('--e2e-themes') : false
 const pluginsE2E = __E2E__ ? argvHas('--e2e-plugins') : false
@@ -3361,6 +3597,7 @@ const isolatedRun =
   sidebarE2E ||
   paletteE2E ||
   splitsE2E ||
+  zoomE2E ||
   profileRefreshE2E ||
   themesE2E ||
   pluginsE2E ||
@@ -3710,6 +3947,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
           argvHas('--e2e-palette') ||
           argvHas('--e2e-search') ||
           argvHas('--e2e-splits') ||
+          zoomE2E ||
           profileRefreshE2E ||
           themesE2E ||
           pluginsE2E ||
@@ -3722,7 +3960,8 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
           argvHas('--e2e-sidebar') ||
           argvHas('--e2e-palette') ||
           argvHas('--e2e-search') ||
-          argvHas('--e2e-splits')
+          argvHas('--e2e-splits') ||
+          zoomE2E
             ? 2
             : Math.max(1, Number(e2eTabs) || 20)
         const win = mainWindow
@@ -3734,6 +3973,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
               else if (argvHas('--e2e-sidebar')) await runSidebarSequence(win)
               else if (argvHas('--e2e-search')) await runSearchSequence(win)
               else if (argvHas('--e2e-splits')) await runSplitsSequence(win)
+              else if (zoomE2E) await runZoomSequence(win)
               else if (argvHas('--e2e-palette')) await runPaletteSequence(win)
               else if (profileRefreshE2E) await runProfileRefreshSequence(win)
               else if (themesE2E) await runThemesSequence(win)

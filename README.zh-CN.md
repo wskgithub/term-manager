@@ -396,6 +396,13 @@ npx electron out/main/index.js --e2e-splits --e2e-quit --no-sandbox
 ```
 
 ```bash
+# 窗格放大回归：Ctrl+Shift+Enter 的 toggle 通路（TermView 拦截）、满铺几何与
+# 输入落点、焦点保持、切标签往返保持放大态、退出还原原布局、Ctrl+Alt+方向
+# 导航自动退出放大（tmux select-pane 语义）、放大态关 pane 降级、单 pane 守卫
+npx electron out/main/index.js --e2e-zoom --e2e-quit --no-sandbox
+```
+
+```bash
 # profile 可用性运行中刷新回归（环境自备：隔离 userData + PATH 里的空"安装目录"）：
 # 运行中写入/删除假 shell 模拟安装/卸载，断言 profiles:list 每次重探、＋菜单与
 # 命令面板打开时渲染层重拉、新装内建 shell 补齐、变化落盘 profiles.json
@@ -460,6 +467,7 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
 - `Ctrl+Shift+F` 终端缓冲区搜索，含滚动回溯（见[终端搜索](#终端搜索)）
 - `Ctrl+Shift+D` / `Ctrl+Shift+E` 向右 / 向下分屏（iTerm 惯例，可嵌套，见[分屏](#分屏)）
 - `Ctrl+Alt+方向键` 在当前标签的 pane 间移动焦点
+- `Ctrl+Shift+Enter` 放大当前 pane 铺满标签，再按还原（见[分屏](#分屏)）
 - `Ctrl+,` 打开/关闭设置页（`Esc` 或点击标签关闭）
 - 双击标签重命名（手动重命名后 shell 上报的标题不再覆盖）
 - 标签右键菜单：固定/取消固定（常驻左端、窄化、无关闭钮）、添加到新组/移入既有组/移出组、关闭
@@ -550,6 +558,12 @@ pane 几何的唯一权威是 tmux server——渲染层扮演它的 client：�
 通知）。分屏因此随会话保持与恢复存活：附着时布局从 tmux 状态原样重建，
 pane 一个不少。
 
+`Ctrl+Shift+Enter` 把活跃 pane 放大铺满整个标签（tmux `resize-pane -Z`），
+再按一次还原到放大前的精确布局。被遮住的 pane 保持存活、缓冲不丢；放大态
+存于 tmux server，同样随会话保持与恢复存活。导航离开（`Ctrl+Alt+方向键`）、
+分屏、关闭被放大的 pane 都会自动退出放大（tmux 语义）；角落的轻量徽标
+提示「已放大」与退出方式。
+
 ## GPU 渲染
 
 终端默认用 WebGL 渲染器（`@xterm/addon-webgl`）加速绘制——快速输出、大回滚
@@ -598,7 +612,8 @@ pane 一个不少。
       tmux 是布局唯一权威——几何经 `%layout-change` + `list-panes` 对账回推，也是
       tmux 3.2a 上 pane 死亡的检测通路；分屏随会话保持与恢复存活，`--e2e-splits`
       与会话两段回归覆盖）
-- [ ] pane 放大（临时把当前 pane 铺满整个标签）——路线图候选
+- [x] 窗格放大（`Ctrl+Shift+Enter` toggle：tmux `resize-pane -Z`，放大态随会话恢复
+      存活；导航/分屏/关闭自动退出放大，`--e2e-zoom` 覆盖）
 - [x] AppImage 与 rpm 打包格式（一次 `npm run dist` 产出 deb / AppImage / rpm 三格式）
 
 ## 备注

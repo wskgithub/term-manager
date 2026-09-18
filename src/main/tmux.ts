@@ -747,8 +747,11 @@ export class TmuxBackend {
     if (!tabId || !tab?.alive) return
     let rows: string[]
     try {
+      // 末两位：window_zoomed_flag（window 级放大标志）+ pane_active——两者都为 1
+      // 的 pane 即被放大者（tmux 只放大活跃 pane；zoomed pane 报满窗几何，其余
+      // pane 保留原布局几何）
       rows = await this.send(
-        `list-panes -t ${window} -F '#{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height}'`
+        `list-panes -t ${window} -F '#{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height} #{window_zoomed_flag} #{pane_active}'`
       )
     } catch {
       return // 服务器忙/将死：下次 %layout-change 再试
@@ -756,7 +759,7 @@ export class TmuxBackend {
     const seen = new Set<string>()
     const geoms: PaneGeom[] = []
     for (const row of rows) {
-      const m = row.trim().match(/^(%\d+) (\d+) (\d+) (\d+) (\d+)$/)
+      const m = row.trim().match(/^(%\d+) (\d+) (\d+) (\d+) (\d+) ([01]) ([01])$/)
       if (!m) continue
       const pane = m[1]
       seen.add(pane)
@@ -766,7 +769,14 @@ export class TmuxBackend {
         id = randomUUID()
         this.registerPane(id, tabId, pane)
       }
-      geoms.push({ id, x: Number(m[2]), y: Number(m[3]), cols: Number(m[4]), rows: Number(m[5]) })
+      geoms.push({
+        id,
+        x: Number(m[2]),
+        y: Number(m[3]),
+        cols: Number(m[4]),
+        rows: Number(m[5]),
+        zoomed: m[6] === '1' && m[7] === '1' || undefined
+      })
     }
     for (const [pid, rec] of [...this.paneRecords]) {
       if (rec.tabId === tabId && !seen.has(rec.pane)) {
@@ -891,6 +901,22 @@ export class TmuxBackend {
     const rec = this.paneRecords.get(id)
     if (!rec) return
     this.fire(`select-pane -t ${rec.pane}`)
+  }
+
+  /**
+   * 放大/还原 pane（resize-pane -Z 的 toggle 语义）：zoom 态存于 tmux 侧
+   * （会话保持下随 server 存活，恢复免费）。先 select 再 -Z，保证放大的正是
+   * 目标 pane（tmux 只放大活跃 pane）；toggle 由 tmux 承担。zoom 中 select/
+   * split/kill 其它 pane 时 tmux 自动退出放大（实测 3.2a），无需在此特判。
+   * 控制模式连接上的命令顺序执行，紧随其后的 list-panes 必见 zoom 后的几何
+   */
+  zoomPane(id: string): void {
+    const rec = this.paneRecords.get(id)
+    const tab = rec ? this.tabs.get(rec.tabId) : undefined
+    if (!rec || !tab?.alive) return
+    this.fire(`select-pane -t ${rec.pane}`)
+    this.fire(`resize-pane -t ${rec.pane} -Z`)
+    void this.syncPanes(tab.window)
   }
 
   /** 关闭单个 pane；window 里只剩它时降级为关闭整个标签（tmux 同款语义） */

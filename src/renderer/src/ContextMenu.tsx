@@ -90,6 +90,16 @@ export const SplitVIcon = (
   </svg>
 )
 
+/** 窗格放大用图标（lucide maximize-2 风格：对角双箭头向外撑满） */
+export const MaximizeIcon = (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M15 3h6v6" />
+    <path d="M9 21H3v-6" />
+    <path d="M21 3l-7 7" />
+    <path d="M3 21l7-7" />
+  </svg>
+)
+
 /** 组广播开关用图标（lucide radio 风格：中点 + 两侧弧段） */
 export const BroadcastIcon = (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
