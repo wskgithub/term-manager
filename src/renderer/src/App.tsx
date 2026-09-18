@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { Terminal } from '@xterm/xterm'
+import type { SearchAddon } from '@xterm/addon-search'
 import {
   api,
   DEFAULT_SETTINGS,
@@ -15,6 +16,7 @@ import {
 import { TabBar } from './TabBar'
 import { Sidebar, type SideDropTarget } from './Sidebar'
 import { TermView } from './TermView'
+import { TermSearch } from './TermSearch'
 import { CommandPalette } from './CommandPalette'
 import { buildCommands, type PaletteCommand } from './palette'
 import { SettingsPage } from './SettingsPage'
@@ -105,6 +107,13 @@ export default function App() {
   const [createError, setCreateError] = useState('')
   // 命令面板开关（Ctrl+Shift+P；纯运行时态，不持久化）
   const [paletteOpen, setPaletteOpen] = useState(false)
+  // 终端查找框开关（Ctrl+Shift+F；纯运行时态）+ 上次查询词记忆（重开预填）。
+  // 查询词由 TermSearch 渲染期实时回写 lastQuery——外部收起（设置页/面板打开）
+  // 不走 onClose 也能留住当前词
+  const [searchOpen, setSearchOpen] = useState(false)
+  const lastQuery = useRef('')
+  const searchOpenRef = useRef(false)
+  searchOpenRef.current = searchOpen
   // 代码级插件（L3）的注册物快照：面板命令/动态主题/状态栏项。pluginHost 单
   // 订阅推送，插件脚本异步注册时经 onHostChange 到达这里
   const [hostSnap, setHostSnap] = useState<HostSnapshot>({ commands: [], themes: [], statusbar: [] })
@@ -112,6 +121,13 @@ export default function App() {
   const renamed = useRef(new Set<string>())
   // 单点分发：所有终端实例注册在这里，一个 onData 订阅服务全部标签
   const terms = useRef(new Map<string, Terminal>())
+  // 搜索 addon 注册表（TermView 上报，镜像 terms Map 惯例）：查找框经它对
+  // 活跃终端执行 findNext/clearDecorations；终端销毁时上报 null 一并移除
+  const searchAddons = useRef(new Map<string, SearchAddon>())
+  const registerSearchAddon = (id: string, addon: SearchAddon | null) => {
+    if (addon) searchAddons.current.set(id, addon)
+    else searchAddons.current.delete(id)
+  }
   // 早期输出缓冲：瞬逝命令（echo/一次性脚本）的 %output 可能跑赢 TermView 挂载
   // 注册，届时 terms.get(id) 为空、直接 write 会静默丢数据（交互 shell 提示符
   // 到得晚所以从未暴露；插件快捷命令让它成一等场景）。按 id 暂存，注册时冲刷
@@ -685,6 +701,20 @@ export default function App() {
     focusActiveTerm()
   }
 
+  // 查找框关闭（Esc/×）：匹配装饰随 TermSearch 卸载清理，这里只收状态与
+  // 归还终端焦点（palette 关闭同语义）；查询词已由组件实时写进 lastQuery
+  const closeTermSearch = () => {
+    setSearchOpen(false)
+    focusActiveTerm()
+  }
+
+  // 设置页(z20 低于查找框 z26)/命令面板打开时收起查找框：层压关系在这里
+  // 不可靠，且两者打开时焦点应归各自输入框，不收起会互相纠缠
+  useEffect(() => {
+    if ((settingsOpen || paletteOpen) && searchOpenRef.current) setSearchOpen(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsOpen, paletteOpen])
+
   // 快捷键：Ctrl+Shift+T 新建 / Ctrl+Shift+W 关闭 / Ctrl+Tab、Ctrl+Shift+Tab 切换
   // / Ctrl+Shift+Q 退出并终结会话（终端聚焦时 Ctrl+Q 族被 xterm 认领，由
   // TermView 的 customKeyEventHandler 拦截后同样走 quitAll，这里是不在终端时的兜底）
@@ -712,6 +742,17 @@ export default function App() {
         // 单通路覆盖终端聚焦/失焦（面板开着时焦点在输入框，再按即关闭）
         e.preventDefault()
         setPaletteOpen((o) => !o)
+      } else if (e.ctrlKey && e.shiftKey && k === 'f') {
+        // 终端查找框：Ctrl+Shift+F 同样不被 xterm 键位表认领（不抢 shell 的
+        // Ctrl+F=forward-char），window 层单通路覆盖终端聚焦/失焦两种情况。
+        // 已开着则把焦点收回输入框并全选（焦点在输入框内时由其 onKeyDown
+        // 拦截处理，不会走到这里的分支）
+        e.preventDefault()
+        if (searchOpenRef.current) {
+          document.querySelector<HTMLInputElement>('.term-search-input')?.select()
+        } else {
+          setSearchOpen(true)
+        }
       } else if (e.ctrlKey && e.key === 'Tab') {
         e.preventDefault()
         cycleTab(e.shiftKey ? -1 : 1)
@@ -838,6 +879,7 @@ export default function App() {
               scheme={scheme}
               onTitle={(title) => shellTitle(t.id, title)}
               onTerminal={registerTerminal}
+              onSearchAddon={registerSearchAddon}
               onContextMenu={openTermContextMenu}
               onInput={(d) => sendInput(t.id, d)}
               onCycleTab={cycleTab}
@@ -847,6 +889,16 @@ export default function App() {
             <div className="broadcast-badge" title="关闭广播：组头广播开关或组右键菜单">
               ⩕ 广播输入中 · 本组 {broadcastTargets} 个终端同步接收
             </div>
+          )}
+          {searchOpen && (
+            <TermSearch
+              activeId={activeId}
+              getAddon={(id) => searchAddons.current.get(id)}
+              dark={dark}
+              queryMem={lastQuery}
+              initialQuery={lastQuery.current}
+              onClose={closeTermSearch}
+            />
           )}
           {createError && <div className="create-error">新建终端失败：{createError}</div>}
           {settingsOpen && (

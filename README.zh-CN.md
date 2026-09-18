@@ -261,6 +261,7 @@ src/
     ├── palette.ts   # 命令面板注册表（命令构建 + 模糊匹配打分）
     ├── CommandPalette.tsx # 命令面板浮层（键盘导航 + 二段改名）
     ├── TermView.tsx # xterm 实例（输出单点分发、自适应尺寸、字体设置）
+    ├── TermSearch.tsx # 终端查找框（Ctrl+Shift+F：高亮装饰 + 计数 + 大小写/全字/正则开关）
     ├── SettingsPage.tsx # 设置页（外观 → 字体/字号 + 预览；终端 → 默认终端等）
     ├── fonts.ts     # 字体栈解析（自动模式 / CJK 回退）
     ├── pluginHost.ts # 代码级插件宿主（沙箱 iframe + postMessage RPC 服务端/注册表/事件扇出）
@@ -377,6 +378,14 @@ npx electron out/main/index.js --e2e-palette --e2e-quit --no-sandbox
 ```
 
 ```bash
+# 终端搜索回归：真实输入管线的 Ctrl+Shift+F（终端聚焦、焦点在别处、开框再按收
+# 回焦点三通路）、匹配计数与 Enter/Shift+Enter 跳转、匹配点埋进滚动回溯的视口
+# 定位、大小写/正则开关、无匹配文案、Esc 关闭归还焦点（打字回到 shell）、重开
+# 预填上次查询词、开框期间 Ctrl+Tab 切标签即重跑、键盘不泄漏进 shell
+npx electron out/main/index.js --e2e-search --e2e-quit --no-sandbox
+```
+
+```bash
 # profile 可用性运行中刷新回归（环境自备：隔离 userData + PATH 里的空"安装目录"）：
 # 运行中写入/删除假 shell 模拟安装/卸载，断言 profiles:list 每次重探、＋菜单与
 # 命令面板打开时渲染层重拉、新装内建 shell 补齐、变化落盘 profiles.json
@@ -437,6 +446,7 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
 - `Ctrl+Shift+Q` 退出并终结全部会话（tmux 服务器与其上的 shell 一并结束）
 - `Ctrl+Shift+B` 开关分组侧栏（终端聚焦与否都生效）
 - `Ctrl+Shift+P` 命令面板（再按关闭；终端聚焦与否都生效，见[命令面板](#命令面板)）
+- `Ctrl+Shift+F` 终端缓冲区搜索，含滚动回溯（见[终端搜索](#终端搜索)）
 - `Ctrl+,` 打开/关闭设置页（`Esc` 或点击标签关闭）
 - 双击标签重命名（手动重命名后 shell 上报的标题不再覆盖）
 - 标签右键菜单：固定/取消固定（常驻左端、窄化、无关闭钮）、添加到新组/移入既有组/移出组、关闭
@@ -499,6 +509,19 @@ Esc 关闭并把焦点还给终端。覆盖四类命令：
 命令动作全部映射到应用现有回调（无新增 IPC/数据流），上下文相关项随状态
 出现与翻转（如在组内才出现移出、固定后关闭变置灰）。
 
+## 终端搜索
+
+`Ctrl+Shift+F` 打开当前终端的查找框——搜的是整个缓冲区，**含滚动回溯**，
+不只是可见屏幕。输入即搜：全部匹配高亮、当前项更强，附 `i/n` 计数；
+`Enter` / `Shift+Enter` 跳到下一个 / 上一个匹配（视口自动滚进回溯区），`Esc`
+关闭并把焦点还给终端。三个开关覆盖区分大小写、全字匹配与正则。查找框
+开着时始终作用于**当前标签**：`Ctrl+Tab` 切标签即在新终端上重跑搜索；
+之后重新打开会预填上次的查询词。
+
+快捷键刻意取 `Ctrl+Shift+F`（GNOME Terminal、Konsole 等终端模拟器惯例）
+而非 `Ctrl+F`——裸 `Ctrl+F` 是 readline 的前移一个字符绑定，保留原样直达
+shell 不被劫持。
+
 ## GPU 渲染
 
 终端默认用 WebGL 渲染器（`@xterm/addon-webgl`）加速绘制——快速输出、大回滚
@@ -539,6 +562,9 @@ Esc 关闭并把焦点还给终端。覆盖四类命令：
       'none'` 技术强制，`--e2e-code-plugins` 覆盖隔离/权限/CSP/卸载全链路）
 - [x] 插件管理 UI（设置页：每插件一张卡片，启用开关即时拆除贡献与沙箱帧且跨重启保留，
       网络权限查看 + 重新询问按钮，打开插件目录）
+- [x] 终端缓冲区搜索（`Ctrl+Shift+F`：含滚动回溯、全匹配高亮装饰 + `i/n` 计数、
+      Enter/Shift+Enter 跳转、大小写/全字/正则开关、开框切标签即重跑，`--e2e-search`
+      覆盖快捷键通路端到端）
 - [x] AppImage 与 rpm 打包格式（一次 `npm run dist` 产出 deb / AppImage / rpm 三格式）
 
 ## 备注

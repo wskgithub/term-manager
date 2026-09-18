@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { SearchAddon } from '@xterm/addon-search'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { api, type ThemeDef } from './api'
@@ -19,6 +20,9 @@ interface Props {
   gpu: boolean
   onTitle: (title: string) => void
   onTerminal: (id: string, t: Terminal | null) => void
+  // 搜索 addon 实例上交 App（镜像 onTerminal 惯例）：App 的查找框经它对
+  // 对应终端执行 findNext/clearDecorations；term.dispose() 会连带释放 addon
+  onSearchAddon: (id: string, addon: SearchAddon | null) => void
   // 右键菜单由 App 统一渲染（自绘浮层），这里只上报光标坐标
   onContextMenu: (x: number, y: number) => void
   // 键盘输入上交 App 路由：所属组开启广播时 App 会把同一段输入发往全组
@@ -35,7 +39,7 @@ interface Thumb {
   height: number
 }
 
-export function TermView({ termId, active, fontFamily, fontSize, scheme, gpu, onTitle, onTerminal, onContextMenu, onInput, onCycleTab }: Props) {
+export function TermView({ termId, active, fontFamily, fontSize, scheme, gpu, onTitle, onTerminal, onSearchAddon, onContextMenu, onInput, onCycleTab }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -129,6 +133,9 @@ export function TermView({ termId, active, fontFamily, fontSize, scheme, gpu, on
       fontSize: latest.current.fontSize,
       cursorBlink: true,
       scrollback: 2000,
+      // 搜索高亮（addon-search 装饰）依赖提案期 API（registerDecoration），必须
+      // 显式开启；xterm 实例只在自研代码内使用（插件永不接触），无暴露面
+      allowProposedApi: true,
       theme: scheme.terminal
     })
     const fit = new FitAddon()
@@ -197,6 +204,10 @@ export function TermView({ termId, active, fontFamily, fontSize, scheme, gpu, on
     viewport?.addEventListener('scroll', syncScrollbar, { passive: true })
     // 输出由 App 单点分发；这里注册实例本身
     onTerminal(termId, term)
+    // 搜索 addon（Ctrl+Shift+F 查找框的数据面）：与终端同生命周期，一并上报
+    const search = new SearchAddon()
+    term.loadAddon(search)
+    onSearchAddon(termId, search)
 
     const ro = new ResizeObserver(() => fitIfVisible())
     ro.observe(ref.current!)
@@ -208,6 +219,7 @@ export function TermView({ termId, active, fontFamily, fontSize, scheme, gpu, on
       viewportRef.current = null
       cancelAnimationFrame(rafRef.current)
       onTerminal(termId, null)
+      onSearchAddon(termId, null)
       termRef.current = null
       fitRef.current = null
       // term.dispose() 会连带释放已挂的 WebGL addon，这里置空 ref 防二次 dispose

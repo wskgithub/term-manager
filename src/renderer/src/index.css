@@ -1448,3 +1448,97 @@ body,
   word-break: break-all;
 }
 
+
+/* ── 终端查找框（Ctrl+Shift+F）：内容区右上角浮条，与广播徽标(z25)同锚点、
+   盖其上（搜索是主动交互态、徽标是被动提示，二者同现以搜索为准）；低于
+   右键菜单(z100)/命令面板(z110)/权限弹窗(z200)——设置页(z20)打开时由
+   App 显式关闭搜索而非靠层压。视觉语言与 .palette 同源（毛玻璃+hairline+
+   shadow+pop-in） ── */
+.term-search {
+  position: absolute;
+  top: 10px;
+  right: 18px;
+  z-index: 26;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100% - 36px);
+  padding: 4px 6px;
+  background: var(--menu-bg);
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  animation: pop-in 0.12s ease-out;
+}
+
+.term-search-input {
+  width: 180px;
+  min-width: 60px; /* 窄窗收缩下限，右侧按钮不挤没 */
+  padding: 4px 8px;
+  background: var(--bg-inset);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  outline: none;
+  color: var(--text-bright);
+  font: inherit;
+  font-size: 12px;
+}
+
+.term-search-input:focus {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.term-search-input::placeholder {
+  color: var(--text);
+  opacity: 0.55;
+}
+
+.term-search-counter {
+  min-width: 44px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text);
+  opacity: 0.8;
+  white-space: nowrap;
+}
+
+/* 开关钮（Aa/全字/.*)、跳转钮（↑↓）、关闭钮（×）：ghost 形态，on 态 accent */
+.term-search-toggle,
+.term-search-nav,
+.term-search-close {
+  flex: none;
+  height: 24px;
+  min-width: 24px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.term-search-toggle:hover:not(:disabled),
+.term-search-nav:hover,
+.term-search-close:hover {
+  background: var(--hover-wash);
+}
+
+.term-search-toggle.on {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
+}
+
+/* 正则模式下全字开关不参与（词边界由用户写 \b），置灰但保留占位防跳动 */
+.term-search-toggle:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.term-search-close {
+  font-size: 15px;
+}
