@@ -61,6 +61,8 @@ PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会�
   （**默认关闭**，随时 `Ctrl+Shift+B` 切换，见下文[分组侧栏](#分组侧栏)）。
 - **会话**（终端页）：「退出时保留会话」开关（默认开，见下节[会话保持](#会话保持)）。
 - **组内广播**（终端页）：「广播输入到全组」开关（**默认关**，开启后见[组内广播](#组内广播)）。
+- **OSC 52 剪贴板**（终端页）：「终端程序写剪贴板」开关（默认开，见
+  [可点击链接与 OSC 52 剪贴板](#可点击链接与-osc-52-剪贴板)）。
 - 改动即时应用到所有已开终端并写入 `settings.json`，重启保持。
 
 ## 自定义主题
@@ -403,6 +405,15 @@ npx electron out/main/index.js --e2e-zoom --e2e-quit --no-sandbox
 ```
 
 ```bash
+# 链接与 OSC 52 回归：OSC 52 真实全链路写入（printf → pane 输出 → %output →
+# xterm 解析器 → 剪贴板 IPC，主进程侧读剪贴板断言）、UTF-8 载荷、序列不落
+# buffer、1MB 上限、'?' 读查询不响应、设置页开关真实点击；链接为真实鼠标点击
+# （URL 检测 + OSC 8，非 http 双向拒绝；openExternal 处理器在主进程换桩，
+# 不会真拉起浏览器）
+npx electron out/main/index.js --e2e-links --e2e-quit --no-sandbox
+```
+
+```bash
 # profile 可用性运行中刷新回归（环境自备：隔离 userData + PATH 里的空"安装目录"）：
 # 运行中写入/删除假 shell 模拟安装/卸载，断言 profiles:list 每次重探、＋菜单与
 # 命令面板打开时渲染层重拉、新装内建 shell 补齐、变化落盘 profiles.json
@@ -543,6 +554,20 @@ Esc 关闭并把焦点还给终端。覆盖四类命令：
 而非 `Ctrl+F`——裸 `Ctrl+F` 是 readline 的前移一个字符绑定，保留原样直达
 shell 不被劫持。
 
+## 可点击链接与 OSC 52 剪贴板
+
+程序打印出的 URL（构建日志、报错信息、`git` 输出……）会被检测为可点击链接：
+悬停出现下划线，点击经主进程交给系统浏览器打开——走与 `window.open` 同一条
+仅限 http/https 的白名单（`file://` 等其他协议拒绝；非 http 的 OSC 8 链接在
+终端内核层就被过滤）。显式 OSC 8 超链接（现代 CLI 工具输出的那种）同样支持。
+
+OSC 52 让**终端里的程序**直接写系统剪贴板——ssh 远程复制的主通路：在远端
+跑 `vim` / `tmux copy-mode` / 各类 copy 工具，文本直接落到本地剪贴板，无需
+X 转发。实现上零 tmux 配置：tmux 控制模式的 `%output` 流是 pane 原始字节的
+解析前抽头，序列原样到达本应用的 xterm 解析器，与远端和 tmux 服务器各自的
+处理无关。限制：单次写入解码上限 1MB；读方向（`?` 查询）一律不响应——
+剪贴板内容不会外流给任何程序。设置页（终端页，默认开）可整体关闭。
+
 ## 分屏
 
 `Ctrl+Shift+D` 在活跃 pane 右侧分屏、`Ctrl+Shift+E` 上下分屏（iTerm 惯例，
@@ -614,6 +639,10 @@ pane 一个不少。
       与会话两段回归覆盖）
 - [x] 窗格放大（`Ctrl+Shift+Enter` toggle：tmux `resize-pane -Z`，放大态随会话恢复
       存活；导航/分屏/关闭自动退出放大，`--e2e-zoom` 覆盖）
+- [x] 可点击链接（检测出的 URL 与 OSC 8 超链接经主进程 http/https 白名单交给
+      系统浏览器打开，`--e2e-links` 覆盖）
+- [x] OSC 52 剪贴板（终端程序——含 ssh 远端经转发到达的序列——写本地剪贴板；
+      1MB 上限、读方向不响应、设置开关、零 tmux 配置，`--e2e-links` 覆盖）
 - [x] AppImage 与 rpm 打包格式（一次 `npm run dist` 产出 deb / AppImage / rpm 三格式）
 
 ## 备注

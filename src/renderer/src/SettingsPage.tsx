@@ -318,6 +318,24 @@ export function SettingsPage({
                 不可用（驱动不支持/被禁用）或运行中图形上下文丢失时自动回退常规 DOM 渲染，功能不受影响；关闭则一律 DOM 渲染
               </span>
             </div>
+            <div className="settings-section">剪贴板</div>
+            <div className="settings-row">
+              <label className="settings-label">终端程序写剪贴板（OSC 52）</label>
+              <label className="settings-checkbox">
+                <input
+                  type="checkbox"
+                  data-setting="osc52Copy"
+                  checked={settings.osc52Copy}
+                  onChange={(e) => onChange({ osc52Copy: e.target.checked })}
+                />
+                <span>允许终端内程序（含 ssh 远端经转发到达的序列）把文本写入系统剪贴板——ssh 远程复制的主通路；即时生效</span>
+              </label>
+            </div>
+            <div className="settings-row">
+              <span className="settings-hint">
+                单次上限 1MB；读取剪贴板（OSC 52 查询）一律不响应，剪贴板内容不外流
+              </span>
+            </div>
             <div className="settings-section">会话</div>
             <div className="settings-row">
               <label className="settings-label">退出时保留会话</label>

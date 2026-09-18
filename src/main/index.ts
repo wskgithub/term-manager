@@ -218,6 +218,17 @@ function enqueueOpenDir(raw: string | undefined): void {
   }
 }
 
+// 外链统一出口：只放行网页协议交给系统浏览器；file:// 等其他 scheme 交给
+// 外部处理器没有收益只有面（终端里的 URL 点击与 window.open 走同一白名单）
+function openExternalHttp(raw: string): void {
+  try {
+    const u = new URL(raw)
+    if (u.protocol === 'http:' || u.protocol === 'https:') void shell.openExternal(u.href)
+  } catch {
+    // 非法 URL：静默拒绝
+  }
+}
+
 function createWindow(): void {
   const dark = nativeTheme.shouldUseDarkColors
   mainWindow = new BrowserWindow({
@@ -249,14 +260,7 @@ function createWindow(): void {
     if (process.env.E2E_DEBUG) console.log('[renderer]', message)
   })
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    // 只放行网页协议：window.open（若有）交给系统浏览器；
-    // file:// 等其他 scheme 交给外部处理器没有收益只有面
-    try {
-      const u = new URL(details.url)
-      if (u.protocol === 'http:' || u.protocol === 'https:') void shell.openExternal(details.url)
-    } catch {
-      // 非法 URL：直接拒绝
-    }
+    openExternalHttp(details.url)
     return { action: 'deny' }
   })
 
@@ -477,6 +481,13 @@ function registerIpc(): void {
     if (typeof text === 'string') clipboard.writeText(text)
   })
   ipcMain.handle('clipboard:read', () => clipboard.readText())
+
+  // 终端里点击链接（URL 检测 / OSC 8 超链接）交给系统浏览器：与 window.open
+  // 同一个 http/https 白名单出口（openExternalHttp），渲染层 CSP 不放行任何
+  // 网络连接，链接打开是唯一经主进程的外跳路径
+  ipcMain.on('shell:openExternal', (_e, url: unknown) => {
+    if (typeof url === 'string') openExternalHttp(url)
+  })
 
   ipcMain.on('term:resize', (_e, id: string, cols: number, rows: number) =>
     backend.resize(id, cols, rows)
@@ -1043,7 +1054,15 @@ async function runSearchSequence(win: BrowserWindow): Promise<void> {
 
   // 2) 查询计数（初始 findNext 落在首个匹配，1-based 计数显示）
   st = await js<SearchBoxState>('window.__e2eSearchInput("SRCH alpha")')
-  check('query-count', st.counter === '1/2', JSON.stringify(st))
+  check(
+    'query-count',
+    st.counter === '1/2',
+    `${JSON.stringify(st)} lines=${JSON.stringify(
+      await json<Array<{ line: number; text: string }>>(
+        'window.__e2ePaneLinesWith(0, "SRCH alpha")'
+      )
+    )}`
+  )
   await snap('01-search-open')
 
   // 3) Enter 下一个 / Shift+Enter 上一个
@@ -1632,6 +1651,164 @@ async function runZoomSequence(win: BrowserWindow): Promise<void> {
 
   const allOk = !results.some((r) => r.startsWith('FAIL:'))
   console.log('E2E_ZOOM_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  if (argvHas('--e2e-quit')) {
+    await backend.dispose()
+    app.exit(allOk ? 0 : 1)
+  }
+}
+
+// ── 链接与 OSC 52 回归（--e2e-links）：URL 检测（addon-web-links）与 OSC 8
+// 超链接点击经主进程白名单出口（api.openExternal 换记录桩断言，真实打开会拉
+// 起浏览器）；OSC 52 走真实全链路——printf 产出序列 → pane 原始输出 → %output
+// 透传 → xterm parser → 渲染层 handler → clipboard IPC → 主进程 clipboard 读取
+// 断言。覆盖 UTF-8 解码、序列不落 buffer、1MB 上限、'?' 读查询不响应、设置页
+// 开关真实点击。URL/链接文本独占一行（printf 换行输出），列偏移不受提示符宽
+// 字符影响 ──
+async function runLinksSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string) => JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_LINKS ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+  const outDir = argvFlag('--e2e-out') ?? join(app.getPath('userData'), 'e2e')
+  mkdirSync(outDir, { recursive: true })
+  const snap = async (name: string) => {
+    const img = await win.webContents.capturePage()
+    writeFileSync(join(outDir, `links-${name}.png`), img.toPNG())
+    console.log(`E2E_SNAP links-${name}`)
+  }
+  const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64')
+  const paneHas = (sub: string) => json<boolean>(`window.__e2ePaneHas(0, ${JSON.stringify(sub)})`)
+  // 链接点击 = 先 hover（linkifier 的 provideLinks 异步）再按下抬起；坐标由
+  // 渲染层 __e2eLinkPoint 按终端字体实测 cell 换算
+  const mouse = (type: 'mouseMove' | 'mouseDown' | 'mouseUp', x: number, y: number) =>
+    win.webContents.sendInputEvent({ type, x, y, button: 'left', clickCount: 1 })
+  const clickLink = async (sub: string, snapName?: string): Promise<boolean> => {
+    const p = await json<{ visible: boolean; x?: number; y?: number } | null>(
+      `window.__e2eLinkPoint && window.__e2eLinkPoint(${JSON.stringify(sub)})`
+    )
+    if (!p?.visible || p.x === undefined || p.y === undefined) return false
+    mouse('mouseMove', p.x, p.y)
+    await delay(500)
+    if (snapName) await snap(snapName) // hover 态快照（下划线装饰已绘制）
+    mouse('mouseDown', p.x, p.y)
+    mouse('mouseUp', p.x, p.y)
+    return true
+  }
+  const setViaSettingsPage = async (on: boolean): Promise<boolean> => {
+    await js('window.__e2eSettings && window.__e2eSettings(true)')
+    await delay(300)
+    await js(`document.querySelectorAll('.settings-nav-item')[1]?.click()`)
+    await delay(200)
+    const ok = await js<boolean>(
+      `(() => { const cb = document.querySelector('[data-setting="osc52Copy"]'); ` +
+        `if (!cb) return false; if (cb.checked !== ${on}) cb.click(); return cb.checked === ${on} })()`
+    )
+    await delay(150)
+    await js('window.__e2eSettings && window.__e2eSettings(false)')
+    await delay(150)
+    return ok
+  }
+
+  // 裸启动的默认标签即测试标签（单 tab，idx 0）
+  const ids = await json<string[]>('window.__e2eIds()')
+  const tid = ids[0] ?? ''
+  const ready = `LNKRDY_${randomUUID().slice(0, 8)}`
+  backend.write(tid, `echo ${ready}\r`)
+  check('shell-ready', tid.length > 0 && (await waitUntil(() => paneHas(ready), 10000)), tid)
+
+  // 1) OSC 52 全链路：printf 产出序列（敲进 shell 的只是纯 ASCII 文本）→ 主进程剪贴板
+  //（Electron 44 起 clipboard 异步化，读取一律 await）
+  const mk1 = `L52A_${randomUUID().slice(0, 8)}`
+  backend.write(tid, `printf '\\033]52;c;${b64(mk1)}\\007'\r`)
+  check('osc52-roundtrip', await waitUntil(async () => (await clipboard.readText()) === mk1, 8000, 200))
+
+  // 2) UTF-8 解码：中文 + emoji 的 base64 精确还原
+  const mk2 = `L52U_中文剪贴板🎉_${randomUUID().slice(0, 8)}`
+  backend.write(tid, `printf '\\033]52;c;${b64(mk2)}\\007'\r`)
+  check('osc52-unicode', await waitUntil(async () => (await clipboard.readText()) === mk2, 8000, 200))
+
+  // 3) 序列被 parser 消费：解码后的文本不落 buffer（回显行只有 base64 形态）
+  check('osc52-consumed', !(await paneHas(mk2)))
+
+  // 4) 读查询（Pd='?'）不响应：剪贴板不变、不崩、pane 仍可交互
+  const mk4 = `L52Q_${randomUUID().slice(0, 8)}`
+  backend.write(tid, `printf '\\033]52;c;?\\007'; echo ${mk4}\r`)
+  await delay(800)
+  check(
+    'osc52-query-ignored',
+    (await clipboard.readText()) === mk2 && (await paneHas(mk4)),
+    (await clipboard.readText()).slice(0, 24)
+  )
+
+  // 5) 1MB 上限：1.5MB 载荷（base64 约 2MB，单行 -w0 不折行）被丢弃，剪贴板不变
+  backend.write(tid, `printf -v big 'x%.0s' $(seq 1 1500000)\r`)
+  await delay(1500)
+  backend.write(tid, `printf '\\033]52;c;%s\\007' "$(printf %s \"$big\" | base64 -w0)"\r`)
+  await delay(2500)
+  check('osc52-cap', (await clipboard.readText()) === mk2, `len=${(await clipboard.readText()).length}`)
+
+  // 6) 设置页开关：真实点击关掉后新序列不再写剪贴板，恢复后设置回原值
+  const prevOsc52 = (await js<{ osc52Copy: boolean }>('window.api.getSettings()')).osc52Copy
+  check('osc52-toggle-off', (await setViaSettingsPage(false)) === true)
+  const mk6 = `L52T_${randomUUID().slice(0, 8)}`
+  backend.write(tid, `printf '\\033]52;c;${b64(mk6)}\\007'\r`)
+  await delay(1000)
+  check('osc52-off-kept', (await clipboard.readText()) === mk2)
+  if (prevOsc52 !== false) await setViaSettingsPage(true)
+
+  // 7) URL 检测点击：echo 出的 https 链接 → 真实鼠标链路 → openExternal。换桩在
+  //    主进程：window.api 是 contextBridge 代理，主世界不可写（渲染层 monkeypatch
+  //    必抛 TypeError）；直接替换 shell:openExternal 监听记录 URL，渲染层链路
+  //    （TermView → preload → IPC）全真实，也不真拉起系统浏览器
+  let lastOpened = ''
+  ipcMain.removeAllListeners('shell:openExternal')
+  ipcMain.on('shell:openExternal', (_e, url: unknown) => {
+    if (typeof url === 'string') lastOpened = url
+  })
+  const rnd = randomUUID().slice(0, 8)
+  const url1 = `https://links-e2e-${rnd}.example.com/path?q=1`
+  // URL 加引号：zsh 会把 ? 当通配符（裸 echo 报 no matches found）
+  backend.write(tid, `echo '${url1}'\r`)
+  await waitUntil(() => paneHas(url1), 8000)
+  check(
+    'weblink-click',
+    (await clickLink(url1, 'url-hover')) && (await waitUntil(() => lastOpened === url1, 5000, 150)),
+    url1
+  )
+
+  // 8) OSC 8 超链接：printf 包裹（ST 终止符）→ 点击可见文本 → 打开的是链接 URI
+  const url2 = `https://osc8-e2e-${rnd}.example.com/deep`
+  const label2 = `OSC8LINK${rnd}`
+  backend.write(tid, `printf '\\033]8;;${url2}\\033\\\\${label2}\\033]8;;\\033\\\\\\n'\r`)
+  await waitUntil(() => paneHas(label2), 8000)
+  check(
+    'osc8-click',
+    (await clickLink(label2)) && (await waitUntil(() => lastOpened === url2, 5000, 150)),
+    url2
+  )
+
+  // 9) OSC 8 非 http 协议：内核过滤（allowNonHttpProtocols=false），点击无动作
+  const label3 = `BADLINK${rnd}`
+  backend.write(tid, `printf '\\033]8;;file:///etc/passwd\\033\\\\${label3}\\033]8;;\\033\\\\\\n'\r`)
+  await waitUntil(() => paneHas(label3), 8000)
+  await clickLink(label3)
+  await delay(700)
+  check('osc8-nonhttp-ignored', lastOpened === url2)
+
+  // 10) 纯文本非 http URL：addon 正则只认 https?，点击无动作
+  const ftp = `ftp://ftp-e2e-${rnd}.example.com/x`
+  backend.write(tid, `echo '${ftp}'\r`)
+  await waitUntil(() => paneHas(ftp), 8000)
+  await clickLink(ftp)
+  await delay(700)
+  check('weblink-http-only', lastOpened === url2)
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_LINKS_RESULT ' + JSON.stringify({ ok: allOk, results }))
   if (argvHas('--e2e-quit')) {
     await backend.dispose()
     app.exit(allOk ? 0 : 1)
@@ -3585,6 +3762,7 @@ const sidebarE2E = __E2E__ ? argvHas('--e2e-sidebar') : false
 const paletteE2E = __E2E__ ? argvHas('--e2e-palette') : false
 const splitsE2E = __E2E__ ? argvHas('--e2e-splits') : false
 const zoomE2E = __E2E__ ? argvHas('--e2e-zoom') : false
+const linksE2E = __E2E__ ? argvHas('--e2e-links') : false
 const profileRefreshE2E = __E2E__ ? argvHas('--e2e-profile-refresh') : false
 const themesE2E = __E2E__ ? argvHas('--e2e-themes') : false
 const pluginsE2E = __E2E__ ? argvHas('--e2e-plugins') : false
@@ -3598,6 +3776,7 @@ const isolatedRun =
   paletteE2E ||
   splitsE2E ||
   zoomE2E ||
+  linksE2E ||
   profileRefreshE2E ||
   themesE2E ||
   pluginsE2E ||
@@ -3948,6 +4127,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
           argvHas('--e2e-search') ||
           argvHas('--e2e-splits') ||
           zoomE2E ||
+          linksE2E ||
           profileRefreshE2E ||
           themesE2E ||
           pluginsE2E ||
@@ -3961,7 +4141,8 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
           argvHas('--e2e-palette') ||
           argvHas('--e2e-search') ||
           argvHas('--e2e-splits') ||
-          zoomE2E
+          zoomE2E ||
+          linksE2E
             ? 2
             : Math.max(1, Number(e2eTabs) || 20)
         const win = mainWindow
@@ -3974,6 +4155,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
               else if (argvHas('--e2e-search')) await runSearchSequence(win)
               else if (argvHas('--e2e-splits')) await runSplitsSequence(win)
               else if (zoomE2E) await runZoomSequence(win)
+              else if (linksE2E) await runLinksSequence(win)
               else if (argvHas('--e2e-palette')) await runPaletteSequence(win)
               else if (profileRefreshE2E) await runProfileRefreshSequence(win)
               else if (themesE2E) await runThemesSequence(win)
