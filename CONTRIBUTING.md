@@ -27,7 +27,7 @@ npm run dev        # 开发模式（热更新）
 npm run typecheck  # TS 检查（node + web 两个工程）
 npm run build      # 构建到 out/
 npm run smoke      # 无窗口冒烟：真实 shell 回显往返验证后端链路
-npm run dist       # 构建 deb 安装包
+npm run dist       # 构建 deb / AppImage / rpm 三格式安装包
 npm run dist:dir   # 只产出 dist/linux-unpacked/（快速检查分发物内容）
 ```
 

@@ -22,7 +22,7 @@
     "rebuild": "electron-rebuild",
     "postinstall": "electron-rebuild",
     "smoke": "electron-vite build && electron out/main/index.js --smoke --no-sandbox",
-    "dist": "TERM_MGR_E2E=0 electron-vite build && ELECTRON_BUILDER_CACHE=\"$PWD/.cache/electron-builder\" ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --linux deb",
+    "dist": "TERM_MGR_E2E=0 electron-vite build && ELECTRON_BUILDER_CACHE=\"$PWD/.cache/electron-builder\" ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --linux",
     "dist:dir": "TERM_MGR_E2E=0 electron-vite build && ELECTRON_BUILDER_CACHE=\"$PWD/.cache/electron-builder\" ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --linux deb --dir"
   },
   "build": {
@@ -37,7 +37,9 @@
     ],
     "linux": {
       "target": [
-        "deb"
+        "deb",
+        "AppImage",
+        "rpm"
       ],
       "category": "Utility;TerminalEmulator;",
       "syncDesktopName": true,
@@ -66,6 +68,24 @@
       "recommends": [
         "libappindicator3-1",
         "python3-nautilus"
+      ],
+      "fpm": [
+        "build/nautilus-python/term_manager_nautilus.py=/usr/share/nautilus-python/extensions/term_manager_nautilus.py"
+      ]
+    },
+    "rpm": {
+      "depends": [
+        "gtk3",
+        "libnotify",
+        "nss",
+        "libXScrnSaver",
+        "libXtst",
+        "xdg-utils",
+        "xorg-x11-utils",
+        "at-spi2-core",
+        "libuuid",
+        "libsecret",
+        "tmux"
       ],
       "fpm": [
         "build/nautilus-python/term_manager_nautilus.py=/usr/share/nautilus-python/extensions/term_manager_nautilus.py"

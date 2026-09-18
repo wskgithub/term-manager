@@ -22,9 +22,10 @@ jobs:
           cache: npm
 
       # smoke 走真实 tmux 控制模式后端做 shell 回显往返，必须有 tmux；
-      # smoke 本身不建窗口，xvfb 兜底防 Electron 在无显示环境初始化失败
+      # smoke 本身不建窗口，xvfb 兜底防 Electron 在无显示环境初始化失败；
+      # rpm 打包走 fpm 1.17，需要系统 rpmbuild（Ubuntu 的 rpm 包提供）
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y tmux xvfb
+        run: sudo apt-get update && sudo apt-get install -y tmux xvfb rpm
 
       - name: Install npm dependencies
         run: npm ci
@@ -34,3 +35,22 @@ jobs:
 
       - name: Smoke (windowless backend round-trip)
         run: xvfb-run -a npm run smoke
+
+      # 三格式打包（deb / AppImage / rpm）——守住 electron-builder 配置不回归；
+      # AppImage/rpm 工具链经 npmmirror 镜像拉取；产物仅作 CI artifact 供试用，不发布
+      - name: Package (deb / AppImage / rpm)
+        run: npm run dist
+
+      - name: Assert packaged artifacts
+        run: |
+          ls -la dist/*.deb dist/*.AppImage dist/*.rpm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.rpm
+          if-no-files-found: error
+          retention-days: 14
