@@ -449,21 +449,59 @@ export function setupE2E(ctx: E2ECtx): void {
 
   const termsInOrder = () => [...ctx.terms.current.values()]
 
-  /** 焦点归属快照：focused/visible 为 term-pane 下标（DOM 顺序=创建顺序） */
+  /** 焦点归属快照：focused/visible 为 term-pane 下标（DOM 顺序=创建顺序）。
+      分屏后显隐由 .tab-view 控制（TermView 不再自管 display），visible 取
+      「可见 tab-view 内首个 pane」保持旧语义（单 pane 套件兼容），可见 pane
+      总数另给 visibleCount */
   w.__e2eInputState = () => {
     const ae = document.activeElement as HTMLElement | null
     const panes = [...document.querySelectorAll<HTMLElement>('.term-pane')]
     const pane = ae?.closest<HTMLElement>('.term-pane')
+    const visiblePanes = panes.filter((p) => !!p.closest<HTMLElement>('.tab-view:not([style*="none"])'))
     return {
       panes: panes.length,
       focused: pane ? panes.indexOf(pane) : -1,
-      visible: panes.findIndex((p) => p.style.display !== 'none'),
+      visible: panes.indexOf(visiblePanes[0] ?? panes[0]!),
+      visibleCount: visiblePanes.length,
       ae: String(ae?.className ?? ae?.tagName ?? 'null'),
     }
   }
 
   /** 全部终端 id（创建顺序，即 terms Map 的 key） */
   w.__e2eIds = () => [...ctx.terms.current.keys()]
+
+  /** 分屏布局快照（--e2e-splits）：可见 tab 的 pane 几何（DOM rect + xterm
+      cols/rows）、活跃标记与把手矩形（主进程据此派发合成 pointer 拖拽） */
+  w.__e2eSplitState = () => {
+    const view = document.querySelector<HTMLElement>('.tab-view:not([style*="none"])')
+    const boxes = [...(view?.querySelectorAll<HTMLElement>('.pane-box') ?? [])]
+    const grips = [...(view?.querySelectorAll<HTMLElement>('.pane-grip') ?? [])]
+    return {
+      panes: boxes.map((b) => {
+        const id = b.dataset.paneId ?? ''
+        const t = ctx.terms.current.get(id)
+        return {
+          id,
+          active: b.classList.contains('active'),
+          left: b.offsetLeft,
+          top: b.offsetTop,
+          w: b.offsetWidth,
+          h: b.offsetHeight,
+          cols: t?.cols ?? -1,
+          rows: t?.rows ?? -1
+        }
+      }),
+      grips: grips.map((g) => {
+        const r = g.getBoundingClientRect()
+        return {
+          dir: g.dataset.grip ?? '',
+          target: g.dataset.target ?? '',
+          x: Math.round(r.left + r.width / 2),
+          y: Math.round(r.top + r.height / 2)
+        }
+      })
+    }
+  }
 
   /** 第 idx 个终端的 buffer（含 scrollback）里是否出现 sub */
   w.__e2ePaneHas = (idx: number, sub: string) => {

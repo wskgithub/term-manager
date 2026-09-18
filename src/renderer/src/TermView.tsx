@@ -9,7 +9,6 @@ import { resolveFontStack } from './fonts'
 
 interface Props {
   termId: string
-  active: boolean
   fontFamily: string
   fontSize: number
   // 创建实例时的生效配色方案（决定初始调色板，已与内建合并成完整 22 键）；
@@ -23,6 +22,10 @@ interface Props {
   // 搜索 addon 实例上交 App（镜像 onTerminal 惯例）：App 的查找框经它对
   // 对应终端执行 findNext/clearDecorations；term.dispose() 会连带释放 addon
   onSearchAddon: (id: string, addon: SearchAddon | null) => void
+  // fit 后的实测尺寸（termId, cols, rows, 容器像素宽高）：PaneLayout 用它估算
+  // cell 尺寸做布局换算与 window 总尺寸上报。pane 几何的权威在 tmux server，
+  // TermView 自身不再向 tmux 上报 resize
+  onMetrics: (id: string, cols: number, rows: number, cw: number, ch: number) => void
   // 右键菜单由 App 统一渲染（自绘浮层），这里只上报光标坐标
   onContextMenu: (x: number, y: number) => void
   // 键盘输入上交 App 路由：所属组开启广播时 App 会把同一段输入发往全组
@@ -32,6 +35,9 @@ interface Props {
   //（Tab 族按键被 xterm 键位表认领，见下方 customKeyEventHandler 注释），
   // window 层监听收不到；焦点在终端外时走 App 的兜底通路
   onCycleTab: (dir: 1 | -1) => void
+  // Ctrl+Alt+方向键在 pane 间导航：同 Ctrl+Tab 的双通路模式（xterm 键位表认领
+  // Ctrl+Alt+方向序列，window 层收不到），App 侧单 pane 时无动作
+  onCyclePane: (dir: 'left' | 'right' | 'up' | 'down') => void
 }
 
 interface Thumb {
@@ -39,7 +45,7 @@ interface Thumb {
   height: number
 }
 
-export function TermView({ termId, active, fontFamily, fontSize, scheme, gpu, onTitle, onTerminal, onSearchAddon, onContextMenu, onInput, onCycleTab }: Props) {
+export function TermView({ termId, fontFamily, fontSize, scheme, gpu, onTitle, onTerminal, onSearchAddon, onMetrics, onContextMenu, onInput, onCycleTab, onCyclePane }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -52,6 +58,11 @@ export function TermView({ termId, active, fontFamily, fontSize, scheme, gpu, on
   // customKeyEventHandler 挂在 mount-once 的 effect 里，回调经 ref 拿最新闭包
   const cycleTabRef = useRef(onCycleTab)
   cycleTabRef.current = onCycleTab
+  const cyclePaneRef = useRef(onCyclePane)
+  cyclePaneRef.current = onCyclePane
+  // onMetrics 同理：PaneLayout 的 cell 估算要拿到最新回调
+  const metricsRef = useRef(onMetrics)
+  metricsRef.current = onMetrics
   // onData 同理：广播路由依赖 App 的实时分组态，必须每次按键都拿到最新闭包
   const inputRef = useRef(onInput)
   inputRef.current = onInput
@@ -81,8 +92,9 @@ export function TermView({ termId, active, fontFamily, fontSize, scheme, gpu, on
     })
   }
 
-  // 隐藏标签（display:none）尺寸为 0，FitAddon 会算出最小 2×1 并把 tmux 窗口缩掉，
-  // 所以只在容器真实可见时才 fit + 上报尺寸
+  // 隐藏标签（display:none）尺寸为 0，FitAddon 会算出最小 2×1，所以只在容器
+  // 真实可见时才 fit。pane 几何的权威在 tmux server（%layout-change →
+  // term:panes 推送），这里只做像素适配并把实测尺寸上报给 PaneLayout 换算
   const fitIfVisible = () => {
     const el = ref.current
     const term = termRef.current
@@ -91,7 +103,7 @@ export function TermView({ termId, active, fontFamily, fontSize, scheme, gpu, on
     if (el.clientWidth > 0 && el.clientHeight > 0) {
       try {
         fit.fit()
-        api.resize(termId, term.cols, term.rows)
+        metricsRef.current(termId, term.cols, term.rows, el.clientWidth, el.clientHeight)
       } catch {
         // 尺寸无效时忽略
       }
@@ -164,6 +176,29 @@ export function TermView({ termId, active, fontFamily, fontSize, scheme, gpu, on
         ev.stopPropagation()
         cycleTabRef.current(ev.shiftKey ? -1 : 1)
         return false
+      }
+      // Ctrl+Alt+方向键 pane 导航：同 Tab 族的拦截模式（xterm 键位表认领
+      // Ctrl+Alt+方向产生的修饰序列并 cancel，window 层收不到）。该组合在裸
+      // shell/readline/tmux 默认绑定里均无操作，吞掉无副作用；App 侧单 pane
+      // 时不动作。key/code/keyCode 三路判：合成输入（sendInputEvent）可能
+      // 不生成 key/code 文本，DOM keyCode（37-40）恒有
+      if (ev.ctrlKey && ev.altKey && !ev.shiftKey && !ev.metaKey) {
+        const dir =
+          ev.code === 'ArrowLeft' || ev.key === 'ArrowLeft' || ev.keyCode === 37
+            ? 'left'
+            : ev.code === 'ArrowRight' || ev.key === 'ArrowRight' || ev.keyCode === 39
+              ? 'right'
+              : ev.code === 'ArrowUp' || ev.key === 'ArrowUp' || ev.keyCode === 38
+                ? 'up'
+                : ev.code === 'ArrowDown' || ev.key === 'ArrowDown' || ev.keyCode === 40
+                  ? 'down'
+                  : ''
+        if (dir) {
+          ev.preventDefault()
+          ev.stopPropagation()
+          cyclePaneRef.current(dir)
+          return false
+        }
       }
       // Ctrl+Shift+Q 退出并终结会话：Ctrl+Q 在 xterm 键位表被认领（^Q/XON，
       // cancel 掉且 window 层收不到），同样须在此拦截并阻断 App 兜底通路
@@ -273,9 +308,10 @@ export function TermView({ termId, active, fontFamily, fontSize, scheme, gpu, on
   }, [termId, gpu])
 
   return (
+    // 显隐由外层 .pane-box / .tab-view 的 display 控制（分屏后「标签可见」与
+    // 「pane 布局」是两个维度，TermView 不再自管 display）
     <div
       className="term-pane"
-      style={{ display: active ? 'block' : 'none' }}
       onContextMenu={(e) => {
         e.preventDefault()
         onContextMenu(e.clientX, e.clientY)

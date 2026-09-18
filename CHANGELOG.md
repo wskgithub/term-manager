@@ -7,6 +7,17 @@ All notable changes to Term Manager are documented in this file.
 
 ### English
 
+- **Split panes**: `Ctrl+Shift+D` / `Ctrl+Shift+E` split the active pane side by side /
+  stacked (iTerm convention, nests freely); the new pane runs the tab's profile,
+  inherits the source pane's working directory and takes focus. `Ctrl+Alt+Arrow keys`
+  (or a click) move focus between panes, the focused pane is outlined, separators are
+  drag-resizable, and `Ctrl+Shift+W` degrades gracefully (close pane when several
+  remain — even on pinned tabs — close the tab for the last one). The tmux server is
+  the single source of truth for layout: the renderer only reports the window size,
+  pane rectangles arrive via `%layout-change` reconciled through `list-panes`, which
+  doubles as pane-death detection on tmux 3.2a (no pane-died notification there).
+  Splits survive session keep-and-restore, layout included. Covered by the new
+  `--e2e-splits` suite (22 assertions) and three new session-phase2 assertions.
 - **Terminal buffer search** (`Ctrl+Shift+F`): a find bar for the active terminal's
   buffer, scrollback included. All matches are highlighted (decoration layer) with an
   `i/n` counter; `Enter` / `Shift+Enter` jump between matches, `Esc` closes and returns
@@ -29,6 +40,14 @@ All notable changes to Term Manager are documented in this file.
 
 ### 中文
 
+- **分屏**：`Ctrl+Shift+D` / `Ctrl+Shift+E` 向右 / 向下分屏（iTerm 惯例，可任意
+  嵌套）；新 pane 跑标签的 profile、继承源 pane 工作目录并获得焦点。`Ctrl+Alt+
+  方向键`（或点击）在 pane 间移动焦点，焦点 pane 带描边，分隔条可拖拽调比例，
+  `Ctrl+Shift+W` 优雅降级（多 pane 关 pane——固定标签也允许，最后一个恢复关
+  标签）。布局唯一权威是 tmux server：渲染层只上报 window 尺寸，pane 矩形经
+  `%layout-change` + `list-panes` 对账回推，这同时是 tmux 3.2a 上 pane 死亡的
+  检测通路（该版本无 pane 死亡通知）。分屏随会话保持与恢复存活（含布局）。
+  新增 `--e2e-splits` 套件（22 断言）与会话 phase2 三条新断言覆盖。
 - **终端缓冲区搜索**（`Ctrl+Shift+F`）：针对当前终端缓冲区的查找框，**含滚动回溯**。
   全部匹配高亮（装饰层）并显示 `i/n` 计数；`Enter` / `Shift+Enter` 在匹配间跳转，
   `Esc` 关闭并归还终端焦点。支持区分大小写、全字与正则三个开关；开框状态下切标签

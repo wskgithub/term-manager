@@ -2,10 +2,12 @@
 // 此处 re-export 供渲染层各组件统一从 './api' 导入
 import type {
   AppSettings,
+  PaneGeom,
   PluginInfo,
   Profile,
   RestoredSession,
   SessionUiSync,
+  SplitDir,
   TabGroup,
   TermInfo,
   ThemeDef
@@ -19,7 +21,9 @@ export type {
   RestoredSession,
   SessionUiSync,
   ThemeDef,
-  PluginInfo
+  PluginInfo,
+  PaneGeom,
+  SplitDir
 } from '../../shared/types'
 export { DEFAULT_SETTINGS } from '../../shared/types'
 
@@ -82,6 +86,16 @@ export interface Api {
   write(id: string, data: string): void
   resize(id: string, cols: number, rows: number): void
   kill(id: string): void
+  // 分屏：在 fromId pane 旁分出新 pane（同 tab 的 profile），返回新 pane 的 termId
+  splitPane(tabId: string, fromId: string, dir: SplitDir): Promise<string>
+  // 把手拖拽落点：pane 级尺寸（resize-pane，window 总尺寸不变）
+  resizePane(id: string, cols: number, rows: number): void
+  // 同步 tmux 侧 active pane（点击/键盘导航后）
+  selectPane(id: string): void
+  // 关闭单个 pane（window 里只剩它时降级为关标签）
+  killPane(id: string): void
+  // pane 布局权威推送（%layout-change → list-panes 对账后的几何清单）
+  onPanes(cb: (tabId: string, panes: PaneGeom[]) => void): () => void
   writeClipboard(text: string): void
   readClipboard(): Promise<string>
   onData(cb: (id: string, data: string) => void): () => void
