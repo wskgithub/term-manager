@@ -7,6 +7,18 @@ All notable changes to Term Manager are documented in this file.
 
 ### English
 
+- **Pane zoom** (`Ctrl+Shift+Enter`): temporarily maximize the active pane to fill its
+  tab (tmux `resize-pane -Z`); the same shortcut restores the exact previous layout.
+  Hidden panes stay alive with their buffers; zoom state lives in the tmux server, so
+  it survives session keep-and-restore. Navigating away, splitting or closing the
+  zoomed pane zooms out automatically (tmux semantics); a small corner badge reminds
+  you that you are zoomed and how to leave (the focus outline would be hidden by the
+  full-bleed terminal). Also in the terminal
+  context menu and the command palette. Covered by the new `--e2e-zoom` suite
+  (11 assertions: toggle paths, full-tab geometry, input delivery and focus
+  retention, tab-switch round-trip, exact restore, auto-unzoom on navigation,
+  close-while-zoomed, single-pane guard) plus a zoom step and restore assertion in
+  the session two-phase suite.
 - **Split panes**: `Ctrl+Shift+D` / `Ctrl+Shift+E` split the active pane side by side /
   stacked (iTerm convention, nests freely); the new pane runs the tab's profile,
   inherits the source pane's working directory and takes focus. `Ctrl+Alt+Arrow keys`
@@ -40,6 +52,15 @@ All notable changes to Term Manager are documented in this file.
 
 ### 中文
 
+- **窗格放大**（`Ctrl+Shift+Enter`）：把活跃 pane 临时放大铺满整个标签（tmux
+  `resize-pane -Z`），再按一次还原到放大前的精确布局。被遮住的 pane 保持存活、
+  缓冲不丢；放大态存于 tmux server，随会话保持与恢复存活。导航离开、分屏、
+  关闭被放大的 pane 都会自动退出放大（tmux 语义）；角落的轻量徽标提示「已
+  放大」与退出方式（满铺终端会盖住 pane 边框，边框做不了提示）。终端右键菜
+  单与命令面板同入口。新增 `--e2e-zoom` 套件覆盖（11 条断言：toggle 通路、满
+  铺几何、输入落点
+  与焦点保持、切标签往返、精确还原、导航自动退出放大、放大态关 pane、单 pane
+  守卫），另会话双相套件加放大步骤与恢复断言。
 - **分屏**：`Ctrl+Shift+D` / `Ctrl+Shift+E` 向右 / 向下分屏（iTerm 惯例，可任意
   嵌套）；新 pane 跑标签的 profile、继承源 pane 工作目录并获得焦点。`Ctrl+Alt+
   方向键`（或点击）在 pane 间移动焦点，焦点 pane 带描边，分隔条可拖拽调比例，

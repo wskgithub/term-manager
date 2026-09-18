@@ -859,6 +859,24 @@ body,
   pointer-events: none;
 }
 
+/* 放大指示徽标：zoom 满铺时活跃 pane 的边框被 xterm 画布盖住（无 pane 间缝隙
+   可露出），左上角常驻轻量提示；不挡交互 */
+.pane-zoom-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 5;
+  padding: 3px 9px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: color-mix(in srgb, var(--text) 80%, transparent);
+  background: color-mix(in srgb, var(--bg-deep) 82%, transparent);
+  border: 1px solid var(--hairline);
+  pointer-events: none;
+  user-select: none;
+}
+
 .pane-dragline.v {
   top: 0;
   bottom: 0;

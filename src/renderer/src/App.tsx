@@ -22,7 +22,7 @@ import { TermSearch } from './TermSearch'
 import { CommandPalette } from './CommandPalette'
 import { buildCommands, type PaletteCommand } from './palette'
 import { SettingsPage } from './SettingsPage'
-import { ContextMenu, CopyIcon, PasteIcon, SplitHIcon, SplitVIcon, XIcon } from './ContextMenu'
+import { ContextMenu, CopyIcon, PasteIcon, SplitHIcon, SplitVIcon, MaximizeIcon, XIcon } from './ContextMenu'
 import {
   applyUiVars,
   pickScheme,
@@ -155,6 +155,8 @@ export default function App() {
   activeRef.current = activeId
   const paneGeomsRef = useRef(paneGeoms)
   paneGeomsRef.current = paneGeoms
+  // 最近一次未 zoom 的 pane 几何（zoom 中邻接导航的基准，见 onPanes 订阅处注释）
+  const unzoomedGeoms = useRef<Record<string, PaneGeom[]>>({})
   const activePanesRef = useRef(activePanes)
   activePanesRef.current = activePanes
   // pane termId → 所属 tabId（paneGeoms 反查；兜底期 pane 不在表里，回退 tab
@@ -337,6 +339,10 @@ export default function App() {
     // pane 布局权威推送（split/resize/pane 死亡塌缩后的 %layout-change 对账）
     const offPanes = api.onPanes((tabId, panes) => {
       setPaneGeoms((prev) => ({ ...prev, [tabId]: panes }))
+      // 未 zoom 的几何快照：zoom 态下 paneGeoms 是满铺值（邻接导航判定失效），
+      // Ctrl+Alt+方向导航换用快照算目标。zoomed pane 自身的原几何无从恢复，
+      // 快照缺失时（恢复即 zoom 的边角）导航静默无动作，退出放大后自然补齐
+      if (!panes.some((p) => p.zoomed)) unzoomedGeoms.current[tabId] = panes
     })
     const offExit = api.onExit((id) => {
       // pane 级退出语义分叉：id 是 pane 的 termId。非首 pane 死 → 即刻从布局
@@ -461,8 +467,14 @@ export default function App() {
   // 与当前 pane 重叠且右边缘贴到当前左侧的最近 pane，其余方向对称
   const cyclePane = (dir: 'left' | 'right' | 'up' | 'down') => {
     const tabId = activeRef.current
-    const panes = paneGeomsRef.current[tabId]
+    let panes = paneGeomsRef.current[tabId]
     if (!tabId || !panes || panes.length < 2) return
+    // zoom 态下几何是满铺值（邻接判定永远落空），换用最近一次未 zoom 的快照；
+    // 命中目标后 focusPane 的 select-pane 会让 tmux 自动退出放大（实测 3.2a）
+    if (panes.some((p) => p.zoomed)) {
+      panes = unzoomedGeoms.current[tabId] ?? []
+      if (panes.length < 2) return
+    }
     const cur = panes.find((p) => p.id === activePaneOf(tabId))
     if (!cur) return
     let best: PaneGeom | undefined
@@ -481,6 +493,17 @@ export default function App() {
       }
     }
     if (best) focusPane(best.id)
+  }
+
+  // Ctrl+Shift+Enter 放大/还原当前 pane（tmux resize-pane -Z 的 toggle）：几何
+  // 变化经 term:panes 权威推送回摆，焦点留在原 pane（zoom 的正是它）。单 pane
+  // 无意义不动作；zoom 态随 tmux 会话存活，恢复免费
+  const zoomToggle = () => {
+    const tabId = activeRef.current
+    const panes = tabId ? paneGeomsRef.current[tabId] : undefined
+    const cur = tabId ? activePaneOf(tabId) : ''
+    if (!tabId || !cur || !panes || panes.length < 2) return
+    api.zoomPane(cur)
   }
 
   // 重拉 profile 列表：主进程每次 list 都重探 PATH（并补齐新装的内建 shell），
@@ -597,6 +620,7 @@ export default function App() {
       delete next2[id]
       return next2
     })
+    delete unzoomedGeoms.current[id]
     setActivePanes((prev) => {
       if (!(id in prev)) return prev
       const next2 = { ...prev }
@@ -881,9 +905,15 @@ export default function App() {
         }
       } else if (e.ctrlKey && e.shiftKey && (k === 'd' || k === 'e')) {
         // 分屏（iTerm 惯例）：D 左右 / E 上下。Ctrl+Shift+D/E 不在 xterm 键位表
-        // （Ctrl+D 的 EOF 认领不带 Shift），window 层单通路覆盖终端聚焦/失焦
+        //（Ctrl+D 的 EOF 认领不带 Shift），window 层单通路覆盖终端聚焦/失焦
         e.preventDefault()
         void doSplit(k === 'd' ? 'h' : 'v')
+      } else if (e.ctrlKey && e.shiftKey && k === 'enter') {
+        // 窗格放大/还原的兜底通路：终端聚焦时 Enter 族被 xterm 键位表认领
+        //（TermView 的 customKeyEventHandler 拦截后走同一 zoomToggle），这里
+        // 覆盖焦点不在终端时的情况
+        e.preventDefault()
+        zoomToggle()
       } else if (e.ctrlKey && e.altKey && !e.shiftKey && (e.key.startsWith('Arrow') || (e.keyCode >= 37 && e.keyCode <= 40))) {
         // pane 导航的兜底通路：焦点在终端内时 Ctrl+Alt+方向被 xterm 键位表认领，
         // 由 TermView 的 customKeyEventHandler 拦截后回调同一 cyclePane。合成输入
@@ -1048,6 +1078,7 @@ export default function App() {
               onCycleTab={cycleTab}
               onCyclePane={cyclePane}
               onPaneFocus={focusPane}
+              onZoomToggle={zoomToggle}
             />
           ))}
           {broadcastTargets > 1 && (
@@ -1151,6 +1182,18 @@ export default function App() {
               action: () => void doSplit('v')
             },
             {
+              key: 'term-zoom',
+              // 菜单打开时按当前 zoom 态翻转文案（toggle 语义）
+              label: (paneGeomsRef.current[activeRef.current] ?? []).some((p) => p.zoomed)
+                ? '退出窗格放大'
+                : '放大窗格',
+              shortcut: 'Ctrl+Shift+Enter',
+              icon: MaximizeIcon,
+              // 单 pane 满铺与放大无差别，不提供动作
+              disabled: (paneGeomsRef.current[activeRef.current]?.length ?? 1) < 2,
+              action: zoomToggle
+            },
+            {
               key: 'term-close-pane',
               label: '关闭窗格',
               shortcut: 'Ctrl+Shift+W',
@@ -1172,6 +1215,7 @@ export default function App() {
             settings,
             broadcastGroups,
             activePaneCount: paneGeoms[activeId]?.length ?? 1,
+            paneZoomed: (paneGeoms[activeId] ?? []).some((p) => p.zoomed),
             handlers: {
               newTab: (pid) => void newTab(pid),
               togglePin,
@@ -1185,7 +1229,8 @@ export default function App() {
               setTheme: (theme) => applySettings({ theme }),
               quitAll: () => api.quitAll(),
               splitPane: (dir) => void doSplit(dir),
-              closePane: () => closePane(resolveActiveTermId())
+              closePane: () => closePane(resolveActiveTermId()),
+              toggleZoomPane: zoomToggle
             }
           }), ...pluginCommands, ...hostSnap.commands]}
           activeTitle={tabs.find((t) => t.id === activeId)?.title ?? ''}

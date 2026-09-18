@@ -312,6 +312,10 @@ export interface PaneGeom {
   y: number
   cols: number
   rows: number
+  // 窗格放大态（resize-pane -Z）：只标在被放大的 pane 上（tmux 侧 window 级
+  // zoom 标志 ∩ 活跃 pane）。zoomed pane 的几何是满铺值（0,0,cols,rows = 窗口
+  // 总尺寸），其余 pane 保留原布局几何供退出放大时还原
+  zoomed?: boolean
 }
 
 // sessions.json 里单个标签的持久化形态：TermInfo 的超集（多 windowId 用于

@@ -376,6 +376,14 @@ is also how pane death is detected on tmux 3.2a, which has no pane-died notifica
 Splits therefore survive session keep-and-restore: the layout is rebuilt from tmux
 state on attach, panes included.
 
+`Ctrl+Shift+Enter` zooms the active pane to fill the whole tab (tmux `resize-pane -Z`);
+the same shortcut zooms back out — the layout is restored to the exact geometry it had
+before. The hidden panes stay alive with their buffers intact, and zoom state lives in
+the tmux server, so it survives session keep-and-restore too. Navigating away
+(`Ctrl+Alt+Arrow keys`), splitting, or closing the zoomed pane zooms out automatically
+(tmux semantics); a small badge in the corner reminds you that you are zoomed and how
+to leave.
+
 ## GPU rendering
 
 Terminals render through the WebGL renderer (`@xterm/addon-webgl`) by default —
@@ -583,6 +591,15 @@ npx electron out/main/index.js --e2e-splits --e2e-quit --no-sandbox
 ```
 
 ```bash
+# Pane-zoom regression: Ctrl+Shift+Enter toggle path (TermView interception),
+# full-tab geometry and input delivery, focus retention, zoom kept across tab
+# switches, exact layout restore on zoom-out, Ctrl+Alt+Arrow navigation
+# auto-unzooming (tmux select-pane semantics), closing the zoomed pane, single-pane
+# guard
+npx electron out/main/index.js --e2e-zoom --e2e-quit --no-sandbox
+```
+
+```bash
 # Profile runtime-refresh regression (self-contained env: isolated userData + an empty
 # "install dir" on PATH). Writing/removing a fake shell simulates install/uninstall;
 # asserts profiles:list re-probes on every call, the renderer re-fetches when the +
@@ -659,6 +676,8 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
 - `Ctrl+Shift+D` / `Ctrl+Shift+E` split the active pane side by side / stacked (iTerm
   convention, nests freely; see [Split panes](#split-panes))
 - `Ctrl+Alt+Arrow keys` move focus between panes of the active tab
+- `Ctrl+Shift+Enter` zoom the active pane to fill its tab; the same shortcut zooms out
+  (see [Split panes](#split-panes))
 - `Ctrl+,` toggle settings page (`Esc` or clicking a tab closes it)
 - Double-click a tab to rename (after a manual rename the shell-reported title no longer
   overrides it)
@@ -727,7 +746,9 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
       `%layout-change` + `list-panes` reconciliation, which doubles as pane-death
       detection on tmux 3.2a; splits survive session keep-and-restore, covered by
       `--e2e-splits` and the session two-phase suite)
-- [ ] Pane zoom (temporarily maximize a pane over its tab) — roadmap candidate
+- [x] Pane zoom (`Ctrl+Shift+Enter` toggles tmux `resize-pane -Z`; zoom state survives
+      session keep-and-restore; navigating/splitting/closing auto-unzooms, covered by
+      `--e2e-zoom`)
 - [x] AppImage and rpm package formats (deb / AppImage / rpm from one `npm run dist`)
 
 ## Notes

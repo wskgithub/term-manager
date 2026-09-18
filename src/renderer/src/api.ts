@@ -92,6 +92,8 @@ export interface Api {
   resizePane(id: string, cols: number, rows: number): void
   // 同步 tmux 侧 active pane（点击/键盘导航后）
   selectPane(id: string): void
+  // 窗格放大/还原（resize-pane -Z 的 toggle 语义）
+  zoomPane(id: string): void
   // 关闭单个 pane（window 里只剩它时降级为关标签）
   killPane(id: string): void
   // pane 布局权威推送（%layout-change → list-panes 对账后的几何清单）

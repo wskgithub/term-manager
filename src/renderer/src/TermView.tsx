@@ -38,6 +38,9 @@ interface Props {
   // Ctrl+Alt+方向键在 pane 间导航：同 Ctrl+Tab 的双通路模式（xterm 键位表认领
   // Ctrl+Alt+方向序列，window 层收不到），App 侧单 pane 时无动作
   onCyclePane: (dir: 'left' | 'right' | 'up' | 'down') => void
+  // Ctrl+Shift+Enter 放大/还原当前 pane：Enter 族被 xterm 键位表认领
+  //（Ctrl+Enter 映射 \n 且 cancel，window 层收不到），同上双通路模式
+  onZoomToggle: () => void
 }
 
 interface Thumb {
@@ -45,7 +48,7 @@ interface Thumb {
   height: number
 }
 
-export function TermView({ termId, fontFamily, fontSize, scheme, gpu, onTitle, onTerminal, onSearchAddon, onMetrics, onContextMenu, onInput, onCycleTab, onCyclePane }: Props) {
+export function TermView({ termId, fontFamily, fontSize, scheme, gpu, onTitle, onTerminal, onSearchAddon, onMetrics, onContextMenu, onInput, onCycleTab, onCyclePane, onZoomToggle }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -60,6 +63,8 @@ export function TermView({ termId, fontFamily, fontSize, scheme, gpu, onTitle, o
   cycleTabRef.current = onCycleTab
   const cyclePaneRef = useRef(onCyclePane)
   cyclePaneRef.current = onCyclePane
+  const zoomToggleRef = useRef(onZoomToggle)
+  zoomToggleRef.current = onZoomToggle
   // onMetrics 同理：PaneLayout 的 cell 估算要拿到最新回调
   const metricsRef = useRef(onMetrics)
   metricsRef.current = onMetrics
@@ -206,6 +211,22 @@ export function TermView({ termId, fontFamily, fontSize, scheme, gpu, onTitle, o
         ev.preventDefault()
         ev.stopPropagation()
         api.quitAll()
+        return false
+      }
+      // Ctrl+Shift+Enter 放大/还原当前 pane：Enter 在 xterm 键位表被认领
+      //（Ctrl+Enter 映射 \n 且 cancel），window 层兜底收不到，须在此拦截；
+      // stopPropagation 防与 App 的 window 层兜底双触发。裸 Ctrl+Enter（无
+      // Shift）不在拦截范围，shell 侧的自定义绑定原样直达
+      if (
+        ev.ctrlKey &&
+        ev.shiftKey &&
+        !ev.altKey &&
+        !ev.metaKey &&
+        (ev.key === 'Enter' || ev.code === 'Enter')
+      ) {
+        ev.preventDefault()
+        ev.stopPropagation()
+        zoomToggleRef.current()
         return false
       }
       if (!ev.ctrlKey && !ev.shiftKey) return true

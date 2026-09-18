@@ -470,19 +470,26 @@ export function setupE2E(ctx: E2ECtx): void {
   /** 全部终端 id（创建顺序，即 terms Map 的 key） */
   w.__e2eIds = () => [...ctx.terms.current.keys()]
 
-  /** 分屏布局快照（--e2e-splits）：可见 tab 的 pane 几何（DOM rect + xterm
-      cols/rows）、活跃标记与把手矩形（主进程据此派发合成 pointer 拖拽） */
+  /** 分屏布局快照（--e2e-splits/--e2e-zoom）：可见 tab 的 pane 几何（DOM rect +
+      xterm cols/rows）、活跃标记与把手矩形（主进程据此派发合成 pointer 拖拽）。
+      visible 按 offsetParent 判（display:none 的隐藏 pane——zoom 态/隐藏 tab——
+      为 false）；viewW/H 为容器尺寸（zoom 满铺断言的基准） */
   w.__e2eSplitState = () => {
     const view = document.querySelector<HTMLElement>('.tab-view:not([style*="none"])')
     const boxes = [...(view?.querySelectorAll<HTMLElement>('.pane-box') ?? [])]
     const grips = [...(view?.querySelectorAll<HTMLElement>('.pane-grip') ?? [])]
     return {
+      viewW: view?.clientWidth ?? 0,
+      viewH: view?.clientHeight ?? 0,
+      zoomBadge: !!view?.querySelector('.pane-zoom-badge'),
       panes: boxes.map((b) => {
         const id = b.dataset.paneId ?? ''
         const t = ctx.terms.current.get(id)
         return {
           id,
           active: b.classList.contains('active'),
+          visible: b.offsetParent !== null,
+          zoomed: b.dataset.zoomed === '1',
           left: b.offsetLeft,
           top: b.offsetTop,
           w: b.offsetWidth,

@@ -33,6 +33,7 @@ export interface PaletteHandlers {
   quitAll: () => void
   splitPane: (dir: 'h' | 'v') => void
   closePane: () => void
+  toggleZoomPane: () => void
 }
 
 export interface PaletteCtx {
@@ -44,6 +45,8 @@ export interface PaletteCtx {
   broadcastGroups: Set<string>
   /** 活跃 tab 的 pane 数（分屏命令的门控与上下文标记） */
   activePaneCount: number
+  /** 活跃 tab 是否有 pane 处于放大态（放大/退出放大命令的文案翻转） */
+  paneZoomed: boolean
   handlers: PaletteHandlers
 }
 
@@ -56,7 +59,7 @@ const THEME_NAMES: Record<AppSettings['theme'], string> = {
 /** 按当前状态构建全部命令：上下文相关项条件出现（在组才出移出/广播、
     广播命令随设置总开关门控、固定标签的关闭置灰、主题当前项置灰） */
 export function buildCommands(ctx: PaletteCtx): PaletteCommand[] {
-  const { tabs, groups, activeId, profiles, settings, broadcastGroups, activePaneCount, handlers: h } = ctx
+  const { tabs, groups, activeId, profiles, settings, broadcastGroups, activePaneCount, paneZoomed, handlers: h } = ctx
   const active = tabs.find((t) => t.id === activeId)
   const activeGroup = active?.groupId ? groups.find((g) => g.id === active.groupId) : undefined
 
@@ -104,6 +107,15 @@ export function buildCommands(ctx: PaletteCtx): PaletteCommand[] {
             hint: 'Ctrl+Shift+E',
             keywords: 'split pane down vertical',
             action: () => h.splitPane('v')
+          },
+          {
+            key: 'zoom-pane',
+            label: paneZoomed ? '退出窗格放大' : '放大当前窗格',
+            hint: 'Ctrl+Shift+Enter',
+            keywords: 'zoom maximize pane 放大窗格',
+            // 单 pane 满铺与放大无差别，不提供动作
+            disabled: activePaneCount < 2,
+            action: () => h.toggleZoomPane()
           },
           {
             key: 'close-pane',
