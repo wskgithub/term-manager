@@ -257,6 +257,16 @@ A complete, copyable example lives at [`docs/examples/code-plugin/`](docs/exampl
 the full API walkthrough, limits and debugging notes are in the
 [plugin development guide](docs/plugins.md).
 
+**Managing installed plugins** — Settings → *Plugins*: every installed plugin appears as
+a card (name, version, declarative / code-level type) with an **enable toggle** —
+disabling immediately removes all of its contributions (profiles, commands, themes) and
+destroys its sandbox frame; the state persists across restarts (`plugin-state.json`).
+Code-level plugins that declared network permissions list each origin with its granted
+state, plus a **re-ask** button that clears the stored decision and re-shows the
+approval dialog (deny keeps the plugin at zero network). The plugins directory path is
+shown with an open-directory button; folder add/remove remains the install/uninstall
+semantic.
+
 ## Session persistence
 
 Closing the window keeps the tmux sessions alive by default: running jobs (builds, ssh,
@@ -396,6 +406,7 @@ src/
     ├── fonts.ts     # font stack resolution (auto mode / CJK fallback)
     ├── pluginHost.ts # code-level plugin host (sandboxed iframes + postMessage RPC server / registries / event fan-out)
     ├── PluginPermissionModal.tsx # network-permission approval dialog (allow / deny, Esc = deny)
+    ├── PluginManager.tsx # settings "Plugins" section: cards with enable toggle + permission view/re-ask
     └── e2e.ts       # E2E driving hooks
 ```
 
@@ -551,8 +562,10 @@ npx electron out/main/index.js --e2e-plugins --e2e-quit --no-sandbox
 # the whole API surface, a syntax-error entry plugin, a declaration-only plugin).
 # Asserts entry field delivery, real script execution over tmplug://, dynamic palette
 # commands executing (tab created), event delivery, dynamic themes reaching the selects
-# and applying, CSP blocking connections (connect-src 'none'), and a broken script not
-# taking down the app or sibling plugins
+# and applying, CSP blocking connections (connect-src 'none'), a broken script not
+# taking down the app or sibling plugins, plus the management UI: settings-page plugin
+# cards, disable toggle tearing down frame + contributions (and restoring), and
+# permission re-ask tightening the frame CSP end-to-end
 npx electron out/main/index.js --e2e-code-plugins --e2e-quit --no-sandbox
 ```
 
@@ -641,6 +654,9 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
       declared in the manifest and approved by the user, while the app page CSP stays
       `connect-src 'none'`. `--e2e-code-plugins` covers isolation, permissions, CSP and
       unload end-to-end)
+- [x] Plugin management UI (settings page: per-plugin cards with an enable toggle that
+      tears down contributions + sandbox frame and persists across restarts, network
+      permission view with a re-ask button, open-plugins-directory)
 - [x] AppImage and rpm package formats (deb / AppImage / rpm from one `npm run dist`)
 
 ## Notes

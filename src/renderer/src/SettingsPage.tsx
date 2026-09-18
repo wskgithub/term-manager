@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, type AppSettings, type Profile, type ThemeDef } from './api'
+import { api, type AppSettings, type PluginInfo, type Profile, type ThemeDef } from './api'
+import { PluginManager } from './PluginManager'
 import { resolveFontStack } from './fonts'
 
 const FONT_SIZE_MIN = 8
@@ -11,7 +12,8 @@ const PREVIEW_GLYPHS = '\ue0b0\ue0b2 \uf015 \uf07b \u250c\u2500\u252c\u2500\u251
 
 const NAV_ITEMS = [
   { key: 'appearance', label: '外观' },
-  { key: 'terminal', label: '终端' }
+  { key: 'terminal', label: '终端' },
+  { key: 'plugins', label: '插件' }
 ] as const
 
 type SectionKey = (typeof NAV_ITEMS)[number]['key']
@@ -21,12 +23,25 @@ interface Props {
   profiles: Profile[]
   // 可选配色方案（App 持有，内建 + themes 目录自定义；设置页打开时 App 会重扫）
   themes: ThemeDef[]
+  // 插件信息（App 持有，含禁用态与权限决策状态），插件节的展示数据源
+  pluginInfos: PluginInfo[]
+  // 插件节动作（禁用/重批权限）后的回流刷新（= App 的 refreshProfiles：重拉
+  // profiles+plugins 并重挂/拆除代码帧）
+  onPluginsChanged: () => void
   onChange: (patch: Partial<AppSettings>) => void
   onClose: () => void
 }
 
-/** 设置页（外观 → 主题/配色/字体/字号；终端 → 默认终端），结构对齐 Windows Terminal，左侧导航便于后续扩展 */
-export function SettingsPage({ settings, profiles, themes, onChange, onClose }: Props) {
+/** 设置页（外观 → 主题/配色/字体/字号；终端 → 默认终端；插件 → 管理），结构对齐 Windows Terminal，左侧导航便于后续扩展 */
+export function SettingsPage({
+  settings,
+  profiles,
+  themes,
+  pluginInfos,
+  onPluginsChanged,
+  onChange,
+  onClose
+}: Props) {
   const [section, setSection] = useState<SectionKey>('appearance')
   const [fonts, setFonts] = useState<string[]>([])
   const [sizeDraft, setSizeDraft] = useState(String(settings.fontSize))
@@ -105,6 +120,7 @@ export function SettingsPage({ settings, profiles, themes, onChange, onClose }: 
             <div
               key={item.key}
               className={'settings-nav-item' + (section === item.key ? ' active' : '')}
+              data-key={`nav-${item.key}`}
               onClick={() => setSection(item.key)}
             >
               {item.label}
@@ -320,6 +336,11 @@ export function SettingsPage({ settings, profiles, themes, onChange, onClose }: 
                 关闭后可用 Ctrl+Shift+Q 一次性终结全部会话再退出
               </span>
             </div>
+          </div>
+        )}
+        {section === 'plugins' && (
+          <div className="settings-panel">
+            <PluginManager infos={pluginInfos} onChanged={onPluginsChanged} />
           </div>
         )}
       </div>

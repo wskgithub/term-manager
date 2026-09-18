@@ -1,9 +1,17 @@
 import { app } from 'electron'
 import { mkdirSync, readdirSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
-import type { PluginAction, PluginCommandDef, PluginInfo, Profile, ThemeDef } from '../shared/types'
+import type {
+  PluginAction,
+  PluginCommandDef,
+  PluginInfo,
+  PluginPermDecision,
+  Profile,
+  ThemeDef
+} from '../shared/types'
 import { parseThemeFile } from '../shared/themes'
 import { PluginPermStore, MAX_PLUGIN_CONNECT, validConnectOrigin } from './pluginPerms'
+import { PluginStateStore } from './pluginState'
 import { findOnPath, validProfile } from './profiles'
 
 export type { PluginInfo } from '../shared/types'
@@ -259,7 +267,11 @@ export class PluginRegistry {
   private plugins: LoadedPlugin[] = []
   // 权限决策存储（Tier 2）：list() 附带决策状态给渲染层弹批准框用。可选注入
   // 保持构造简单（测试/无决策场景传 undefined 即一切按未决策处理）
-  constructor(private readonly perms?: PluginPermStore) {}
+  // state：管理 UI 的禁用态（plugin-state.json），禁用的贡献过滤在这里收口
+  constructor(
+    private readonly perms?: PluginPermStore,
+    private readonly state?: PluginStateStore
+  ) {}
 
   load(): void {
     this.dir = join(app.getPath('userData'), 'plugins')
@@ -297,28 +309,48 @@ export class PluginRegistry {
 
   list(): PluginInfo[] {
     return this.plugins.map((p) => {
+      const disabled = this.state?.isDisabled(p.id) ?? false
       const info: PluginInfo = {
         id: p.id,
         name: p.name,
         version: p.version,
-        profiles: p.profiles,
-        commands: p.commands,
-        themes: p.themes,
-        entry: p.entry
+        // 禁用即贡献清空（渲染层 allProfiles/pluginCommands/themeDefs 三个消费点
+        // 自然脱落，无需各自特判）；entry/权限状态保留给设置页的插件卡片展示
+        profiles: disabled ? [] : p.profiles,
+        commands: disabled ? [] : p.commands,
+        themes: disabled ? [] : p.themes,
+        entry: p.entry,
+        ...(disabled ? { disabled: true } : {})
       }
       const declared = p.entry && p.permissions?.connect?.length ? p.permissions.connect : []
       if (p.entry && p.permissions?.connect?.length) {
         info.permissions = { connect: declared }
-        // 决策状态只对带 entry 的插件附带：纯声明式插件没有代码，网络声明无意义
-        info.permDecision = { hosts: declared, decided: this.perms?.isDecided(p.id, declared) ?? false }
+        // 决策状态只对带 entry 的插件附带：纯声明式插件没有代码，网络声明无意义；
+        // granted 是实授权（∩ 当前声明），denied 是显式拒绝——设置页据此展示
+        const decided = this.perms?.isDecided(p.id, declared) ?? false
+        const perm: PluginPermDecision = {
+          hosts: declared,
+          granted: decided ? this.perms!.effectiveConnect(p.id, declared) : [],
+          decided
+        }
+        const d = this.perms?.get(p.id)
+        if (decided && d?.denied) perm.denied = true
+        info.permDecision = perm
       }
       return info
     })
   }
 
-  /** term:create 解析：渲染层只传「插件:局部」形式的全局 id，命令体永远不收 */
+  /** 插件根目录（load() 之后有效）：管理 UI「打开插件目录」用 */
+  rootDir(): string {
+    return this.dir
+  }
+
+  /** term:create 解析：渲染层只传「插件:局部」形式的全局 id，命令体永远不收。
+   *  禁用的插件贡献不下发，陈旧 UI 引用在这里兜底拒绝 */
   getProfile(id: string): Profile | undefined {
     for (const p of this.plugins) {
+      if (this.state?.isDisabled(p.id)) continue
       const hit = p.profiles.find((x) => x.id === id)
       if (hit) return hit
     }

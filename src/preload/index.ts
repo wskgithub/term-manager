@@ -23,6 +23,17 @@ const api = {
   // null = 拒绝。落盘后由渲染层重挂插件 iframe（新合成页的 CSP 才含授权）
   grantPluginPermission: (id: string, origins: string[] | null): Promise<void> =>
     ipcRenderer.invoke('plugins:grant-perm', id, origins),
+  // 管理 UI：禁用开关（禁用 = 贡献清空 + 代码帧拆除，plugin-state.json 持久化）
+  setPluginEnabled: (id: string, enabled: boolean): Promise<void> =>
+    ipcRenderer.invoke('plugins:set-enabled', id, enabled),
+  // 管理 UI：清除权限决策（「重新询问」），下次扫描重新弹批准框
+  resetPluginPermission: (id: string): Promise<void> =>
+    ipcRenderer.invoke('plugins:reset-perm', id),
+  // 管理 UI：在文件管理器打开插件根目录，返回 {path, error?}
+  openPluginsDir: (): Promise<{ path: string; error?: string }> =>
+    ipcRenderer.invoke('plugins:open-dir'),
+  // 管理 UI：插件根目录路径（纯查询，无副作用）
+  pluginsDirPath: (): Promise<string> => ipcRenderer.invoke('plugins:dir-path'),
   createTerm: (profileId: string, cwd?: string): Promise<TermInfo> =>
     ipcRenderer.invoke('term:create', profileId, cwd),
   cliReady: (): Promise<string[]> => ipcRenderer.invoke('cli:ready'),

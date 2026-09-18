@@ -219,6 +219,13 @@ API 面（v1；完整类型见 `src/shared/types.ts` 的 `TmScopedApi`）。隔�
 完整可拷贝示例见 [`docs/examples/code-plugin/`](docs/examples/code-plugin/)；
 API 逐组讲解、权限与 CSP 说明、上限总表与调试方法见[插件开发指南](docs/plugins.zh-CN.md)。
 
+**管理已安装的插件**——设置 → 插件：每个已装插件一张卡片（名称、版本、
+声明式/代码级类型）带**启用开关**——禁用即时移除其全部贡献（profile、命令、
+主题）并销毁沙箱帧，状态跨重启保留（`plugin-state.json`）。声明了网络权限的
+代码级插件逐条列出 origin 与授权状态，并有一个**重新询问**按钮：清除已存
+决策、重新弹批准框（拒绝即保持零网络）。插件目录路径旁有「打开目录」按钮；
+文件夹增删仍是安装/卸载的语义。
+
 ## Nautilus 右键集成
 
 文件管理器右键（目录上或目录空白处）有「在 Term Manager 中打开」：在该目录开一个标签。
@@ -258,6 +265,7 @@ src/
     ├── fonts.ts     # 字体栈解析（自动模式 / CJK 回退）
     ├── pluginHost.ts # 代码级插件宿主（沙箱 iframe + postMessage RPC 服务端/注册表/事件扇出）
     ├── PluginPermissionModal.tsx # 网络权限批准弹窗（允许/拒绝，Esc=拒绝）
+    ├── PluginManager.tsx # 设置页「插件」节：卡片（启用开关 + 权限查看/重新询问）
     └── e2e.ts       # E2E 驱动钩子
 ```
 
@@ -396,7 +404,9 @@ npx electron out/main/index.js --e2e-plugins --e2e-quit --no-sandbox
 # 代码级插件回归（环境自备：好插件 main.mjs 覆盖 API 全能力面 + 语法错误
 # entry 插件 + 纯声明插件）：断言 entry 下发、脚本经 tmplug:// 真实执行、
 # 动态命令进面板并可执行（建标签）、事件送达、动态主题进下拉并生效、
-# CSP 拦连接（connect-src 'none'）、坏脚本不拖累应用与兄弟插件
+# CSP 拦连接（connect-src 'none'）、坏脚本不拖累应用与兄弟插件；另有管理 UI
+# 断言：设置页插件卡片、禁用开关拆帧拆贡献并可恢复、重新询问权限后帧 CSP
+# 端到端收紧
 npx electron out/main/index.js --e2e-code-plugins --e2e-quit --no-sandbox
 ```
 
@@ -527,6 +537,8 @@ Esc 关闭并把焦点还给终端。覆盖四类命令：
       postMessage RPC 桥上的 `termManager` API——命令/动态主题/事件/标签控制/终端读写/状态栏；
       逐插件 CSP 默认零网络，manifest 声明 + 用户批准的 origin 才放行；应用本体 CSP `connect-src
       'none'` 技术强制，`--e2e-code-plugins` 覆盖隔离/权限/CSP/卸载全链路）
+- [x] 插件管理 UI（设置页：每插件一张卡片，启用开关即时拆除贡献与沙箱帧且跨重启保留，
+      网络权限查看 + 重新询问按钮，打开插件目录）
 - [x] AppImage 与 rpm 打包格式（一次 `npm run dist` 产出 deb / AppImage / rpm 三格式）
 
 ## 备注
