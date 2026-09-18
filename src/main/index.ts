@@ -915,6 +915,218 @@ async function runInputSequence(win: BrowserWindow): Promise<void> {
   }
 }
 
+// ── 终端查找回归（--e2e-search）：Ctrl+Shift+F 真实快捷键通路（sendInputEvent
+// 可信事件）开合与再聚焦、匹配计数与 Enter/Shift+Enter 跳转、匹配点埋进
+// scrollback 的滚动定位、大小写/正则开关、无匹配文案、Esc 关闭归还焦点（打字
+// 回到 shell）、重开预填上次查询词、开框期间 Ctrl+Tab 切标签重跑新终端、
+// 焦点不在终端（blur 到 body）时开框——window 单通路须覆盖 ──
+
+interface SearchBoxState {
+  open: boolean
+  value: string
+  counter: string
+  caseOn: boolean
+  wordOn: boolean
+  regexOn: boolean
+  inputFocused: boolean
+}
+
+async function runSearchSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string): Promise<T> =>
+    JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_SEARCH ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+  const outDir = argvFlag('--e2e-out') ?? join(app.getPath('userData'), 'e2e')
+  mkdirSync(outDir, { recursive: true })
+  const snap = async (name: string) => {
+    const img = await win.webContents.capturePage()
+    writeFileSync(join(outDir, `${name}.png`), img.toPNG())
+    console.log(`E2E_SNAP ${name}`)
+  }
+
+  await js('window.__e2eStart(2)')
+  await waitUntil(
+    async () =>
+      await json<boolean>('window.__e2e && window.__e2e.done && window.__e2e.created >= 2'),
+    60000
+  )
+  const ids = await json<string[]>('window.__e2eIds()')
+  const paneHas = (idx: number, sub: string) =>
+    json<boolean>(`window.__e2ePaneHas(${idx}, ${JSON.stringify(sub)})`)
+  const state = () => json<InputPaneState>('window.__e2eInputState()')
+  // 可见 pane 的视口滚动位置（scrollback 定位断言用；display:none 的 pane 被排除）
+  const vpScroll = () =>
+    json<number>(
+      `document.querySelector('.content > .term-pane:not([style*="none"]) .xterm-viewport')?.scrollTop ?? -1`
+    )
+
+  // 灌内容：tab0 两处匹配埋进 scrollback（162 行输出、视口在底部时两个匹配点
+  // 都在视口上方），tab1 一处匹配
+  await backend.write(
+    ids[0],
+    "clear; for i in $(seq 1 60); do echo \"filler-a-$i\"; done; echo 'SRCH alpha one'; for i in $(seq 1 60); do echo \"filler-b-$i\"; done; echo 'SRCH alpha two'; for i in $(seq 1 40); do echo \"filler-c-$i\"; done\r"
+  )
+  check('seed-tab0', await waitUntil(() => paneHas(0, 'SRCH alpha two'), 15000))
+  await backend.write(ids[1], "clear; echo 'SRCH beta one'; echo filler-x\r")
+  check('seed-tab1', await waitUntil(() => paneHas(1, 'SRCH beta one'), 15000))
+
+  // __e2eStart 的最后建标签成为活跃标签（空提示符），先把标签 0（有内容）
+  // 点成活跃：查找框作用于活跃终端，后续断言都以 pane 0 为对象
+  const tabRect = await json<{ x: number; y: number; width: number; height: number }>(
+    'document.querySelectorAll(".tab")[0].getBoundingClientRect()'
+  )
+  win.webContents.sendInputEvent({
+    type: 'mouseDown',
+    x: Math.round(tabRect.x + tabRect.width / 2),
+    y: Math.round(tabRect.y + tabRect.height / 2),
+    button: 'left',
+    clickCount: 1
+  })
+  win.webContents.sendInputEvent({
+    type: 'mouseUp',
+    x: Math.round(tabRect.x + tabRect.width / 2),
+    y: Math.round(tabRect.y + tabRect.height / 2),
+    button: 'left',
+    clickCount: 1
+  })
+  check(
+    'activate-tab0',
+    await waitUntil(async () => (await state()).visible === 0, 6000)
+  )
+
+  // 1) Ctrl+Shift+F 开框：焦点本在终端（启动自动聚焦），输入框抢焦点
+  await pressKey(win, 'F', ['ctrl', 'shift'])
+  await delay(300)
+  let st = await json<SearchBoxState>('window.__e2eSearchState()')
+  check('hotkey-open', st.open && st.inputFocused, JSON.stringify(st))
+
+  // 2) 查询计数（初始 findNext 落在首个匹配，1-based 计数显示）
+  st = await js<SearchBoxState>('window.__e2eSearchInput("SRCH alpha")')
+  check('query-count', st.counter === '1/2', JSON.stringify(st))
+  await snap('01-search-open')
+
+  // 3) Enter 下一个 / Shift+Enter 上一个
+  await pressKey(win, 'Enter')
+  await delay(300)
+  st = await json<SearchBoxState>('window.__e2eSearchState()')
+  check('enter-next', st.counter === '2/2', st.counter)
+  await pressKey(win, 'Enter', ['shift'])
+  await delay(300)
+  st = await json<SearchBoxState>('window.__e2eSearchState()')
+  check('shift-enter-prev', st.counter === '1/2', st.counter)
+
+  // 4) scrollback 定位：匹配点在视口上方，滚动位置应大幅非零且两次导航落点不同
+  const scroll1 = await vpScroll()
+  check('scrollback-jump', scroll1 > 50, String(scroll1))
+  await pressKey(win, 'Enter')
+  await delay(300)
+  const scroll2 = await vpScroll()
+  check('nav-scroll-moves', Math.abs(scroll2 - scroll1) > 5, `${scroll1} -> ${scroll2}`)
+
+  // 5) 大小写开关：默认不区分（小写查大写内容命中 2 处）。断言只看计数不看
+  //    活跃下标：换词后 addon 从当前选区锚定续搜，索引跟随先前位置非恒为 1
+  st = await js<SearchBoxState>('window.__e2eSearchInput("srch alpha")')
+  check('case-insensitive', st.counter.endsWith('/2'), st.counter)
+  st = await js<SearchBoxState>('window.__e2eSearchClick("search-case")')
+  check('case-sensitive', st.caseOn && st.counter === '无匹配', JSON.stringify(st))
+  st = await js<SearchBoxState>('window.__e2eSearchClick("search-case")')
+
+  // 6) 正则开关：分组表达式命中（字面量形态则必不中，可区分正则真的生效）
+  st = await js<SearchBoxState>('window.__e2eSearchClick("search-regex")')
+  check('regex-on', st.regexOn, JSON.stringify(st))
+  st = await js<SearchBoxState>('window.__e2eSearchInput("SRCH alpha (one|two)")')
+  check('regex-count', st.counter.endsWith('/2'), JSON.stringify(st))
+  st = await js<SearchBoxState>('window.__e2eSearchClick("search-regex")')
+
+  // 7) 无匹配文案
+  st = await js<SearchBoxState>('window.__e2eSearchInput("zzz-qqq-nomatch")')
+  check('no-match', st.counter === '无匹配', st.counter)
+
+  // 8) Esc 关闭：框消亡、焦点归还终端、打字回到 shell（查找框不再截获键盘）
+  await pressKey(win, 'Escape')
+  await delay(300)
+  st = await json<SearchBoxState>('window.__e2eSearchState()')
+  const inputSt = await state()
+  check(
+    'esc-close-focus',
+    !st.open && inputSt.ae.includes('xterm-helper-textarea'),
+    JSON.stringify({ box: st, input: inputSt })
+  )
+  // 标记避开 srch 字样：大小写不敏感的后续查询不该把它数进来
+  await typeChars(win, 'typemk')
+  await pressKey(win, 'Enter')
+  check('focus-return-type', await waitUntil(() => paneHas(0, 'typemk'), 6000))
+
+  // 9) 重开预填上次查询词且聚焦
+  await pressKey(win, 'F', ['ctrl', 'shift'])
+  await delay(300)
+  st = await json<SearchBoxState>('window.__e2eSearchState()')
+  check(
+    'reopen-persist',
+    st.open && st.value === 'zzz-qqq-nomatch' && st.inputFocused,
+    JSON.stringify(st)
+  )
+
+  // 10) 开框期间 Ctrl+Tab 切标签：搜索在标签 1 重跑（其缓冲区只有一处 SRCH）；
+  //     标签 0 侧同样只看计数（选区锚定，活跃下标不定）
+  st = await js<SearchBoxState>('window.__e2eSearchInput("SRCH")')
+  check('query-tab0', st.counter.endsWith('/2'), st.counter)
+  await pressKey(win, 'Tab', ['ctrl'])
+  await delay(500)
+  check('switch-visible', (await state()).visible === 1)
+  st = await json<SearchBoxState>('window.__e2eSearchState()')
+  check('switch-tab-rerun', st.counter === '1/1', JSON.stringify(st))
+  await snap('02-search-switched')
+
+  // 11) 焦点已随切标签回终端，再按 Ctrl+Shift+F 应收回输入框（而非翻关）
+  await pressKey(win, 'F', ['ctrl', 'shift'])
+  await delay(300)
+  st = await json<SearchBoxState>('window.__e2eSearchState()')
+  check('hotkey-refocus', st.open && st.inputFocused, JSON.stringify(st))
+
+  // 12) 焦点不在终端（blur 到 body）时开框：window 单通路覆盖两种焦点情况
+  await pressKey(win, 'Escape')
+  await delay(300)
+  await js('document.activeElement && document.activeElement.blur()')
+  await delay(200)
+  const blurred = await state()
+  await pressKey(win, 'F', ['ctrl', 'shift'])
+  await delay(300)
+  st = await json<SearchBoxState>('window.__e2eSearchState()')
+  check(
+    'hotkey-unfocused',
+    !blurred.ae.includes('xterm') && st.open && st.inputFocused,
+    JSON.stringify({ blurred: blurred.ae, box: st })
+  )
+
+  // 13) 框开期间键盘落输入框不落 shell（焦点在输入框，char 事件不进终端）
+  st = await js<SearchBoxState>('window.__e2eSearchInput("SRCH beta")')
+  await typeChars(win, 'noleak')
+  await delay(400)
+  st = await json<SearchBoxState>('window.__e2eSearchState()')
+  check(
+    'input-no-leak',
+    st.value === 'SRCH betanoleak' && !(await waitUntil(() => paneHas(1, 'noleak'), 800)),
+    JSON.stringify(st)
+  )
+
+  // 收尾：Esc 关闭归还焦点
+  await pressKey(win, 'Escape')
+  await delay(300)
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_SEARCH_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  if (argvHas('--e2e-quit')) {
+    await backend.dispose()
+    app.exit(allOk ? 0 : 1)
+  }
+}
+
 // ── 分组侧栏回归（--e2e-sidebar）：真实 DOM 链路覆盖开关三条通路（标签栏按钮/
 // 侧栏✕/Ctrl+Shift+B）、树结构与标签数组一致性、菜单建组/移入/改名、树内拖拽
 // 入组/出组/同父重排（合成 DragEvent）、折叠、点选激活+焦点跟随、开关侧栏的
@@ -3148,6 +3360,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
           argvHas('--e2e-input') ||
           argvHas('--e2e-sidebar') ||
           argvHas('--e2e-palette') ||
+          argvHas('--e2e-search') ||
           profileRefreshE2E ||
           themesE2E ||
           pluginsE2E ||
@@ -3156,7 +3369,10 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
         mainWindow
       ) {
         const n =
-          argvHas('--e2e-input') || argvHas('--e2e-sidebar') || argvHas('--e2e-palette')
+          argvHas('--e2e-input') ||
+          argvHas('--e2e-sidebar') ||
+          argvHas('--e2e-palette') ||
+          argvHas('--e2e-search')
             ? 2
             : Math.max(1, Number(e2eTabs) || 20)
         const win = mainWindow
@@ -3166,6 +3382,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
               await started
               if (argvHas('--e2e-input')) await runInputSequence(win)
               else if (argvHas('--e2e-sidebar')) await runSidebarSequence(win)
+              else if (argvHas('--e2e-search')) await runSearchSequence(win)
               else if (argvHas('--e2e-palette')) await runPaletteSequence(win)
               else if (profileRefreshE2E) await runProfileRefreshSequence(win)
               else if (themesE2E) await runThemesSequence(win)

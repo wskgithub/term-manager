@@ -565,4 +565,43 @@ export function setupE2E(ctx: E2ECtx): void {
     el.click()
     return new Promise((resolve) => setTimeout(() => resolve(paletteState()), 120))
   }
+
+  // ── 终端查找回归（--e2e-search）：开合由主进程注入 Ctrl+Shift+F（真实快捷键
+  //    通路），这里只做框内驱动与状态快照（palette 同款 DOM 驱动惯例） ──
+
+  /** 查找框状态快照（读 DOM）：open/value/counter/三开关 on 态/输入框焦点 */
+  const searchState = () => {
+    const root = document.querySelector<HTMLElement>('.term-search')
+    return {
+      open: !!root,
+      value: root?.querySelector<HTMLInputElement>('.term-search-input')?.value ?? '',
+      counter: root?.querySelector('.term-search-counter')?.textContent ?? '',
+      caseOn: root?.querySelector('[data-key="search-case"]')?.classList.contains('on') ?? false,
+      wordOn: root?.querySelector('[data-key="search-word"]')?.classList.contains('on') ?? false,
+      regexOn: root?.querySelector('[data-key="search-regex"]')?.classList.contains('on') ?? false,
+      inputFocused:
+        (document.activeElement as HTMLElement | null)?.classList?.contains('term-search-input') ??
+        false,
+    }
+  }
+  w.__e2eSearchState = searchState
+
+  /** 查找词受控填入（原生 setter + input 事件）；组件防抖 150ms + 搜索同步
+      执行，400ms 后回快照（计数经 onDidChangeResults 已落 DOM） */
+  w.__e2eSearchInput = (text: string) => {
+    const input = document.querySelector<HTMLInputElement>('.term-search .term-search-input')
+    if (!input) return Promise.resolve(searchState())
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    setter?.call(input, text)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    return new Promise((resolve) => setTimeout(() => resolve(searchState()), 400))
+  }
+
+  /** 点击查找框内按钮（三开关/跳转/关闭，真实 onClick 链路） */
+  w.__e2eSearchClick = (key: string) => {
+    const el = document.querySelector<HTMLElement>(`.term-search [data-key="${key}"]`)
+    if (!el) return Promise.resolve(searchState())
+    el.click()
+    return new Promise((resolve) => setTimeout(() => resolve(searchState()), 400))
+  }
 }

@@ -343,6 +343,21 @@ Every command maps onto existing app callbacks (no new IPC or data flow);
 context-sensitive entries appear and flip with state (e.g. "leave group" only exists
 inside a group; close grays out once pinned).
 
+## Terminal search
+
+`Ctrl+Shift+F` opens a find bar for the active terminal's buffer — scrollback included,
+not just the visible screen. Type to search as you go: every match is highlighted, the
+active one stronger, with an `i/n` counter. `Enter` / `Shift+Enter` jump to the next /
+previous match (the viewport scrolls into scrollback as needed), `Esc` closes and hands
+focus back to the terminal. Three toggles cover case-sensitive, whole-word and regex
+matching. While the bar is open it always acts on the *active* tab: switching tabs with
+`Ctrl+Tab` re-runs the search on the new terminal; reopening later pre-fills the last
+query.
+
+The shortcut is deliberately `Ctrl+Shift+F` (terminal-emulator convention: GNOME
+Terminal, Konsole), not `Ctrl+F` — plain `Ctrl+F` is the readline forward-char binding
+and keeps reaching the shell untouched.
+
 ## GPU rendering
 
 Terminals render through the WebGL renderer (`@xterm/addon-webgl`) by default —
@@ -402,6 +417,7 @@ src/
     ├── menus.tsx    # shared tab/group context-menu builders (data-key is the e2e selector)
     ├── segs.ts      # tab-list segmentation (consecutive same-group runs), shared view model
     ├── TermView.tsx # xterm instances (single-point output dispatch, adaptive sizing, font settings)
+    ├── TermSearch.tsx # terminal find bar (Ctrl+Shift+F: decorations, counter, case/word/regex toggles)
     ├── SettingsPage.tsx # settings page (appearance → font/size + preview; terminal → defaults)
     ├── fonts.ts     # font stack resolution (auto mode / CJK fallback)
     ├── pluginHost.ts # code-level plugin host (sandboxed iframes + postMessage RPC server / registries / event fan-out)
@@ -529,6 +545,15 @@ npx electron out/main/index.js --e2e-palette --e2e-quit --no-sandbox
 ```
 
 ```bash
+# Terminal search regression: Ctrl+Shift+F through the real input pipeline (terminal
+# focused, focus elsewhere, refocus-while-open), match counter and Enter/Shift+Enter
+# navigation, matches seeded into scrollback with viewport jumps, case/regex toggles,
+# no-match wording, Esc close with focus returned to the shell, last-query prefill on
+# reopen, re-run on Ctrl+Tab while the bar is open, typing never leaks into the shell
+npx electron out/main/index.js --e2e-search --e2e-quit --no-sandbox
+```
+
+```bash
 # Profile runtime-refresh regression (self-contained env: isolated userData + an empty
 # "install dir" on PATH). Writing/removing a fake shell simulates install/uninstall;
 # asserts profiles:list re-probes on every call, the renderer re-fetches when the +
@@ -599,6 +624,8 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
 - `Ctrl+Shift+Q` quit and terminate all sessions (the tmux server and its shells end)
 - `Ctrl+Shift+B` toggle the group sidebar (works whether focus is in a terminal or not)
 - `Ctrl+Shift+P` toggle the command palette (same; see [Command palette](#command-palette))
+- `Ctrl+Shift+F` terminal buffer search, scrollback included (see
+  [Terminal search](#terminal-search))
 - `Ctrl+,` toggle settings page (`Esc` or clicking a tab closes it)
 - Double-click a tab to rename (after a manual rename the shell-reported title no longer
   overrides it)
@@ -657,6 +684,10 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
 - [x] Plugin management UI (settings page: per-plugin cards with an enable toggle that
       tears down contributions + sandbox frame and persists across restarts, network
       permission view with a re-ask button, open-plugins-directory)
+- [x] Terminal buffer search (`Ctrl+Shift+F`: scrollback included, all-match
+      decorations with an `i/n` counter, Enter/Shift+Enter navigation, case/whole-word/
+      regex toggles, re-runs on tab switch, `--e2e-search` covers the shortcut paths
+      end-to-end)
 - [x] AppImage and rpm package formats (deb / AppImage / rpm from one `npm run dist`)
 
 ## Notes

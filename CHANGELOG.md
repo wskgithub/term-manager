@@ -7,6 +7,14 @@ All notable changes to Term Manager are documented in this file.
 
 ### English
 
+- **Terminal buffer search** (`Ctrl+Shift+F`): a find bar for the active terminal's
+  buffer, scrollback included. All matches are highlighted (decoration layer) with an
+  `i/n` counter; `Enter` / `Shift+Enter` jump between matches, `Esc` closes and returns
+  focus to the terminal. Case-sensitive, whole-word and regex toggles; re-runs on the
+  new terminal when switching tabs while open; remembers the last query. The shortcut
+  deliberately avoids `Ctrl+F` so the readline forward-char binding keeps reaching the
+  shell. Covered end-to-end by the new `--e2e-search` suite (23 assertions, including
+  both shortcut paths, scrollback jumps and the focus hand-back).
 - **Plugin management UI** (Settings → *Plugins*): every installed plugin appears as a
   card (name, version, declarative / code-level type) with an **enable toggle** —
   disabling immediately removes all of its contributions (profiles, commands, themes)
@@ -21,6 +29,12 @@ All notable changes to Term Manager are documented in this file.
 
 ### 中文
 
+- **终端缓冲区搜索**（`Ctrl+Shift+F`）：针对当前终端缓冲区的查找框，**含滚动回溯**。
+  全部匹配高亮（装饰层）并显示 `i/n` 计数；`Enter` / `Shift+Enter` 在匹配间跳转，
+  `Esc` 关闭并归还终端焦点。支持区分大小写、全字与正则三个开关；开框状态下切标签
+  即在新终端重跑；记住上次查询词。快捷键刻意避开 `Ctrl+F`，readline 的前移字符
+  绑定原样直达 shell。新增 `--e2e-search` 套件端到端覆盖（23 条断言：双快捷键通路、
+  回溯跳转与焦点归还等）。
 - **插件管理 UI**（设置 → 插件）：每个已装插件一张卡片（名称、版本、声明式/代码级
   类型）带**启用开关**——禁用即时移除其全部贡献（profile、命令、主题）并销毁沙箱帧，
   状态跨重启保留（`plugin-state.json`）。声明了网络权限的代码级插件逐条列出 origin
