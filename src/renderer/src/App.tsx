@@ -80,13 +80,16 @@ export default function App() {
     if (!prompts.length) return
     setPermPrompts((q) => [...q, ...prompts.filter((p) => !q.some((x) => x.id === p.id))])
   }
-  // 决策落盘（允许 = 授权声明的 origin；拒绝 = null）→ pluginHost 补挂帧 → 出队
+  // 决策落盘（允许 = 授权声明的 origin；拒绝 = null）→ pluginHost 补挂帧 → 出队；
+  // 再回流刷新一次（设置页插件卡的权限状态即时更新；对队列无副作用——已决策者
+  // 不会再产生 prompt，enqueue 去重兜底）
   const decidePerm = (allow: boolean) => {
     const p = permPrompts[0]
     if (!p) return
     void api.grantPluginPermission(p.id, allow ? p.hosts : null).then(() => {
       permissionDecided(p.id)
       setPermPrompts((q) => q.slice(1))
+      refreshProfiles()
     })
   }
   // 标签分组：UI 态由渲染层维护，经 session:sync 上报主进程随会话持久化（跨重启恢复）
@@ -851,6 +854,8 @@ export default function App() {
               settings={settings}
               profiles={allProfiles}
               themes={themeDefs}
+              pluginInfos={pluginInfos}
+              onPluginsChanged={refreshProfiles}
               onChange={applySettings}
               onClose={() => {
                 setSettingsOpen(false)

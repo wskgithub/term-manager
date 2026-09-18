@@ -64,6 +64,14 @@ export interface Api {
   listPlugins(): Promise<PluginInfo[]>
   // Tier 2 权限批准落盘（origins=null 表示拒绝）
   grantPluginPermission(id: string, origins: string[] | null): Promise<void>
+  // 管理 UI：禁用开关（禁用 = 贡献清空 + 代码帧拆除，plugin-state.json 持久化）
+  setPluginEnabled(id: string, enabled: boolean): Promise<void>
+  // 管理 UI：清除权限决策（「重新询问」），下次扫描重新弹批准框
+  resetPluginPermission(id: string): Promise<void>
+  // 管理 UI：在文件管理器打开插件根目录，返回 {path, error?}
+  openPluginsDir(): Promise<{ path: string; error?: string }>
+  // 管理 UI：插件根目录路径（纯查询，无副作用）
+  pluginsDirPath(): Promise<string>
   createTerm(profileId: string, cwd?: string): Promise<TermInfo>
   cliReady(): Promise<string[]>
   restoreSession(): Promise<RestoredSession | null>

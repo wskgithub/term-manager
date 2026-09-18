@@ -3,7 +3,32 @@
 All notable changes to Term Manager are documented in this file.
 本项目的所有重要变更都记录在此文件中。
 
-## Unreleased (0.2.0)
+## Unreleased
+
+### English
+
+- **Plugin management UI** (Settings → *Plugins*): every installed plugin appears as a
+  card (name, version, declarative / code-level type) with an **enable toggle** —
+  disabling immediately removes all of its contributions (profiles, commands, themes)
+  and destroys its sandbox frame; the state persists across restarts
+  (`plugin-state.json`). Code-level plugins that declared network permissions list each
+  origin with its granted state, plus a **re-ask** button that clears the stored
+  decision and re-shows the approval dialog (the frame is torn down first, so the CSP
+  of the rebuilt frame always matches the new decision). The plugins directory path is
+  shown with an open-directory button. `--e2e-code-plugins` grew six management
+  assertions (24 total) covering cards, disable/enable round-trips, declarative
+  contribution removal and CSP tightening after re-ask.
+
+### 中文
+
+- **插件管理 UI**（设置 → 插件）：每个已装插件一张卡片（名称、版本、声明式/代码级
+  类型）带**启用开关**——禁用即时移除其全部贡献（profile、命令、主题）并销毁沙箱帧，
+  状态跨重启保留（`plugin-state.json`）。声明了网络权限的代码级插件逐条列出 origin
+  与授权状态，并有**重新询问**按钮：清除已存决策、先拆帧再重弹批准框（重建帧的 CSP
+  恒与新决策一致）。插件目录路径旁有「打开目录」按钮。`--e2e-code-plugins` 新增六条
+  管理断言（共 24 条），覆盖卡片、禁用/启用往返、声明式贡献移除与重问后的 CSP 收紧。
+
+## 0.2.0 — 2026-09-17
 
 ### English
 

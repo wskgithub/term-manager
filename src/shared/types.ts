@@ -115,6 +115,10 @@ export interface PluginInfo {
   // 权限决策状态（仅带 entry 且声明了 connect 的插件附带）：decided=false 时
   // 渲染层先弹批准框，决策落盘后才挂 iframe（合成的 CSP 取已授权 ∩ 已声明）
   permDecision?: PluginPermDecision
+  // 管理 UI 的禁用态（主进程 plugin-state.json 持久化）：禁用 = 声明式贡献清空
+  // （profiles/commands/themes 置 []）+ 代码帧拆除（渲染层 loadCodePlugins 处理）；
+  // entry/permissions/permDecision 保留，设置页的插件卡片仍要展示它们
+  disabled?: boolean
 }
 
 // ── 代码级插件（L3 Tier 2：沙箱 iframe 隔离宿主）──
@@ -130,11 +134,15 @@ export interface PluginPermissions {
   connect?: string[]
 }
 
-// 权限决策状态：hosts 是当前 manifest 声明（已校验）的列表；decided 表示已存在
-// 针对该列表的决策（拒绝也算）。声明列表变更后 decided 回落 false，重新弹框
+// 权限决策状态：hosts 是当前 manifest 声明（已校验）的列表（弹窗「允许」的
+// 授权全集）；granted 是实授权（已授权 ∩ 当前声明，合成 CSP 的口径）；decided
+// 表示已存在针对该列表的决策（拒绝也算）。声明列表变更后 decided 回落 false，
+// 重新弹框。denied=true 表示用户明确拒绝过（granted 恒空）
 export interface PluginPermDecision {
   hosts: string[]
+  granted: string[]
   decided: boolean
+  denied?: boolean
 }
 
 // 插件可订阅的应用事件（负载按事件名不同）

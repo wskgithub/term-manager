@@ -475,9 +475,34 @@ export function loadCodePlugins(infos: PluginInfo[]): PluginPermPrompt[] {
   const present = new Set<string>()
   for (const info of infos) {
     present.add(info.id)
+    // 禁用（管理 UI）：已有帧/挂起一律拆除（语义等价卸载），也不产生权限
+    // 弹窗——重新启用后按正常流程走（未决策会再弹）
+    if (info.disabled) {
+      if (frames.has(info.id)) {
+        removeFrame(info.id)
+        teardown(info.id)
+      }
+      pendingFrames.delete(info.id)
+      continue
+    }
     if (!info.entry) continue
-    pluginMeta.set(info.id, { name: info.name, version: info.version })
     const version = info.version ?? ''
+    // 未决策（首次加载，或管理 UI「重新询问」清除了决策）：不允许存在运行中的
+    // 帧——已挂的先拆（旧帧 CSP 基于已被清除的授权，语义失效），决策落盘后由
+    // permissionDecided 以新 CSP 重建
+    if (info.permDecision && !info.permDecision.decided) {
+      if (frames.has(info.id)) {
+        removeFrame(info.id)
+        teardown(info.id)
+      }
+      pluginMeta.set(info.id, { name: info.name, version: info.version })
+      if (!pendingFrames.has(info.id)) {
+        pendingFrames.set(info.id, { entry: info.entry, version })
+        prompts.push({ id: info.id, name: info.name, hosts: info.permDecision.hosts })
+      }
+      continue
+    }
+    pluginMeta.set(info.id, { name: info.name, version: info.version })
     // 挂起期间决策被补挂过（或残留）：先清挂起态
     if (frames.has(info.id) && pendingFrames.has(info.id)) pendingFrames.delete(info.id)
     const existing = frames.get(info.id)
@@ -485,13 +510,6 @@ export function loadCodePlugins(infos: PluginInfo[]): PluginPermPrompt[] {
     if (existing) {
       removeFrame(info.id)
       teardown(info.id)
-    }
-    if (info.permDecision && !info.permDecision.decided) {
-      if (!pendingFrames.has(info.id)) {
-        pendingFrames.set(info.id, { entry: info.entry, version })
-        prompts.push({ id: info.id, name: info.name, hosts: info.permDecision.hosts })
-      }
-      continue
     }
     createFrame(info.id, info.entry, version)
   }

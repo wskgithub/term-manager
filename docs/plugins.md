@@ -79,10 +79,10 @@ That's a complete declarative plugin. To add code, see
 | How to install | Copy the folder (or `git clone` / symlink) there; the app creates the plugins directory automatically |
 | When does it take effect | Loaded at startup; afterwards **every open of the command palette / `+` menu / settings page rescans**, new plugins appear immediately |
 | How to uninstall | Delete the folder. Declarative contributions vanish on the next rescan; a code plugin's registrations (commands/themes/status-bar items/event & data subscriptions) are torn down **immediately** |
-| Is there an enable toggle | No — the folder existing is the whole truth. A management UI is a later-stage item |
+| Is there an enable toggle | Yes — Settings → *Plugins*: every plugin has a card with an enable toggle. Disabling is equivalent to a temporary uninstall (contributions removed, sandbox frame destroyed) and persists across restarts (`plugin-state.json`); the folder itself is untouched |
 | How to distribute | Git repo, zip, anything — this project deliberately ships no marketplace (see the end of the README “Declarative plugins” section) |
 
-Three semantics specific to code plugins:
+Four semantics specific to code plugins:
 
 - **Unloading actually unloads**: after you delete the plugin folder, everything it
   registered disappears immediately and the sandboxed iframe carrying it is destroyed
@@ -94,6 +94,10 @@ Three semantics specific to code plugins:
   an approval dialog on first load (allow / deny; Esc counts as deny); the decision
   persists and does not nag again — until the declared list changes. See
   [runtime model](#code-level-plugins-entry-and-runtime-model).
+- **Disabling and re-asking permissions happen in the settings page**: the plugin card
+  shows each declared origin with its granted state; the re-ask button clears the stored
+  decision (the frame is torn down and the approval dialog reappears — deny leaves the
+  plugin with zero network, and the frame CSP tightens accordingly).
 
 ## manifest.json field reference
 
@@ -525,9 +529,10 @@ The Tier 2 isolated-host trust model, in four sentences:
 
 - The palette shows at most 60 matching commands (may crowd out with many tabs — narrow
   the query) — existing interaction behavior;
-- no enable toggle / plugin management UI (folder add/remove is the entire semantics;
-  re-deciding permissions requires changing the declared list or hand-editing
-  `plugin-permissions.json`);
+- the management UI covers enable/disable and network-permission re-asking, but offers
+  no uninstall button (deleting the folder remains the uninstall semantic — the renderer
+  deliberately does no filesystem deletion) and no per-origin partial grants (the
+  approval dialog stays all-or-nothing over the declared list);
 - no plugin storage API (in-frame localStorage is isolated per plugin origin — enough
   for v1);
 - the permission vocabulary currently covers network `connect` only; local file reads,

@@ -120,6 +120,13 @@ export class PluginPermStore {
     this.save()
   }
 
+  /** 清除决策（管理 UI 的「重新询问」）：回到未决策态，下次扫描重新弹批准框 */
+  clear(id: string): void {
+    if (!this.grants.has(id)) return
+    this.grants.delete(id)
+    this.save()
+  }
+
   private serialize(): string {
     const out: GrantsFile = { version: 1, grants: Object.fromEntries(this.grants) }
     return JSON.stringify(out, null, 2)

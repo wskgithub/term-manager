@@ -12,6 +12,7 @@ import { SessionStore } from './session'
 import { ThemeRegistry } from './themes'
 import { PluginRegistry, validEntryPath } from './plugins'
 import { PluginPermStore } from './pluginPerms'
+import { PluginStateStore } from './pluginState'
 import { BRIDGE_BODY } from './tmplugBridge'
 import { TmuxBackend, sweepStaleServers, type TermInfo } from './tmux'
 import type { SessionTab, TabGroup } from '../shared/types'
@@ -22,7 +23,9 @@ const sessionStore = new SessionStore()
 const themes = new ThemeRegistry()
 // 权限决策存储先建（list() 要附决策状态），whenReady 里 load
 const pluginPerms = new PluginPermStore()
-const plugins = new PluginRegistry(pluginPerms)
+// 管理 UI 的禁用态存储（list() 的贡献过滤收口在这里）
+const pluginState = new PluginStateStore()
+const plugins = new PluginRegistry(pluginPerms, pluginState)
 // hub：主进程内分发终端事件（基准测试监听），同时转发给渲染进程
 const hub = new EventEmitter()
 hub.setMaxListeners(200)
@@ -378,6 +381,30 @@ function registerIpc(): void {
     if (!list.length) return
     pluginPerms.decide(id, declared, list)
   })
+
+  // 管理 UI：禁用开关（plugin-state.json 持久化，禁用即贡献清空+代码帧拆除）
+  ipcMain.handle('plugins:set-enabled', (_e, id: unknown, enabled: unknown) => {
+    if (typeof id !== 'string' || typeof enabled !== 'boolean') return
+    // 只对已扫描到的插件生效（不存在的 id 静默忽略，不落垃圾条目）
+    if (!plugins.getDir(id)) return
+    pluginState.setDisabled(id, !enabled)
+  })
+
+  // 管理 UI：清除权限决策（「重新询问」），下次扫描重新弹批准框
+  ipcMain.handle('plugins:reset-perm', (_e, id: unknown) => {
+    if (typeof id !== 'string') return
+    pluginPerms.clear(id)
+  })
+
+  // 管理 UI：在文件管理器里打开插件根目录（本地动作，零网络）
+  ipcMain.handle('plugins:open-dir', async () => {
+    const path = plugins.rootDir()
+    const error = await shell.openPath(path)
+    return { path, error: error || undefined }
+  })
+
+  // 管理 UI：插件根目录路径（纯查询，无副作用——设置页只展示不打开）
+  ipcMain.handle('plugins:dir-path', () => plugins.rootDir())
 
   ipcMain.handle('term:create', async (_e, profileId: string, cwd?: unknown) => {
     // 插件注入的 profile 同走此口：渲染层永远只传 id 引用（「插件:局部」），
@@ -2295,7 +2322,120 @@ async function runCodePluginsSequence(win: BrowserWindow): Promise<void> {
   )
   check('plugin-reloaded', back)
 
-  // 13) 还原设置并退出
+  // 13) 管理 UI（设置页此时是开着的——上一节留的）：切到「插件」节，卡片
+  //     列表 / 禁用开关（帧与贡献双拆）/ 权限查看与重新询问（弹窗重批→CSP 收紧）
+  await js("document.querySelector('[data-key=nav-plugins]')?.click()")
+  await delay(300)
+  const cards = (await json(`[...document.querySelectorAll('.plugin-card')].map((c) => ({
+    id: c.dataset.plugin,
+    type: c.querySelector('.plugin-badge')?.textContent ?? '',
+    unchecked: !c.querySelector('[data-plugin-enable]')?.checked,
+    granted: [...c.querySelectorAll('.plugin-perm-item')]
+      .filter((i) => i.querySelector('.plugin-perm-state')?.classList.contains('ok'))
+      .map((i) => i.querySelector('code')?.textContent ?? '')
+  }))`)) as Array<{ id: string; type: string; unchecked: boolean; granted: string[] }>
+  const listed =
+    cards.length === 5 &&
+    cards.find((c) => c.id === 'e2e-codegood')?.type === '代码级' &&
+    cards.find((c) => c.id === 'e2e-plain')?.type === '声明式' &&
+    (cards.find((c) => c.id === 'e2e-codenet')?.granted ?? []).includes(`http://127.0.0.1:${okPort}`) &&
+    (cards.find((c) => c.id === 'e2e-codenet2')?.granted ?? []).length === 0
+  check('mgmt-listed', listed, JSON.stringify(cards))
+  await snap('04-plugin-mgmt')
+
+  // 禁用 codegood：帧与注册物双拆（等价卸载），list 回包带 disabled 且贡献清空
+  await js("document.querySelector('[data-plugin-enable=e2e-codegood]')?.click()")
+  const off = await waitUntil(
+    async () =>
+      (await js<boolean>("!(document.querySelector('.statusbar')?.textContent ?? '').includes('CODE_SB')")) === true &&
+      frameFor('e2e-codegood') === undefined,
+    5000,
+    200
+  )
+  const offList = await js<Array<{ id: string; disabled?: boolean }>>('window.api.listPlugins()')
+  const cgOff = offList.find((p) => p.id === 'e2e-codegood')
+  // 禁用期间的状态文件快照（持久化实证，mgmt-state-file 一并断言）
+  let stateDuring: string[] = []
+  try {
+    stateDuring = (JSON.parse(readFileSync(join(CODE_UD, 'plugin-state.json'), 'utf-8')) as {
+      disabled: string[]
+    }).disabled
+  } catch {
+    stateDuring = []
+  }
+  check('mgmt-disable', off && cgOff?.disabled === true, JSON.stringify({ off, cgOff }))
+
+  // 重新启用：帧重建、注册物恢复
+  await js("document.querySelector('[data-plugin-enable=e2e-codegood]')?.click()")
+  const on = await waitUntil(
+    async () =>
+      (await js<boolean>("(document.querySelector('.statusbar')?.textContent ?? '').includes('CODE_SB')")) === true &&
+      frameFor('e2e-codegood') !== undefined,
+    5000,
+    200
+  )
+  check('mgmt-reenable', on)
+
+  // 声明式插件的禁用：贡献（profiles）清空下发，再启用恢复
+  await js("document.querySelector('[data-plugin-enable=e2e-plain]')?.click()")
+  const plainOff = await waitUntil(
+    async () =>
+      (await js<Array<{ id: string; profiles: unknown[] }>>('window.api.listPlugins()')).find(
+        (p) => p.id === 'e2e-plain'
+      )?.profiles.length === 0,
+    5000,
+    200
+  )
+  await js("document.querySelector('[data-plugin-enable=e2e-plain]')?.click()")
+  const plainOn = await waitUntil(
+    async () =>
+      ((await js<Array<{ id: string; profiles: unknown[] }>>('window.api.listPlugins()')).find(
+        (p) => p.id === 'e2e-plain'
+      )?.profiles.length ?? 0) > 0,
+    5000,
+    200
+  )
+  check('mgmt-declarative', plainOff && plainOn)
+
+  // 重新询问网络权限：清除决策 → 重扫即弹批准框（压在设置页上）→ 拒绝 →
+  // 帧重挂后 CSP 收紧（原本放行的 28123 变 blocked）
+  await js("document.querySelector('.plugin-card[data-plugin=e2e-codenet] [data-key=plugin-reset-perm]')?.click()")
+  const reask = await waitUntil(
+    async () => (await js<boolean>("!!document.querySelector('.perm-card')")) === true,
+    5000,
+    200
+  )
+  await snap('05-plugin-reask')
+  await js("document.querySelector('[data-key=perm-deny]')?.click()")
+  await waitUntil(async () => frameFor('e2e-codenet') !== undefined, 5000, 200)
+  await delay(300)
+  const netAfter = await fjs<string>('e2e-codenet', probe(okPort))
+  const deniedList = await js<
+    Array<{ id: string; permDecision?: { decided: boolean; denied?: boolean; granted: string[] } }>
+  >('window.api.listPlugins()')
+  const cnPerm = deniedList.find((p) => p.id === 'e2e-codenet')?.permDecision
+  check(
+    'mgmt-reset-perm',
+    reask && netAfter === 'blocked' && cnPerm?.decided === true && cnPerm?.denied === true && !cnPerm.granted.length,
+    JSON.stringify({ reask, netAfter, cnPerm })
+  )
+
+  // 状态文件：禁用期间含 codegood、恢复后清干净（全部启用）
+  let stateFinal: string[] = []
+  try {
+    stateFinal = (JSON.parse(readFileSync(join(CODE_UD, 'plugin-state.json'), 'utf-8')) as {
+      disabled: string[]
+    }).disabled
+  } catch {
+    stateFinal = []
+  }
+  check(
+    'mgmt-state-file',
+    stateDuring.includes('e2e-codegood') && !stateFinal.includes('e2e-codegood') && !stateFinal.includes('e2e-plain'),
+    JSON.stringify({ stateDuring, stateFinal })
+  )
+
+  // 14) 还原设置并退出
   await js('window.__e2eSettings(false)')
   const final = await js<{ theme: string; darkTheme: string; lightTheme: string }>(
     `window.api.setSettings({ theme: ${JSON.stringify(prevSettings.theme)}, darkTheme: ${JSON.stringify(
@@ -2945,6 +3085,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
     sessionStore.load()
     themes.load()
     pluginPerms.load()
+    pluginState.load()
     plugins.load()
     // 启动即按存档主题定向：dark/light 覆盖，system 交给系统偏好；
     // 必须在 createWindow 之前，窗口装饰（darkTheme）取的是此刻的有效值
