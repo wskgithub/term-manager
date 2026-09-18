@@ -5,15 +5,22 @@ import os from 'os'
 import { basename, join } from 'path'
 import { StringDecoder } from 'string_decoder'
 import type { Profile } from './profiles'
-import type { PersistedSession, TermInfo } from '../shared/types'
+import type { PaneGeom, PersistedSession, SplitDir, TermInfo } from '../shared/types'
 
 export type { TermInfo } from '../shared/types'
 
+// 标签 = 私有 socket 服务器里的一个 window（分屏后 window 内可有多个 pane）
 interface Tab {
   info: TermInfo
-  pane: string // %N
   window: string // @N
   alive: boolean
+}
+
+// pane 级记录：termId → 所属 tab 与 tmux pane。首个 pane 的 termId 恒等于
+// tabId（term:data / term:exit 通道的 id 语义就是 pane 级 termId，协议不变）
+interface PaneRec {
+  tabId: string
+  pane: string // %N
 }
 
 interface PendingCommand {
@@ -61,6 +68,8 @@ const CMD_TIMEOUT_MS = 8000
 const FLUSH_DEBOUNCE_MS = 5
 const FLUSH_CHUNK = 8 * 1024
 const RESIZE_DEBOUNCE_MS = 120
+// %layout-change 合并对账的防抖：拖拽与连锁重排会连发事件
+const PANE_SYNC_DEBOUNCE_MS = 150
 // 会话回放取的历史行数：对齐渲染层 xterm scrollback
 const REPLAY_LINES = 2000
 // 附着时等待目标 session 出现的轮询上限
@@ -112,13 +121,18 @@ export function sweepStaleServers(keepSocket?: string): void {
 
 /**
  * 基于 tmux Control Mode 的终端后端：
- * 每个"终端"= 私有 socket tmux 服务器里的一个窗口（单 pane），
- * 输出经 %output 事件流出，输入经 send-keys 写入，PTY 生命周期由 tmux 托管。
+ * 每个"标签"= 私有 socket tmux 服务器里的一个 window，分屏后 window 内可有
+ * 多个 pane（每个 pane 一个 termId，输出经 %output 事件流出、输入经 send-keys
+ * 写入），PTY 生命周期由 tmux 托管。pane 布局的唯一权威是 tmux server：
+ * 渲染层只上报 window 总尺寸（resize-window），pane 几何经 %layout-change
+ * 触发 list-panes 对账后以 term:panes 推送。
  */
 export class TmuxBackend {
   private proc: ChildProcessWithoutNullStreams | null = null
   private tabs = new Map<string, Tab>()
+  // %N → termId；paneRecords 是反向全表（termId → {tabId, pane}）
   private paneToTerm = new Map<string, string>()
+  private paneRecords = new Map<string, PaneRec>()
   private windowToTerm = new Map<string, string>()
   private pending: PendingCommand[] = []
   /** 行帧缓冲（字节级）：tmux 负载含未经转义的原样 UTF-8，先按 0x0A 分行再谈解码
@@ -131,7 +145,14 @@ export class TmuxBackend {
   private autoWindowKilled = false
   private inputBuffers = new Map<string, string>()
   private inputTimers = new Map<string, NodeJS.Timeout>()
+  // resize-window（window 总尺寸，键控任意 pane 的 termId）与 resize-pane
+  // （拖拽把手，键控目标 pane 的 termId）分表防抖——首 pane 的 termId == tabId，
+  // 两条通路可能同时指向它，混表会互相吞定时器
   private resizeTimers = new Map<string, NodeJS.Timeout>()
+  private paneResizeTimers = new Map<string, NodeJS.Timeout>()
+  // %layout-change → syncPanes 的合并防抖（window → timer）：拖拽/连锁重排会
+  // 连发多条 layout 事件，只需最后一次的权威几何
+  private paneSyncTimers = new Map<string, NodeJS.Timeout>()
   // \ek 标题序列跨 %output 事件分片时的残片缓存（pane id → 残片）
   private titleHold = new Map<string, string>()
   // %output 重组解码器（pane id → decoder）：tmux 可能把一个多字节字符按事件
@@ -345,12 +366,14 @@ export class TmuxBackend {
     return restored
   }
 
-  /** 登记一个恢复的标签并挂起回放等待渲染层取走 */
+  /** 登记一个恢复的标签（首 pane 挂起回放等待渲染层取走），并异步对账该 window 的全部 pane */
   private adopt(info: TermInfo, pane: string, window: string): void {
-    this.tabs.set(info.id, { info, pane, window, alive: true })
-    this.paneToTerm.set(pane, info.id)
+    this.tabs.set(info.id, { info, window, alive: true })
+    this.registerPane(info.id, info.id, pane)
     this.windowToTerm.set(window, info.id)
     this.replayPending.add(info.id)
+    // 多 pane 恢复：额外 pane 在此注册（新 termId），几何经 term:panes 推给渲染层
+    void this.syncPanes(window)
   }
 
   /** 杀掉指定 socket 的服务器并清残留 socket 文件（附着失败回落用） */
@@ -394,13 +417,13 @@ export class TmuxBackend {
    * 重复输出比丢失更扎眼，且此刻用户尚未输入）。
    */
   async takeReplay(id: string): Promise<string> {
-    const tab = this.tabs.get(id)
-    if (!tab || !this.replayPending.has(id)) return ''
+    const rec = this.paneRecords.get(id)
+    if (!rec || !this.replayPending.has(id)) return ''
     let text = ''
     try {
-      const cap = await this.send(`capture-pane -p -e -t ${tab.pane} -S -${REPLAY_LINES}`)
+      const cap = await this.send(`capture-pane -p -e -t ${rec.pane} -S -${REPLAY_LINES}`)
       text = cap.join('\r\n')
-      const pos = await this.send(`display-message -p -t ${tab.pane} '#{cursor_y} #{cursor_x} #{pane_height}'`)
+      const pos = await this.send(`display-message -p -t ${rec.pane} '#{cursor_y} #{cursor_x} #{pane_height}'`)
       const m = (pos[pos.length - 1] ?? '').trim().match(/^(\d+) (\d+) (\d+)$/)
       if (m) {
         const histRows = Math.max(0, cap.length - Number(m[3]))
@@ -413,13 +436,23 @@ export class TmuxBackend {
     return text
   }
 
-  /** 服务器不可用（退出/启动失败）：所有会话终结 */
+  /** 服务器不可用（退出/启动失败）：所有会话终结（每个 pane 各发一条 term:exit） */
   private onGone(): void {
     this.proc = null
     for (const [id, tab] of this.tabs) {
       if (tab.alive) {
         tab.alive = false
-        this.emit('term:exit', id, -1)
+        this.exitAllPanes(id, -1)
+      }
+    }
+  }
+
+  /** 一个 window 的全部 pane 各发 term:exit 并清理 pane 级状态（tab 级由 cleanupTab 收尾） */
+  private exitAllPanes(tabId: string, code: number): void {
+    for (const [pid, rec] of [...this.paneRecords]) {
+      if (rec.tabId === tabId) {
+        this.emit('term:exit', pid, code)
+        this.cleanupPane(pid)
       }
     }
   }
@@ -513,18 +546,28 @@ export class TmuxBackend {
         const tab = this.tabs.get(id)
         if (tab && tab.alive) {
           tab.alive = false
-          this.emit('term:exit', id, 0)
-          this.cleanup(id)
+          // 分屏后 window 死 = 其全部 pane 一起退出（渲染层按 id 判定：首 pane
+          // 保留[会话已退出]画面，其余 pane 即刻从布局除名）
+          this.exitAllPanes(id, 0)
+          this.cleanupTab(id)
         }
       } else if (!this.earlyWindowCloses.has(win)) {
         // 映射未建立（瞬逝命令的窗口先于回执关闭）：暂存，create() 补发退出。
         // 有界：未知窗口本就罕见，超限丢最旧
         if (this.earlyWindowCloses.size >= 32) {
           const oldest = this.earlyWindowCloses.values().next().value
-          if (oldest !== undefined) this.earlyWindowCloses.delete(oldest)
+          if (oldest !== undefined && oldest !== win) this.earlyWindowCloses.delete(oldest)
         }
         this.earlyWindowCloses.add(win)
       }
+      return
+    }
+    if (line.startsWith('%layout-change ')) {
+      // 布局变化（split/resize/pane 死亡塌缩）：schedulePaneSync 防抖合并后拿
+      // list-panes 权威几何对账——tmux 3.2a 没有 pane 死亡通知，几何 diff 是
+      // 唯一死亡检测通路
+      const win = line.slice('%layout-change '.length).split(' ')[0]
+      if (this.windowToTerm.has(win)) this.schedulePaneSync(win)
       return
     }
     // 回执块内的行都是命令输出（注意 pane id 形如 %N，也以 % 开头，不能当事件忽略）
@@ -571,30 +614,42 @@ export class TmuxBackend {
     this.send(line, false).catch(() => undefined)
   }
 
-  async create(profile: Profile, cwdOverride?: string): Promise<TermInfo> {
-    if (!this.proc) await this.start()
-
-    // 注意：不要在命令前加 `exec`（tmux 会经 /bin/sh -c "exec …" 包装执行，
-    // 该 execvp 包装在受限环境/沙箱会被误杀导致 pane 秒退）；直接把命令 token
-    // 交给 tmux（sh -c 直接执行），带参数时避免引号歧义即可。
-    // 关键：new-window 的 shell-command 只取余下的【第一个】tmux token——此前
-    // 把 command/args 逐个 shQuote 后平铺，tmux 只见首词、args 全部被静默丢弃
-    // （带参数的 profile 一直在裸跑首词，如 Docker Shell 实际执行的是裸 docker）。
-    // 正确拼装：argv 先各自 shQuote 保住 shell 层的词边界、join 成一条命令串，
-    // 再整段经 tmuxToken 作为【一个】tmux 参数传入（spike 实测 tmux 双引号串
-    // 原样交给 sh -c，pane_start_command 保留内层单引号）
+  /** profile 命令/环境的 tmux 参数拼装（new-window 与 split-window 共用）。
+      关键：shell-command 只取余下的【第一个】tmux token——argv 必须先各自
+      shQuote 保住 shell 层词边界、join 成一条命令串，再整段经 tmuxToken 作为
+      【一个】tmux 参数传入（spike 实测 tmux 双引号串原样交给 sh -c） */
+  private profileArgs(profile: Profile): { envArgs: string; cmdToken: string } {
     const cmdline = profile.command
       ? [shQuote(profile.command), ...(profile.args ?? []).map((a) => shQuote(a))].join(' ')
       : ''
     const envArgs = Object.entries(profile.env ?? {})
       .map(([k, v]) => `-e ${tmuxToken(`${k}=${v}`)}`)
       .join(' ')
+    return { envArgs, cmdToken: cmdline ? tmuxToken(cmdline) : '' }
+  }
+
+  /** 注册 pane 三表 + 冲刷早于注册到达的 %output（create/splitPane/syncPanes 接管共用） */
+  private registerPane(id: string, tabId: string, pane: string): void {
+    this.paneRecords.set(id, { tabId, pane })
+    this.paneToTerm.set(pane, id)
+    const early = this.earlyOutputs.get(pane)
+    if (early) {
+      this.earlyOutputs.delete(pane)
+      for (const p of early) this.emitOutput(pane, p)
+    }
+  }
+
+  async create(profile: Profile, cwdOverride?: string): Promise<TermInfo> {
+    if (!this.proc) await this.start()
+
+    // 注意：不要在命令前加 `exec`（tmux 会经 /bin/sh -c "exec …" 包装执行，
+    // 该 execvp 包装在受限环境/沙箱会被误杀导致 pane 秒退）；直接把命令 token
+    // 交给 tmux（sh -c 直接执行），带参数时避免引号歧义即可
+    const { envArgs, cmdToken } = this.profileArgs(profile)
     // cwdOverride 来自 CLI/文件管理器右键传入的目录，优先于 profile 自身的 cwd
     const cwd = cwdOverride || profile.cwd || os.homedir()
     const line =
-      `new-window -d -P -F '#{pane_id} #{window_id}' -c ${tmuxToken(cwd)} ${envArgs} ${
-        cmdline ? tmuxToken(cmdline) : ''
-      }`.trim()
+      `new-window -d -P -F '#{pane_id} #{window_id}' -c ${tmuxToken(cwd)} ${envArgs} ${cmdToken}`.trim()
     const reply = await this.send(line)
     const ids = (reply[reply.length - 1] ?? '').trim().split(/\s+/)
     const pane = ids[0]
@@ -610,31 +665,117 @@ export class TmuxBackend {
       title: cwdOverride ? basename(cwdOverride) : profile.name,
       color: profile.color
     }
-    this.tabs.set(id, { info, pane, window, alive: true })
-    this.paneToTerm.set(pane, id)
+    this.tabs.set(id, { info, window, alive: true })
+    this.registerPane(id, id, pane)
     this.windowToTerm.set(window, id)
 
-    // 冲刷早于回执到达的输出（原路走 emitOutput：解码、\ek 标题转换语义不变）；
-    // 若窗口在回执前就已关闭（瞬逝命令），按既有通知语义补发退出——渲染层的
-    // 早期缓冲会保证顺序（数据先落、退出消息随后）
-    const early = this.earlyOutputs.get(pane)
-    if (early) {
-      this.earlyOutputs.delete(pane)
-      for (const p of early) this.emitOutput(pane, p)
-    }
     if (this.earlyWindowCloses.delete(window)) {
+      // 窗口在回执前就已关闭（瞬逝命令）：按既有通知语义补发退出——渲染层的
+      // 早期缓冲会保证顺序（数据先落、退出消息随后）
       const tab = this.tabs.get(id)
       if (tab) tab.alive = false
-      this.emit('term:exit', id, 0)
-      this.cleanup(id)
+      this.exitAllPanes(id, 0)
+      this.cleanupTab(id)
     }
 
-    // 首个标签建成后再关自动窗口（此时会话仍有窗口，服务器不会退出）
+    // 首个标签建成后后再关自动窗口（此时会话仍有窗口，服务器不会退出）
     if (!this.autoWindowKilled && this.autoWindow.startsWith('@')) {
       this.autoWindowKilled = true
       this.fire(`kill-window -t ${this.autoWindow}`)
     }
+    void this.syncPanes(window)
     return info
+  }
+
+  /**
+   * 在 fromId 所在 pane 的右侧（h）或下方（v）分出新 pane：同 tab 的 profile
+   * 命令，cwd 继承源 pane 的实际工作目录（tmux 经 /proc 探测的
+   * pane_current_path，可能为空 → 回退 ~）。返回新 pane 的 termId。
+   */
+  async splitPane(tabId: string, fromId: string, dir: SplitDir, profile: Profile): Promise<string> {
+    const tab = this.tabs.get(tabId)
+    const from = this.paneRecords.get(fromId)
+    if (!tab?.alive || !from || from.tabId !== tabId) throw new Error('split: source pane not alive')
+    let cwd = ''
+    try {
+      const r = await this.send(`display-message -p -t ${from.pane} '#{pane_current_path}'`)
+      // format 产物不带换行；CR/LF 一并拒收（防御性，正常不会出现）
+      const p = (r[r.length - 1] ?? '').trim()
+      if (p && !p.includes('\n') && !p.includes('\r')) cwd = p
+    } catch {
+      // 探测失败走默认目录
+    }
+    const { envArgs, cmdToken } = this.profileArgs(profile)
+    const line =
+      `split-window -d ${dir === 'h' ? '-h ' : ''}-P -F '#{pane_id}' -t ${from.pane} -c ${tmuxToken(
+        cwd || os.homedir()
+      )} ${envArgs} ${cmdToken}`.trim()
+    const reply = await this.send(line)
+    const pane = (reply[reply.length - 1] ?? '').trim()
+    if (!pane.startsWith('%')) {
+      throw new Error(`tmux: unexpected split-window reply: ${reply.join(' | ')}`)
+    }
+    const id = randomUUID()
+    this.registerPane(id, tabId, pane)
+    // tmux 侧 active 同步到新 pane（渲染层的焦点切换是本地行为，不依赖回执）
+    this.fire(`select-pane -t ${pane}`)
+    void this.syncPanes(tab.window)
+    return id
+  }
+
+  /** %layout-change 的防抖入口：合并连发事件，只对账最后一次 */
+  private schedulePaneSync(window: string): void {
+    const prev = this.paneSyncTimers.get(window)
+    if (prev) clearTimeout(prev)
+    this.paneSyncTimers.set(
+      window,
+      setTimeout(() => {
+        this.paneSyncTimers.delete(window)
+        void this.syncPanes(window)
+      }, PANE_SYNC_DEBOUNCE_MS)
+    )
+  }
+
+  /**
+   * 拿 list-panes 的权威几何对账一个 window：未知 pane（外部 split、恢复流程的
+   * 额外 pane）接管注册；消失的 pane 判定死亡（tmux 3.2a 控制模式无 pane 死亡
+   * 通知，几何 diff 是唯一通路）发 term:exit；结果经 term:panes 推给渲染层。
+   */
+  private async syncPanes(window: string): Promise<void> {
+    const tabId = this.windowToTerm.get(window)
+    const tab = tabId ? this.tabs.get(tabId) : undefined
+    if (!tabId || !tab?.alive) return
+    let rows: string[]
+    try {
+      rows = await this.send(
+        `list-panes -t ${window} -F '#{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height}'`
+      )
+    } catch {
+      return // 服务器忙/将死：下次 %layout-change 再试
+    }
+    const seen = new Set<string>()
+    const geoms: PaneGeom[] = []
+    for (const row of rows) {
+      const m = row.trim().match(/^(%\d+) (\d+) (\d+) (\d+) (\d+)$/)
+      if (!m) continue
+      const pane = m[1]
+      seen.add(pane)
+      let id = this.paneToTerm.get(pane)
+      if (!id) {
+        // 未登记的 pane：接管为新 termId（输出经渲染层 earlyData 缓冲兜底挂载竞态）
+        id = randomUUID()
+        this.registerPane(id, tabId, pane)
+      }
+      geoms.push({ id, x: Number(m[2]), y: Number(m[3]), cols: Number(m[4]), rows: Number(m[5]) })
+    }
+    for (const [pid, rec] of [...this.paneRecords]) {
+      if (rec.tabId === tabId && !seen.has(rec.pane)) {
+        this.emit('term:exit', pid, 0)
+        this.cleanupPane(pid)
+      }
+    }
+    geoms.sort((a, b) => a.y - b.y || a.x - b.x)
+    this.emit('term:panes', tabId, geoms)
   }
 
   /**
@@ -673,8 +814,9 @@ export class TmuxBackend {
   }
 
   write(id: string, data: string): void {
-    const tab = this.tabs.get(id)
-    if (!tab?.alive) return
+    // id 是 pane 级 termId；tab 存活才能写
+    const rec = this.paneRecords.get(id)
+    if (!rec || !this.tabs.get(rec.tabId)?.alive) return
     const acc = (this.inputBuffers.get(id) ?? '') + data
     this.inputBuffers.set(id, acc)
     if (!this.inputTimers.has(id)) {
@@ -687,28 +829,30 @@ export class TmuxBackend {
 
   private flushInput(id: string): void {
     this.inputTimers.delete(id)
-    const tab = this.tabs.get(id)
+    const rec = this.paneRecords.get(id)
     const data = this.inputBuffers.get(id) ?? ''
     this.inputBuffers.delete(id)
-    if (!tab?.alive || !data) return
+    if (!rec || !this.tabs.get(rec.tabId)?.alive || !data) return
     // 按 CR/LF 切分：文本段字面量发送，分隔符转成 Enter 键
     const segments = data.split(/(\r\n|\r|\n)/)
     for (const seg of segments) {
       if (!seg) continue
       if (seg === '\r' || seg === '\n' || seg === '\r\n') {
-        this.fire(`send-keys -t ${tab.pane} Enter`)
+        this.fire(`send-keys -t ${rec.pane} Enter`)
       } else {
         // 大段输入切分为 ≤8KB 的命令行
         for (let i = 0; i < seg.length; i += FLUSH_CHUNK) {
           const piece = seg.slice(i, i + FLUSH_CHUNK)
-          this.fire(`send-keys -t ${tab.pane} -l ${tmuxToken(piece)}`)
+          this.fire(`send-keys -t ${rec.pane} -l ${tmuxToken(piece)}`)
         }
       }
     }
   }
 
+  /** window 总尺寸（渲染层布局容器上报；id 可以是该 window 任意 pane 的 termId） */
   resize(id: string, cols: number, rows: number): void {
-    const tab = this.tabs.get(id)
+    const rec = this.paneRecords.get(id)
+    const tab = rec ? this.tabs.get(rec.tabId) : undefined
     // NaN 会穿过 `<= 0` 比较（NaN <= 0 为 false）直进命令行，钳在入口
     const c = Math.round(cols)
     const r = Math.round(rows)
@@ -724,29 +868,72 @@ export class TmuxBackend {
     )
   }
 
+  /** pane 级尺寸（分隔条把手拖拽落点）：resize-pane 压缩/扩张邻居，window 总尺寸不变 */
+  resizePane(id: string, cols: number, rows: number): void {
+    const rec = this.paneRecords.get(id)
+    const tab = rec ? this.tabs.get(rec.tabId) : undefined
+    const c = Math.round(cols)
+    const r = Math.round(rows)
+    if (!tab?.alive || !Number.isFinite(c) || !Number.isFinite(r) || c <= 0 || r <= 0) return
+    const prev = this.paneResizeTimers.get(id)
+    if (prev) clearTimeout(prev)
+    this.paneResizeTimers.set(
+      id,
+      setTimeout(() => {
+        this.paneResizeTimers.delete(id)
+        if (tab.alive) this.fire(`resize-pane -t ${rec!.pane} -x ${c} -y ${r}`)
+      }, RESIZE_DEBOUNCE_MS)
+    )
+  }
+
+  /** 同步 tmux 侧 active pane（点击/键盘导航后调用，外部 attach 时焦点语义一致） */
+  selectPane(id: string): void {
+    const rec = this.paneRecords.get(id)
+    if (!rec) return
+    this.fire(`select-pane -t ${rec.pane}`)
+  }
+
+  /** 关闭单个 pane；window 里只剩它时降级为关闭整个标签（tmux 同款语义） */
+  killPane(id: string): void {
+    const rec = this.paneRecords.get(id)
+    if (!rec) return
+    const tab = this.tabs.get(rec.tabId)
+    if (!tab?.alive) return
+    let count = 0
+    for (const r of this.paneRecords.values()) if (r.tabId === rec.tabId) count++
+    if (count <= 1) {
+      this.kill(rec.tabId)
+      return
+    }
+    this.fire(`kill-pane -t ${rec.pane}`)
+    // 立即通知（%layout-change 的后续对账此时已见不到该 pane，天然幂等）
+    this.emit('term:exit', id, 0)
+    this.cleanupPane(id)
+  }
+
   kill(id: string): void {
     const tab = this.tabs.get(id)
     if (!tab?.alive) return
     tab.alive = false
     this.fire(`kill-window -t ${tab.window}`)
-    this.emit('term:exit', id, 0)
-    this.cleanup(id)
+    this.exitAllPanes(id, 0)
+    this.cleanupTab(id)
   }
 
-  private cleanup(id: string): void {
-    const tab = this.tabs.get(id)
-    if (tab) {
-      this.paneToTerm.delete(tab.pane)
-      this.windowToTerm.delete(tab.window)
-      this.titleHold.delete(tab.pane)
-      this.paneDecoders.delete(tab.pane)
+  /** pane 级状态清理（退出/死亡后：解码器、标题残片、暂存、输入/resize 防抖） */
+  private cleanupPane(id: string): void {
+    const rec = this.paneRecords.get(id)
+    if (rec) {
+      this.paneToTerm.delete(rec.pane)
+      this.titleHold.delete(rec.pane)
+      this.paneDecoders.delete(rec.pane)
       // 标记已走：此 pane 之后的迟到 %output 直接丢弃，不再进早期暂存
-      this.gonePanes.add(tab.pane)
-      this.earlyOutputs.delete(tab.pane)
+      this.gonePanes.add(rec.pane)
+      this.earlyOutputs.delete(rec.pane)
       if (this.gonePanes.size > 1024) this.gonePanes.clear()
+      this.paneRecords.delete(id)
     }
     this.replayPending.delete(id)
-    this.tabs.delete(id)
     const t = this.inputTimers.get(id)
     if (t) clearTimeout(t)
     this.inputTimers.delete(id)
@@ -754,6 +941,24 @@ export class TmuxBackend {
     const r = this.resizeTimers.get(id)
     if (r) clearTimeout(r)
     this.resizeTimers.delete(id)
+    const pr = this.paneResizeTimers.get(id)
+    if (pr) clearTimeout(pr)
+    this.paneResizeTimers.delete(id)
+  }
+
+  /** tab 级收尾（window 消亡/显式关闭）：pane 级已由 exitAllPanes 清过，这里兜底 */
+  private cleanupTab(id: string): void {
+    for (const [pid, rec] of [...this.paneRecords]) {
+      if (rec.tabId === id) this.cleanupPane(pid)
+    }
+    const tab = this.tabs.get(id)
+    if (tab) {
+      this.windowToTerm.delete(tab.window)
+      const st = this.paneSyncTimers.get(tab.window)
+      if (st) clearTimeout(st)
+      this.paneSyncTimers.delete(tab.window)
+    }
+    this.tabs.delete(id)
   }
 
   /**

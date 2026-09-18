@@ -261,6 +261,7 @@ src/
     ├── palette.ts   # 命令面板注册表（命令构建 + 模糊匹配打分）
     ├── CommandPalette.tsx # 命令面板浮层（键盘导航 + 二段改名）
     ├── TermView.tsx # xterm 实例（输出单点分发、自适应尺寸、字体设置）
+    ├── PaneLayout.tsx # 标签内分屏布局：tmux 权威几何换算像素矩形、把手拖拽、window 尺寸上报
     ├── TermSearch.tsx # 终端查找框（Ctrl+Shift+F：高亮装饰 + 计数 + 大小写/全字/正则开关）
     ├── SettingsPage.tsx # 设置页（外观 → 字体/字号 + 预览；终端 → 默认终端等）
     ├── fonts.ts     # 字体栈解析（自动模式 / CJK 回退）
@@ -386,6 +387,15 @@ npx electron out/main/index.js --e2e-search --e2e-quit --no-sandbox
 ```
 
 ```bash
+# 分屏回归：真实输入管线的 Ctrl+Shift+D/E（含嵌套）、tmux 权威几何与 xterm 实测
+# cols 一致性、新 pane 获焦、Ctrl+Alt+方向导航与点击聚焦（方向键经 CDP debugger
+# 派发——sendInputEvent 发出的方向键 key/code 为空）、打字只落聚焦 pane、
+# Ctrl+Shift+W 分级语义（关 pane/塌缩补位/固定守卫）、分隔条拖拽（行数守恒）、
+# 关标签对全部 pane 级联清理
+npx electron out/main/index.js --e2e-splits --e2e-quit --no-sandbox
+```
+
+```bash
 # profile 可用性运行中刷新回归（环境自备：隔离 userData + PATH 里的空"安装目录"）：
 # 运行中写入/删除假 shell 模拟安装/卸载，断言 profiles:list 每次重探、＋菜单与
 # 命令面板打开时渲染层重拉、新装内建 shell 补齐、变化落盘 profiles.json
@@ -440,13 +450,16 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
 ## 快捷键
 
 - `Ctrl+Shift+T` 新建标签（默认 profile）
-- `Ctrl+Shift+W` 关闭当前标签（固定标签上不生效，防误关）
+- `Ctrl+Shift+W` 关闭当前标签（固定标签上不生效，防误关；标签内有多个 pane 时
+  降级为先关闭当前 pane）
 - `Ctrl+Tab` / `Ctrl+Shift+Tab` 切换标签（终端聚焦时由 xterm 键盘钩子拦截处理，
   焦点在终端外时由 window 级监听兜底——Tab 族按键被 xterm 认领后不会冒泡）
 - `Ctrl+Shift+Q` 退出并终结全部会话（tmux 服务器与其上的 shell 一并结束）
 - `Ctrl+Shift+B` 开关分组侧栏（终端聚焦与否都生效）
 - `Ctrl+Shift+P` 命令面板（再按关闭；终端聚焦与否都生效，见[命令面板](#命令面板)）
 - `Ctrl+Shift+F` 终端缓冲区搜索，含滚动回溯（见[终端搜索](#终端搜索)）
+- `Ctrl+Shift+D` / `Ctrl+Shift+E` 向右 / 向下分屏（iTerm 惯例，可嵌套，见[分屏](#分屏)）
+- `Ctrl+Alt+方向键` 在当前标签的 pane 间移动焦点
 - `Ctrl+,` 打开/关闭设置页（`Esc` 或点击标签关闭）
 - 双击标签重命名（手动重命名后 shell 上报的标题不再覆盖）
 - 标签右键菜单：固定/取消固定（常驻左端、窄化、无关闭钮）、添加到新组/移入既有组/移出组、关闭
@@ -522,6 +535,21 @@ Esc 关闭并把焦点还给终端。覆盖四类命令：
 而非 `Ctrl+F`——裸 `Ctrl+F` 是 readline 的前移一个字符绑定，保留原样直达
 shell 不被劫持。
 
+## 分屏
+
+`Ctrl+Shift+D` 在活跃 pane 右侧分屏、`Ctrl+Shift+E` 上下分屏（iTerm 惯例，
+可任意嵌套）。新 pane 跑所在标签的同一 profile、继承源 pane 的工作目录，
+并获得焦点。`Ctrl+Alt+方向键` 在 pane 间移动焦点（点击亦可），焦点 pane 带
+描边指示。`Ctrl+Shift+W` 优雅降级：多 pane 时关闭当前 pane（幸存者拉伸补位，
+固定标签也允许——固定保护的是标签不是 pane），单 pane 时恢复原关标签语义。
+拖动分隔条调整比例，布局由 tmux 重算后回推到每个 pane。
+
+pane 几何的唯一权威是 tmux server——渲染层扮演它的 client：只上报 window
+整体尺寸，pane 矩形经控制模式 `%layout-change` 通知到达（以 `list-panes`
+对账，这同时也是 tmux 3.2a 上 pane 死亡的检测通路——该版本没有 pane 死亡
+通知）。分屏因此随会话保持与恢复存活：附着时布局从 tmux 状态原样重建，
+pane 一个不少。
+
 ## GPU 渲染
 
 终端默认用 WebGL 渲染器（`@xterm/addon-webgl`）加速绘制——快速输出、大回滚
@@ -565,6 +593,12 @@ shell 不被劫持。
 - [x] 终端缓冲区搜索（`Ctrl+Shift+F`：含滚动回溯、全匹配高亮装饰 + `i/n` 计数、
       Enter/Shift+Enter 跳转、大小写/全字/正则开关、开框切标签即重跑，`--e2e-search`
       覆盖快捷键通路端到端）
+- [x] 分屏（`Ctrl+Shift+D`/`E` 可任意嵌套；新 pane 跑标签的 profile 并继承源 pane
+      的工作目录；`Ctrl+Alt+方向` 导航、分隔条拖拽调比例、`Ctrl+Shift+W` 优雅降级；
+      tmux 是布局唯一权威——几何经 `%layout-change` + `list-panes` 对账回推，也是
+      tmux 3.2a 上 pane 死亡的检测通路；分屏随会话保持与恢复存活，`--e2e-splits`
+      与会话两段回归覆盖）
+- [ ] pane 放大（临时把当前 pane 铺满整个标签）——路线图候选
 - [x] AppImage 与 rpm 打包格式（一次 `npm run dist` 产出 deb / AppImage / rpm 三格式）
 
 ## 备注

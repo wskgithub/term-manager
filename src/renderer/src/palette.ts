@@ -31,6 +31,8 @@ export interface PaletteHandlers {
   openSettings: () => void
   setTheme: (theme: AppSettings['theme']) => void
   quitAll: () => void
+  splitPane: (dir: 'h' | 'v') => void
+  closePane: () => void
 }
 
 export interface PaletteCtx {
@@ -40,6 +42,8 @@ export interface PaletteCtx {
   profiles: Profile[]
   settings: AppSettings
   broadcastGroups: Set<string>
+  /** 活跃 tab 的 pane 数（分屏命令的门控与上下文标记） */
+  activePaneCount: number
   handlers: PaletteHandlers
 }
 
@@ -52,7 +56,7 @@ const THEME_NAMES: Record<AppSettings['theme'], string> = {
 /** 按当前状态构建全部命令：上下文相关项条件出现（在组才出移出/广播、
     广播命令随设置总开关门控、固定标签的关闭置灰、主题当前项置灰） */
 export function buildCommands(ctx: PaletteCtx): PaletteCommand[] {
-  const { tabs, groups, activeId, profiles, settings, broadcastGroups, handlers: h } = ctx
+  const { tabs, groups, activeId, profiles, settings, broadcastGroups, activePaneCount, handlers: h } = ctx
   const active = tabs.find((t) => t.id === activeId)
   const activeGroup = active?.groupId ? groups.find((g) => g.id === active.groupId) : undefined
 
@@ -85,6 +89,30 @@ export function buildCommands(ctx: PaletteCtx): PaletteCommand[] {
             // 固定标签防误关：快捷键与 × 都不关，面板同样置灰（关闭走菜单显式动作）
             disabled: !!active.pinned,
             action: () => h.closeTab(active.id)
+          },
+          // ── 分屏（多 pane 时上下文标记窗格数）──
+          {
+            key: 'split-h',
+            label: '向右分屏',
+            hint: 'Ctrl+Shift+D',
+            keywords: 'split pane right horizontal',
+            action: () => h.splitPane('h')
+          },
+          {
+            key: 'split-v',
+            label: '向下分屏',
+            hint: 'Ctrl+Shift+E',
+            keywords: 'split pane down vertical',
+            action: () => h.splitPane('v')
+          },
+          {
+            key: 'close-pane',
+            label: '关闭当前窗格',
+            hint: 'Ctrl+Shift+W',
+            keywords: 'close pane 窗格',
+            // 单 pane 时关闭=关标签，已有更明确的入口（关闭当前标签）
+            disabled: activePaneCount < 2,
+            action: () => h.closePane()
           }
         ]
       : []),

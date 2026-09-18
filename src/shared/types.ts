@@ -300,6 +300,20 @@ export interface TabGroup {
   collapsed?: boolean
 }
 
+// 分屏方向：h = 左右并排（tmux split-window -h）、v = 上下堆叠（默认方向）
+export type SplitDir = 'h' | 'v'
+
+// 单个 pane 的权威几何（tmux list-panes 的 cell 坐标）：id 是 pane 级 termId，
+// 首个 pane 的 termId 恒等于 tabId（与 term:data/term:exit 通道协议一致）。
+// x/y/left、cols/rows 为 window 内的绝对 cell 坐标（含 1-cell 分隔缝的占位）
+export interface PaneGeom {
+  id: string
+  x: number
+  y: number
+  cols: number
+  rows: number
+}
+
 // sessions.json 里单个标签的持久化形态：TermInfo 的超集（多 windowId 用于
 // 附着时与 tmux list-windows 对账、renamed 保留「手动改名后 shell 标题不再覆盖」语义）
 export interface SessionTab {

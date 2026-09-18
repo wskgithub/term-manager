@@ -75,6 +75,21 @@ export const PencilIcon = (
   </svg>
 )
 
+/** 分屏菜单用图标（lucide 风格：外框 + 中缝线，横竖各一） */
+export const SplitHIcon = (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M12 8v8" />
+  </svg>
+)
+
+export const SplitVIcon = (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M8 12h8" />
+  </svg>
+)
+
 /** 组广播开关用图标（lucide radio 风格：中点 + 两侧弧段） */
 export const BroadcastIcon = (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

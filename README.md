@@ -358,6 +358,24 @@ The shortcut is deliberately `Ctrl+Shift+F` (terminal-emulator convention: GNOME
 Terminal, Konsole), not `Ctrl+F` — plain `Ctrl+F` is the readline forward-char binding
 and keeps reaching the shell untouched.
 
+## Split panes
+
+`Ctrl+Shift+D` splits the active pane side by side, `Ctrl+Shift+E` stacks it (iTerm
+convention; both nest freely). The new pane runs the same profile as its tab and
+inherits the source pane's working directory, and gets the focus. Move between panes
+with `Ctrl+Alt+Arrow keys` or by clicking; the focused pane is outlined. `Ctrl+Shift+W`
+degrades gracefully: with multiple panes it closes the active pane (survivors stretch
+to fill the gap, even on pinned tabs — pinning protects the tab, not the pane), with a
+single pane it closes the tab as before. Drag a separator to resize: the layout is
+recomputed by tmux and pushed back to every pane.
+
+The tmux server is the single source of truth for pane geometry — the renderer acts
+as its client: it only reports the overall window size, and pane rectangles arrive via
+the control-mode `%layout-change` notification (reconciled through `list-panes`, which
+is also how pane death is detected on tmux 3.2a, which has no pane-died notification).
+Splits therefore survive session keep-and-restore: the layout is rebuilt from tmux
+state on attach, panes included.
+
 ## GPU rendering
 
 Terminals render through the WebGL renderer (`@xterm/addon-webgl`) by default —
@@ -417,6 +435,7 @@ src/
     ├── menus.tsx    # shared tab/group context-menu builders (data-key is the e2e selector)
     ├── segs.ts      # tab-list segmentation (consecutive same-group runs), shared view model
     ├── TermView.tsx # xterm instances (single-point output dispatch, adaptive sizing, font settings)
+    ├── PaneLayout.tsx # per-tab pane layout: tmux-authoritative geometry → pixel rects, grip drag, window-size reporting
     ├── TermSearch.tsx # terminal find bar (Ctrl+Shift+F: decorations, counter, case/word/regex toggles)
     ├── SettingsPage.tsx # settings page (appearance → font/size + preview; terminal → defaults)
     ├── fonts.ts     # font stack resolution (auto mode / CJK fallback)
@@ -554,6 +573,16 @@ npx electron out/main/index.js --e2e-search --e2e-quit --no-sandbox
 ```
 
 ```bash
+# Split-pane regression: Ctrl+Shift+D/E through the real input pipeline (nesting
+# included), tmux-authoritative geometry vs xterm measured cols, new-pane focus,
+# Ctrl+Alt+Arrow navigation and click-to-focus (arrow keys driven via the CDP debugger
+# — sendInputEvent emits them with an empty key/code), typing lands in the focused
+# pane only, Ctrl+Shift+W semantics (close pane / collapse / pinned-tab guard),
+# separator drag-resize with row conservation, tab close cascades to every pane
+npx electron out/main/index.js --e2e-splits --e2e-quit --no-sandbox
+```
+
+```bash
 # Profile runtime-refresh regression (self-contained env: isolated userData + an empty
 # "install dir" on PATH). Writing/removing a fake shell simulates install/uninstall;
 # asserts profiles:list re-probes on every call, the renderer re-fetches when the +
@@ -617,7 +646,8 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
 ## Keyboard shortcuts
 
 - `Ctrl+Shift+T` new tab (default profile)
-- `Ctrl+Shift+W` close current tab (has no effect on pinned tabs — prevents accidental closes)
+- `Ctrl+Shift+W` close current tab (has no effect on pinned tabs — prevents accidental
+  closes); with multiple panes in the tab it first closes the active pane instead
 - `Ctrl+Tab` / `Ctrl+Shift+Tab` switch tabs (when a terminal has focus this is intercepted
   by the xterm keyboard hook; when focus is outside terminals a window-level listener is
   the fallback — the Tab family never bubbles once claimed by xterm)
@@ -626,6 +656,9 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
 - `Ctrl+Shift+P` toggle the command palette (same; see [Command palette](#command-palette))
 - `Ctrl+Shift+F` terminal buffer search, scrollback included (see
   [Terminal search](#terminal-search))
+- `Ctrl+Shift+D` / `Ctrl+Shift+E` split the active pane side by side / stacked (iTerm
+  convention, nests freely; see [Split panes](#split-panes))
+- `Ctrl+Alt+Arrow keys` move focus between panes of the active tab
 - `Ctrl+,` toggle settings page (`Esc` or clicking a tab closes it)
 - Double-click a tab to rename (after a manual rename the shell-reported title no longer
   overrides it)
@@ -688,6 +721,13 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
       decorations with an `i/n` counter, Enter/Shift+Enter navigation, case/whole-word/
       regex toggles, re-runs on tab switch, `--e2e-search` covers the shortcut paths
       end-to-end)
+- [x] Split panes (`Ctrl+Shift+D`/`E`, nests freely; new pane runs the tab's profile and
+      inherits the source pane's cwd; `Ctrl+Alt+Arrows` navigation, separator drag-resize,
+      graceful `Ctrl+Shift+W`; tmux is the layout authority — geometry arrives via
+      `%layout-change` + `list-panes` reconciliation, which doubles as pane-death
+      detection on tmux 3.2a; splits survive session keep-and-restore, covered by
+      `--e2e-splits` and the session two-phase suite)
+- [ ] Pane zoom (temporarily maximize a pane over its tab) — roadmap candidate
 - [x] AppImage and rpm package formats (deb / AppImage / rpm from one `npm run dist`)
 
 ## Notes

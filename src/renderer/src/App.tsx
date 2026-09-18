@@ -7,20 +7,22 @@ import {
   nextGroupColor,
   nextGroupName,
   type AppSettings,
+  type PaneGeom,
   type PluginInfo,
   type Profile,
+  type SplitDir,
   type TabGroup,
   type TermInfo,
   type ThemeDef,
 } from './api'
 import { TabBar } from './TabBar'
 import { Sidebar, type SideDropTarget } from './Sidebar'
-import { TermView } from './TermView'
+import { PaneLayout } from './PaneLayout'
 import { TermSearch } from './TermSearch'
 import { CommandPalette } from './CommandPalette'
 import { buildCommands, type PaletteCommand } from './palette'
 import { SettingsPage } from './SettingsPage'
-import { ContextMenu, CopyIcon, PasteIcon } from './ContextMenu'
+import { ContextMenu, CopyIcon, PasteIcon, SplitHIcon, SplitVIcon, XIcon } from './ContextMenu'
 import {
   applyUiVars,
   pickScheme,
@@ -62,6 +64,11 @@ function takeTabOut(ts: TermInfo[], id: string): { list: TermInfo[]; tab: TermIn
 export default function App() {
   const [tabs, setTabs] = useState<TermInfo[]>([])
   const [activeId, setActiveId] = useState('')
+  // 分屏：tabId → 权威 pane 几何（后端 term:panes 推送，tmux 是唯一权威）；
+  // 缺失时 PaneLayout 兜底渲染单 pane 满铺（tabId 即首 pane 的 termId）
+  const [paneGeoms, setPaneGeoms] = useState<Record<string, PaneGeom[]>>({})
+  // 分屏：tabId → 该 tab 内的活跃 pane termId；无记录 = 首 pane（== tabId）
+  const [activePanes, setActivePanes] = useState<Record<string, string>>({})
   // 用户 profiles.json 的条目；插件注入的 profile 在 allProfiles 合并视图里追加
   const [profiles, setProfiles] = useState<Profile[]>([])
   // 声明式插件（面板命令 + 主题包 + profile 注入体），plugins:list 每次调用都重扫
@@ -146,6 +153,21 @@ export default function App() {
   const activeRef = useRef('')
   tabsRef.current = tabs
   activeRef.current = activeId
+  const paneGeomsRef = useRef(paneGeoms)
+  paneGeomsRef.current = paneGeoms
+  const activePanesRef = useRef(activePanes)
+  activePanesRef.current = activePanes
+  // pane termId → 所属 tabId（paneGeoms 反查；兜底期 pane 不在表里，回退 tab
+  // 命中判定）。pane 数很小，O(n) 遍历足够
+  const tabOfPane = (id: string): string | undefined => {
+    for (const [tid, list] of Object.entries(paneGeomsRef.current)) {
+      if (list.some((p) => p.id === id)) return tid
+    }
+    return undefined
+  }
+  // tab 的活跃 pane（无记录 = 首 pane）；「当前终端」= 活跃 tab 的活跃 pane
+  const activePaneOf = (tabId: string): string => activePanesRef.current[tabId] ?? tabId
+  const resolveActiveTermId = (): string => activePaneOf(activeRef.current)
   const groupsRef = useRef<TabGroup[]>([])
   groupsRef.current = groups
   const pluginInfosRef = useRef<PluginInfo[]>([])
@@ -210,10 +232,19 @@ export default function App() {
   // （旧终端被藏起，焦点不能留在不可见的 textarea 里）之后，键盘输入都应落在新终端
   useEffect(() => {
     if (!activeId) return
-    terms.current.get(activeId)?.focus()
+    terms.current.get(activePaneOf(activeId))?.focus()
     // 代码级插件事件：首启激活也发（语义上「当前标签」确实激活了）
     emitTmEvent('tab-activated', { id: activeId })
   }, [activeId])
+
+  // pane 间焦点迁移（点击 pane / Ctrl+Alt+方向导航 / 新 pane 分屏后）：tab 不变、
+  // 上面 [activeId] 的 effect 不会重跑，这里单独聚焦。新分屏的 pane 此刻可能
+  // 尚未挂载注册（term:panes 异步推送），挂载时 TermView 自带的 focus() 接力
+  useEffect(() => {
+    if (!activeId) return
+    terms.current.get(resolveActiveTermId())?.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePanes[activeId], activeId])
 
   // 会话持久化上报：标签顺序/固定/分组/活跃/改名态变化后 debounce 全量推送主进程
   //（数据量极小，全量快照比增量补丁简单可靠），主进程与窗口映射对账后落盘
@@ -303,7 +334,27 @@ export default function App() {
       writeTerm(id, d)
       dispatchTermData(id, d)
     })
+    // pane 布局权威推送（split/resize/pane 死亡塌缩后的 %layout-change 对账）
+    const offPanes = api.onPanes((tabId, panes) => {
+      setPaneGeoms((prev) => ({ ...prev, [tabId]: panes }))
+    })
     const offExit = api.onExit((id) => {
+      // pane 级退出语义分叉：id 是 pane 的 termId。非首 pane 死 → 即刻从布局
+      // 除名（tmux 已销毁该 pane，幸存者拉伸补位）；首 pane（id==tabId）死且
+      // window 还有别的 pane → tab 仍在、活跃 pane 迁移；否则 window 级死亡
+      // → 现状语义：保留最后一帧画面 + [会话已退出] 标记
+      const tabId = tabOfPane(id) ?? (tabsRef.current.some((t) => t.id === id) ? id : undefined)
+      if (!tabId) return // tab 已删（closeTab 竞态残留）：静默
+      const rest = (paneGeomsRef.current[tabId] ?? []).filter((p) => p.id !== id)
+      if (id !== tabId || rest.length > 0) {
+        setPaneGeoms((prev) =>
+          tabId in prev ? { ...prev, [tabId]: (prev[tabId] ?? []).filter((p) => p.id !== id) } : prev
+        )
+        setActivePanes((prev) =>
+          prev[tabId] === id ? { ...prev, [tabId]: rest[0]?.id ?? tabId } : prev
+        )
+        return
+      }
       writeTerm(id, '\r\n\x1b[90m[会话已退出]\x1b[0m\r\n')
       setExited((s) => {
         const next = new Set(s)
@@ -314,6 +365,7 @@ export default function App() {
     return () => {
       alive = false
       offData()
+      offPanes()
       offExit()
       offOpenDir()
     }
@@ -357,6 +409,78 @@ export default function App() {
     if (!ts.length) return
     const i = ts.findIndex((t) => t.id === activeRef.current)
     activateTab(ts[(i + dir + ts.length) % ts.length].id)
+  }
+
+  // ── 分屏操作 ──
+
+  // pane 聚焦（点击 pane / Ctrl+Alt+方向导航）：本地切活跃 pane + 同步 tmux 侧
+  // active（外部 attach 时焦点语义一致）
+  const focusPane = (id: string) => {
+    const tabId = tabOfPane(id)
+    if (!tabId) return
+    setActivePanes((prev) => (prev[tabId] === id ? prev : { ...prev, [tabId]: id }))
+    api.selectPane(id)
+  }
+
+  // 在当前活跃 pane 旁分出新 pane（iTerm 惯例：D 左右 / E 上下）。新 pane 的
+  // 焦点经 setActivePanes 记账，[activePanes] effect 与 TermView 挂载 focus 接力
+  const doSplit = async (dir: SplitDir) => {
+    const tabId = activeRef.current
+    if (!tabId) return
+    try {
+      const id = await api.splitPane(tabId, activePaneOf(tabId), dir)
+      setActivePanes((prev) => ({ ...prev, [tabId]: id }))
+      setCreateError('')
+    } catch (e) {
+      console.error('[pane] split failed:', e)
+      setCreateError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  // 关闭单个 pane：多 pane 时本地先行除名 + 焦点迁往剩余首个 pane（后端
+  // term:exit 到达时幂等）；首 pane 走关闭整个标签（后端 killPane 对唯一 pane
+  // 同样降级，语义闭合）
+  const closePane = (id: string) => {
+    const tabId = tabOfPane(id)
+    if (!tabId) return
+    const rest = (paneGeomsRef.current[tabId] ?? []).filter((p) => p.id !== id)
+    if (id === tabId && rest.length === 0) {
+      closeTab(tabId)
+      return
+    }
+    api.killPane(id)
+    setPaneGeoms((prev) =>
+      tabId in prev ? { ...prev, [tabId]: (prev[tabId] ?? []).filter((p) => p.id !== id) } : prev
+    )
+    setActivePanes((prev) =>
+      prev[tabId] === id ? { ...prev, [tabId]: rest[0]?.id ?? tabId } : prev
+    )
+  }
+
+  // Ctrl+Alt+方向：几何邻接导航（paneGeoms 在手，无 IPC 往返）。left = 行区间
+  // 与当前 pane 重叠且右边缘贴到当前左侧的最近 pane，其余方向对称
+  const cyclePane = (dir: 'left' | 'right' | 'up' | 'down') => {
+    const tabId = activeRef.current
+    const panes = paneGeomsRef.current[tabId]
+    if (!tabId || !panes || panes.length < 2) return
+    const cur = panes.find((p) => p.id === activePaneOf(tabId))
+    if (!cur) return
+    let best: PaneGeom | undefined
+    for (const p of panes) {
+      if (p.id === cur.id) continue
+      const overlapY = p.y < cur.y + cur.rows && p.y + p.rows > cur.y
+      const overlapX = p.x < cur.x + cur.cols && p.x + p.cols > cur.x
+      if (dir === 'left' && p.x + p.cols <= cur.x && overlapY) {
+        if (!best || p.x > best.x) best = p
+      } else if (dir === 'right' && p.x >= cur.x + cur.cols && overlapY) {
+        if (!best || p.x < best.x) best = p
+      } else if (dir === 'up' && p.y + p.rows <= cur.y && overlapX) {
+        if (!best || p.y > best.y) best = p
+      } else if (dir === 'down' && p.y >= cur.y + cur.rows && overlapX) {
+        if (!best || p.y < best.y) best = p
+      }
+    }
+    if (best) focusPane(best.id)
   }
 
   // 重拉 profile 列表：主进程每次 list 都重探 PATH（并补齐新装的内建 shell），
@@ -464,6 +588,21 @@ export default function App() {
     const next = tabsRef.current.filter((t) => t.id !== id)
     setTabs(next)
     pruneGroups(next)
+    // 分屏级联：该 tab 的 pane 布局与活跃 pane 记录一并清（各 pane 的 TermView
+    // 随 PaneLayout 卸载自行注销；后端 kill-window 对全部 pane 发 term:exit，
+    // 到达时 tab 已不在，onExit 静默）
+    setPaneGeoms((prev) => {
+      if (!(id in prev)) return prev
+      const next2 = { ...prev }
+      delete next2[id]
+      return next2
+    })
+    setActivePanes((prev) => {
+      if (!(id in prev)) return prev
+      const next2 = { ...prev }
+      delete next2[id]
+      return next2
+    })
     setExited((s) => {
       const n = new Set(s)
       n.delete(id)
@@ -481,10 +620,14 @@ export default function App() {
     emitTmEvent('tab-renamed', { id, title })
   }
 
-  // shell 通过 OSC 序列上报标题（如 ssh 到远端、进入目录时）
+  // shell 通过 OSC 序列上报标题（如 ssh 到远端、进入目录时）；分屏后标题跟随
+  // 各 tab 的活跃 pane，手动改名（renamed 按 tabId 记）后任何 pane 都不再覆盖
   const shellTitle = (id: string, title: string) => {
-    if (renamed.current.has(id) || !title) return
-    setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, title } : t)))
+    if (!title) return
+    const tabId = tabOfPane(id) ?? (tabsRef.current.some((t) => t.id === id) ? id : undefined)
+    if (!tabId || renamed.current.has(tabId)) return
+    if (id !== activePaneOf(tabId)) return
+    setTabs((ts) => ts.map((t) => (t.id === tabId ? { ...t, title } : t)))
   }
 
   const reorder = (from: number, to: number) => {
@@ -637,7 +780,7 @@ export default function App() {
   // 由 [activeId] effect 在渲染后聚焦新终端；点已激活的标签没有状态变化，
   // effect 不会重跑，这里同步聚焦（此刻终端可见，focus() 立即生效）
   const activateTab = (id: string) => {
-    if (id === activeRef.current) terms.current.get(id)?.focus()
+    if (id === activeRef.current) terms.current.get(activePaneOf(id))?.focus()
     setActiveId(id)
     setSettingsOpen(false)
     const gid = tabsRef.current.find((t) => t.id === id)?.groupId
@@ -670,19 +813,19 @@ export default function App() {
     }
   }
 
-  // 右键菜单动作：目标始终是当前活跃终端（可见的那个 pane）。
-  // 点击菜单项会把 DOM 焦点从 xterm 的 textarea 挪走（原生 Menu 无此问题），
-  // 动作完成后必须把焦点还给终端，否则后续按键全部丢失
+  // 右键菜单动作：目标始终是当前活跃终端（可见的活跃 pane；右键前的 mousedown
+  // 已把该 pane 切成活跃）。点击菜单项会把 DOM 焦点从 xterm 的 textarea 挪走
+  // （原生 Menu 无此问题），动作完成后必须把焦点还给终端，否则后续按键全部丢失
   const openTermContextMenu = (x: number, y: number) => {
-    setCtxMenu({ x, y, canCopy: !!terms.current.get(activeRef.current)?.hasSelection() })
+    setCtxMenu({ x, y, canCopy: !!terms.current.get(resolveActiveTermId())?.hasSelection() })
   }
 
   const focusActiveTerm = () => {
-    terms.current.get(activeRef.current)?.focus()
+    terms.current.get(resolveActiveTermId())?.focus()
   }
 
   const copySelection = () => {
-    const t = terms.current.get(activeRef.current)
+    const t = terms.current.get(resolveActiveTermId())
     if (t?.hasSelection()) api.writeClipboard(t.getSelection())
     focusActiveTerm()
   }
@@ -690,7 +833,7 @@ export default function App() {
   const pasteClipboard = () => {
     focusActiveTerm()
     void api.readClipboard().then((text) => {
-      if (text) terms.current.get(activeRef.current)?.paste(text)
+      if (text) terms.current.get(resolveActiveTermId())?.paste(text)
     })
   }
 
@@ -726,9 +869,27 @@ export default function App() {
         void newTab()
       } else if (e.ctrlKey && e.shiftKey && k === 'w') {
         e.preventDefault()
-        // 固定标签防误关：快捷键不关（× 也不渲染），关闭走右键菜单的显式动作
+        // 多 pane 标签：降级为关当前活跃 pane（固定标签也允许——固定保护的是
+        // 标签不丢，pane 关到只剩一个时回到固定守卫不再动作）；单 pane 走原
+        // 关标签路径（固定标签防误关：快捷键不关，关闭走右键菜单的显式动作）
         const cur = tabsRef.current.find((t) => t.id === activeRef.current)
-        if (activeRef.current && !cur?.pinned) closeTab(activeRef.current)
+        const panes = paneGeomsRef.current[activeRef.current]
+        if (activeRef.current && panes && panes.length > 1) {
+          closePane(activePaneOf(activeRef.current))
+        } else if (activeRef.current && !cur?.pinned) {
+          closeTab(activeRef.current)
+        }
+      } else if (e.ctrlKey && e.shiftKey && (k === 'd' || k === 'e')) {
+        // 分屏（iTerm 惯例）：D 左右 / E 上下。Ctrl+Shift+D/E 不在 xterm 键位表
+        // （Ctrl+D 的 EOF 认领不带 Shift），window 层单通路覆盖终端聚焦/失焦
+        e.preventDefault()
+        void doSplit(k === 'd' ? 'h' : 'v')
+      } else if (e.ctrlKey && e.altKey && !e.shiftKey && (e.key.startsWith('Arrow') || (e.keyCode >= 37 && e.keyCode <= 40))) {
+        // pane 导航的兜底通路：焦点在终端内时 Ctrl+Alt+方向被 xterm 键位表认领，
+        // 由 TermView 的 customKeyEventHandler 拦截后回调同一 cyclePane。合成输入
+        // 可能不生成 key 文本，DOM keyCode（37-40）兜底
+        e.preventDefault()
+        cyclePane(e.keyCode === 37 || e.key === 'ArrowLeft' ? 'left' : e.keyCode === 39 || e.key === 'ArrowRight' ? 'right' : e.keyCode === 38 || e.key === 'ArrowUp' ? 'up' : 'down')
       } else if (e.ctrlKey && e.shiftKey && k === 'q') {
         e.preventDefault()
         api.quitAll()
@@ -813,7 +974,7 @@ export default function App() {
           onSelect={activateTab}
           onClose={closeTab}
           onRename={renameTab}
-          onRenameEnd={(id) => terms.current.get(id)?.focus()}
+          onRenameEnd={(id) => terms.current.get(activePaneOf(id))?.focus()}
           onNewTab={(pid) => void newTab(pid)}
           onOpenSettings={() => setSettingsOpen(true)}
           onRefreshProfiles={refreshProfiles}
@@ -846,7 +1007,7 @@ export default function App() {
             onSelect={activateTab}
             onClose={closeTab}
             onRename={renameTab}
-            onRenameEnd={(id) => terms.current.get(id)?.focus()}
+            onRenameEnd={(id) => terms.current.get(activePaneOf(id))?.focus()}
             onReorder={reorder}
             onNewTab={(pid) => void newTab(pid)}
             onOpenSettings={() => setSettingsOpen(true)}
@@ -869,20 +1030,24 @@ export default function App() {
         )}
         <div className="content">
           {tabs.map((t) => (
-            <TermView
+            <PaneLayout
               key={t.id}
-              termId={t.id}
-              active={t.id === activeId}
+              tabId={t.id}
+              visible={t.id === activeId}
+              panes={paneGeoms[t.id] ?? []}
+              activePaneId={activePanes[t.id] ?? t.id}
               fontFamily={settings.fontFamily}
               fontSize={settings.fontSize}
               gpu={settings.gpuRendering}
               scheme={scheme}
-              onTitle={(title) => shellTitle(t.id, title)}
+              onTitle={shellTitle}
               onTerminal={registerTerminal}
               onSearchAddon={registerSearchAddon}
               onContextMenu={openTermContextMenu}
-              onInput={(d) => sendInput(t.id, d)}
+              onInput={sendInput}
               onCycleTab={cycleTab}
+              onCyclePane={cyclePane}
+              onPaneFocus={focusPane}
             />
           ))}
           {broadcastTargets > 1 && (
@@ -892,7 +1057,7 @@ export default function App() {
           )}
           {searchOpen && (
             <TermSearch
-              activeId={activeId}
+              activeId={resolveActiveTermId()}
               getAddon={(id) => searchAddons.current.get(id)}
               dark={dark}
               queryMem={lastQuery}
@@ -969,6 +1134,30 @@ export default function App() {
               shortcut: 'Ctrl+Shift+V',
               icon: PasteIcon,
               action: pasteClipboard
+            },
+            { key: 'sep-split', sep: true },
+            {
+              key: 'term-split-h',
+              label: '向右分屏',
+              shortcut: 'Ctrl+Shift+D',
+              icon: SplitHIcon,
+              action: () => void doSplit('h')
+            },
+            {
+              key: 'term-split-v',
+              label: '向下分屏',
+              shortcut: 'Ctrl+Shift+E',
+              icon: SplitVIcon,
+              action: () => void doSplit('v')
+            },
+            {
+              key: 'term-close-pane',
+              label: '关闭窗格',
+              shortcut: 'Ctrl+Shift+W',
+              icon: XIcon,
+              // 单 pane 时关闭=关标签，语义已有更明确的入口（× / 关闭标签页）
+              disabled: (paneGeomsRef.current[activeRef.current]?.length ?? 1) < 2,
+              action: () => closePane(resolveActiveTermId())
             }
           ]}
         />
@@ -982,6 +1171,7 @@ export default function App() {
             profiles: allProfiles,
             settings,
             broadcastGroups,
+            activePaneCount: paneGeoms[activeId]?.length ?? 1,
             handlers: {
               newTab: (pid) => void newTab(pid),
               togglePin,
@@ -993,7 +1183,9 @@ export default function App() {
               toggleSidebar,
               openSettings: () => setSettingsOpen(true),
               setTheme: (theme) => applySettings({ theme }),
-              quitAll: () => api.quitAll()
+              quitAll: () => api.quitAll(),
+              splitPane: (dir) => void doSplit(dir),
+              closePane: () => closePane(resolveActiveTermId())
             }
           }), ...pluginCommands, ...hostSnap.commands]}
           activeTitle={tabs.find((t) => t.id === activeId)?.title ?? ''}

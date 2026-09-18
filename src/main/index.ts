@@ -485,6 +485,30 @@ function registerIpc(): void {
     backend.kill(id)
     persistSession() // 窗口集合变化即时落盘，崩溃后恢复面最小
   })
+
+  // 分屏：在 fromId pane 的右侧（h）/下方（v）分出新 pane。profile 沿 tab 的
+  // 记录由主进程侧注册表解析（渲染层只传 id 引用，命令面与 term:create 一致）
+  ipcMain.handle('pane:split', (_e, tabId: string, fromId: string, dir: string) => {
+    const info = backend.tabInfo(tabId)
+    if (!info) throw new Error(`tab not found: ${tabId}`)
+    const profile = registry.get(info.profileId) ?? plugins.getProfile(info.profileId)
+    if (!profile) throw new Error(`profile not found: ${info.profileId}`)
+    return backend
+      .splitPane(tabId, fromId, dir === 'h' ? 'h' : 'v', profile)
+      .then((id) => {
+        persistSession() // 与 term:create 同节拍（pane 挂在既有 window 上，对账幂等）
+        return id
+      })
+  })
+  // 把手拖拽落点（pane 级尺寸）与 tmux 侧 active 同步（点击/键盘导航后）
+  ipcMain.on('pane:resize', (_e, id: string, cols: number, rows: number) =>
+    backend.resizePane(id, cols, rows)
+  )
+  ipcMain.on('pane:select', (_e, id: string) => backend.selectPane(id))
+  ipcMain.on('pane:kill', (_e, id: string) => {
+    backend.killPane(id)
+    persistSession() // 唯一 pane 时降级为关标签（window 集合变化）
+  })
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -741,12 +765,22 @@ async function typeChars(win: BrowserWindow, text: string): Promise<void> {
   }
 }
 
+// 方向键的 Windows 虚拟键码：sendInputEvent 不带 vkCode 时派发的 DOM 事件
+// key/code 均为空串（真实键盘输入恒携带 vkCode，只有合成输入需要显式补）
+const ARROW_VK: Record<string, number> = { ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40 }
+
 async function pressKey(
   win: BrowserWindow,
   keyCode: string,
-  modifiers: ('ctrl' | 'shift')[] = []
+  modifiers: ('ctrl' | 'shift' | 'alt')[] = []
 ): Promise<void> {
-  win.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
+  const vk = ARROW_VK[keyCode]
+  win.webContents.sendInputEvent({
+    type: 'keyDown',
+    keyCode,
+    modifiers,
+    ...(vk ? { windowsVirtualKeyCode: vk } : {})
+  })
   win.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers })
 }
 
@@ -961,8 +995,8 @@ async function runSearchSequence(win: BrowserWindow): Promise<void> {
   const state = () => json<InputPaneState>('window.__e2eInputState()')
   // 可见 pane 的视口滚动位置（scrollback 定位断言用；display:none 的 pane 被排除）
   const vpScroll = () =>
-    json<number>(
-      `document.querySelector('.content > .term-pane:not([style*="none"]) .xterm-viewport')?.scrollTop ?? -1`
+    js<number>(
+      `document.querySelector('.content > .tab-view:not([style*="none"]) .xterm-viewport')?.scrollTop ?? -1`
     )
 
   // 灌内容：tab0 两处匹配埋进 scrollback（162 行输出、视口在底部时两个匹配点
@@ -1121,6 +1155,272 @@ async function runSearchSequence(win: BrowserWindow): Promise<void> {
 
   const allOk = !results.some((r) => r.startsWith('FAIL:'))
   console.log('E2E_SEARCH_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  if (argvHas('--e2e-quit')) {
+    await backend.dispose()
+    app.exit(allOk ? 0 : 1)
+  }
+}
+
+// ── 分屏回归（--e2e-splits）：真实输入管线覆盖 Ctrl+Shift+D/E 分屏（含嵌套）、
+// tmux 权威几何与 xterm 实测 cols 的一致性、新 pane 获焦、Ctrl+Alt+方向导航、
+// 点击切焦点、输入精确落点、Ctrl+Shift+W 关 pane 的分级语义（多 pane 关 pane /
+// 单 pane 关标签 / 固定标签守卫）、把手拖拽 resize、关标签级联清理 ──
+
+interface SplitPaneInfo {
+  id: string
+  active: boolean
+  left: number
+  top: number
+  w: number
+  h: number
+  cols: number
+  rows: number
+}
+interface SplitGripInfo {
+  dir: string
+  target: string
+  x: number
+  y: number
+}
+interface SplitState {
+  panes: SplitPaneInfo[]
+  grips: SplitGripInfo[]
+}
+
+async function runSplitsSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string) => JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_SPLITS ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+  const outDir = argvFlag('--e2e-out') ?? join(app.getPath('userData'), 'e2e')
+  mkdirSync(outDir, { recursive: true })
+  const snap = async (name: string) => {
+    const img = await win.webContents.capturePage()
+    writeFileSync(join(outDir, `splits-${name}.png`), img.toPNG())
+    console.log(`E2E_SNAP splits-${name}`)
+  }
+  const split = (): Promise<SplitState> => json<SplitState>('window.__e2eSplitState()')
+  const tabsCount = () => json<number>('document.querySelectorAll(".tab").length')
+  const paneHas = (paneId: string, sub: string) =>
+    json<boolean>(
+      `window.__e2ePaneHas(window.__e2eIds().indexOf(${JSON.stringify(paneId)}), ${JSON.stringify(sub)})`
+    )
+
+  await js('window.__e2eStart(1)')
+  await waitUntil(
+    async () => await json<boolean>('window.__e2e && window.__e2e.done && window.__e2e.created >= 1'),
+    60000
+  )
+
+  // 0) 初始单 pane 满铺（term:panes 已到：cols 为真实值而非兜底 -1）
+  const s0 = await split()
+  check('seed-single', s0.panes.length === 1 && s0.panes[0]!.cols > 40, JSON.stringify(s0.panes))
+
+  // 1) Ctrl+Shift+D 左右分屏：2 pane、新 pane 获焦、左右几何、把手在位
+  await pressKey(win, 'D', ['ctrl', 'shift'])
+  const okSplitH = await waitUntil(async () => (await split()).panes.length === 2, 8000)
+  const s1 = await split()
+  check('split-h-count', s1.panes.length === 2)
+  check(
+    'split-h-focus-new',
+    okSplitH && s1.panes.filter((p) => p.active).length === 1 && s1.panes[1]!.active,
+    JSON.stringify(s1.panes.map((p) => p.active))
+  )
+  check(
+    'split-h-geom',
+    s1.panes[0]!.left === 0 && s1.panes[1]!.left >= s1.panes[0]!.w && s1.panes[1]!.top === 0,
+    JSON.stringify(s1.panes.map((p) => [p.left, p.top, p.w]))
+  )
+  // tmux 几何与 xterm 实测一致：两 pane 的 cols 之和 + 1 分隔缝 ≈ 原单 pane cols
+  check(
+    'split-h-cols-authoritative',
+    s1.panes[0]!.cols + s1.panes[1]!.cols + 1 >= s0.panes[0]!.cols - 2 &&
+      s1.panes[0]!.cols + s1.panes[1]!.cols + 1 <= s0.panes[0]!.cols,
+    `${s1.panes[0]!.cols}+${s1.panes[1]!.cols}+1 vs ${s0.panes[0]!.cols}`
+  )
+  check('split-h-grip', s1.grips.some((g) => g.dir === 'v'), JSON.stringify(s1.grips))
+  await snap('h')
+
+  // 2) 输入精确落到新 pane（右），不泄漏到左 pane
+  await typeChars(win, 'spmk1')
+  await delay(600)
+  const rightId = s1.panes[1]!.id
+  const leftId = s1.panes[0]!.id
+  check('input-new-pane', await paneHas(rightId, 'spmk1'))
+  check('input-no-leak', !(await paneHas(leftId, 'spmk1')))
+
+  // 3) Ctrl+Shift+E 嵌套：右列上下再分 → 3 pane
+  await pressKey(win, 'E', ['ctrl', 'shift'])
+  const okSplitV = await waitUntil(async () => (await split()).panes.length === 3, 8000)
+  const s2 = await split()
+  check('split-v-count', s2.panes.length === 3)
+  const rightCol = s2.panes.filter((p) => p.left > 0)
+  check(
+    'split-v-geom',
+    okSplitV && rightCol.length === 2 && rightCol[0]!.left === rightCol[1]!.left && rightCol[1]!.top > rightCol[0]!.top,
+    JSON.stringify(s2.panes.map((p) => [p.left, p.top]))
+  )
+  check(
+    'split-v-focus-new',
+    s2.panes.filter((p) => p.active).length === 1 &&
+      s2.panes.find((p) => p.active)!.top === Math.max(...s2.panes.map((p) => p.top)),
+    ''
+  )
+  await snap('v')
+
+  // 4) Ctrl+Alt+Left：从右下 pane 导航回左列（焦点在终端内，xterm 键位表认领
+  //    Ctrl+Alt+方向，customKeyEventHandler 拦截通路）。走 CDP debugger 通路：
+  //    sendInputEvent 对方向键派发的 DOM 事件 key/code/keyCode 全空（vkCode
+  //    也不达 DOM），无法按键名判定；CDP 事件与真实键盘同形
+  try {
+    win.webContents.debugger.attach('1.3')
+  } catch {
+    // 已附着（同序列第二次进入）
+  }
+  await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    modifiers: 2 | 1, // ctrl | alt
+    code: 'ArrowLeft',
+    key: 'ArrowLeft',
+    windowsVirtualKeyCode: 37,
+    nativeVirtualKeyCode: 37
+  })
+  await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    modifiers: 0,
+    code: 'ArrowLeft',
+    key: 'ArrowLeft',
+    windowsVirtualKeyCode: 37,
+    nativeVirtualKeyCode: 37
+  })
+  await delay(300)
+  const s3 = await split()
+  check(
+    'nav-left',
+    s3.panes.length === 3 &&
+      s3.panes.find((p) => p.active)?.left === 0,
+    JSON.stringify(s3.panes.map((p) => [p.left, p.active]))
+  )
+
+  // 5) 点击右下 pane 聚焦（pane-box 的 mousedown → App 切活跃 pane）
+  const target = s3.panes.find((p) => p.left > 0 && p.top > 0)!
+  await win.webContents.sendInputEvent({
+    type: 'mouseDown',
+    x: Math.round(target.left + target.w / 2),
+    y: Math.round(target.top + target.h / 2),
+    button: 'left',
+    clickCount: 1
+  })
+  await win.webContents.sendInputEvent({
+    type: 'mouseUp',
+    x: Math.round(target.left + target.w / 2),
+    y: Math.round(target.top + target.h / 2),
+    button: 'left',
+    clickCount: 1
+  })
+  await delay(400)
+  const s4 = await split()
+  check('click-focus', s4.panes.find((p) => p.active)?.id === target.id)
+
+  // 6) 拖拽把手 resize（此时是 3 pane：左列全高 + 右列上下两块，水平缝在右列
+  //    之间）：缝下移 → 上 pane 行数增、下 pane 行数减，总行数守恒
+  const grip = s4.grips.find((g) => g.dir === 'h')
+  const beforeRows = s4.panes.map((p) => p.rows)
+  if (grip) {
+    await win.webContents.sendInputEvent({ type: 'mouseDown', x: grip.x, y: grip.y, button: 'left', clickCount: 1 })
+    await win.webContents.sendInputEvent({ type: 'mouseMove', x: grip.x, y: grip.y + 40, button: 'left' })
+    await delay(120)
+    await win.webContents.sendInputEvent({ type: 'mouseMove', x: grip.x, y: grip.y + 90, button: 'left' })
+    await delay(120)
+    await win.webContents.sendInputEvent({ type: 'mouseUp', x: grip.x, y: grip.y + 90, button: 'left', clickCount: 1 })
+  }
+  const gripOk = await waitUntil(
+    async () => {
+      const s = await split()
+      return s.panes.some((p, i) => Math.abs(p.rows - beforeRows[i]!) >= 2)
+    },
+    8000,
+    400
+  )
+  const s6 = await split()
+  check('grip-drag', !!grip && gripOk, JSON.stringify({ beforeRows, after: s6.panes.map((p) => p.rows) }))
+  check(
+    'grip-conservation',
+    Math.abs(s6.panes.reduce((a, p) => a + p.rows, 0) - beforeRows.reduce((a, b) => a + b, 0)) <= 1,
+    JSON.stringify(s6.panes.map((p) => p.rows))
+  )
+  await snap('grip')
+
+  // 7) Ctrl+Shift+W 关活跃 pane（点击后焦点在右下）：3 → 2；右列下块死亡，
+  //    上块拉伸补位。渲染层本地先行除名（立即变 2），行数增长要等后端
+  //    %layout-change → list-panes 权威刷新（约 150ms 防抖 + 往返）
+  await pressKey(win, 'W', ['ctrl', 'shift'])
+  const okClose = await waitUntil(async () => (await split()).panes.length === 2, 8000)
+  const grew = await waitUntil(
+    async () => {
+      const s = await split()
+      return s.panes.some((p5) => {
+        const before = s6.panes.find((p) => p.id === p5.id)
+        return before && p5.rows > before.rows
+      })
+    },
+    8000,
+    400
+  )
+  const s5 = await split()
+  check('close-pane-count', s5.panes.length === 2)
+  check(
+    'close-pane-collapse',
+    okClose && grew,
+    JSON.stringify({ before: s6.panes.map((p) => p.rows), after: s5.panes.map((p) => p.rows) })
+  )
+  check('close-pane-focus', s5.panes.some((p) => p.active))
+
+  // 8) 关到单 pane 后 Ctrl+Shift+W = 关标签（回归原语义）；渲染实例数同步收敛
+  const termsBefore = await json<number>('window.__e2eIds().length')
+  await pressKey(win, 'W', ['ctrl', 'shift'])
+  await waitUntil(async () => (await split()).panes.length === 1, 8000)
+  const tabsBefore = await tabsCount()
+  await pressKey(win, 'W', ['ctrl', 'shift'])
+  const tabClosed = await waitUntil(async () => (await tabsCount()) === tabsBefore - 1, 8000)
+  check('close-last-closes-tab', tabClosed)
+  const termsAfter = await json<number>('window.__e2eIds().length')
+  check(
+    'tab-close-cascade',
+    termsAfter === termsBefore - 2, // 该 tab 的 2 个 pane 实例全部注销
+    `terms ${termsBefore} -> ${termsAfter}`
+  )
+
+  // 9) 固定标签守卫：pin 活跃标签后分 2 pane，Ctrl+Shift+W 仍关 pane（固定保护
+  //    的是标签不丢），关到剩 1 个 pane 后再按不再关标签
+  const curTabs = await tabsCount()
+  const activeIdx = await json<number>(
+    `[...document.querySelectorAll('.tab')].findIndex((t) => t.classList.contains('active'))`
+  )
+  await js(`window.__e2eTabMenu && window.__e2eTabMenu(${activeIdx}, 'pin')`)
+  await delay(400)
+  await pressKey(win, 'D', ['ctrl', 'shift'])
+  await waitUntil(async () => (await split()).panes.length === 2, 8000)
+  await pressKey(win, 'W', ['ctrl', 'shift'])
+  const paneClosed = await waitUntil(async () => (await split()).panes.length === 1, 8000)
+  check('pinned-pane-close', paneClosed)
+  await pressKey(win, 'W', ['ctrl', 'shift'])
+  await delay(800)
+  check('pinned-tab-guard', (await tabsCount()) === curTabs, `tabs ${curTabs}`)
+  // 还原 pin（key 恒为 'pin'，label 随状态翻转为取消固定）。pin 会把标签挪到
+  // 固定块头部，DOM 下标已变，重新按活跃态定位
+  const activeIdx2 = await json<number>(
+    `[...document.querySelectorAll('.tab')].findIndex((t) => t.classList.contains('active'))`
+  )
+  await js(`window.__e2eTabMenu && window.__e2eTabMenu(${activeIdx2}, 'pin')`)
+  await delay(300)
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_SPLITS_RESULT ' + JSON.stringify({ ok: allOk, results }))
   if (argvHas('--e2e-quit')) {
     await backend.dispose()
     app.exit(allOk ? 0 : 1)
@@ -2873,6 +3173,23 @@ async function runSessionPhase1(win: BrowserWindow): Promise<void> {
   console.log(`E2E_SESS1 ${echoed ? 'marker-echo' : 'marker-FAIL'}`)
   console.log(`E2E_SESS1_MARKER ${marker}`) // 外部脚本传给 phase2 断言回放
 
+  // 分屏（标签 2，建组之前的原位下标）：真实快捷键链路 Ctrl+Shift+D → 2 pane。
+  // phase2 断言布局经 tmux 权威重建恢复
+  const tab2 = await json<{ x: number; y: number; width: number; height: number }>(
+    'document.querySelectorAll(".tab")[2].getBoundingClientRect()'
+  )
+  const t2x = Math.round(tab2.x + tab2.width / 2)
+  const t2y = Math.round(tab2.y + tab2.height / 2)
+  win.webContents.sendInputEvent({ type: 'mouseDown', x: t2x, y: t2y, button: 'left', clickCount: 1 })
+  win.webContents.sendInputEvent({ type: 'mouseUp', x: t2x, y: t2y, button: 'left', clickCount: 1 })
+  await delay(300)
+  await pressKey(win, 'D', ['ctrl', 'shift'])
+  const splitOk = await waitUntil(
+    async () => (await json<number>('window.__e2eSplitState().panes.length')) === 2,
+    8000
+  )
+  console.log(`E2E_SESS1 split ${splitOk ? 'ok' : 'FAIL'}`)
+
   // UI 态：pin 标签0 → 标签1 建组并命名 → 标签2 移入 → 标签0 改名
   const menu = async (idx: number, action: string) =>
     (await js<boolean>(`window.__e2eTabMenu && window.__e2eTabMenu(${idx}, '${action}')`)) === true
@@ -2956,6 +3273,35 @@ async function runSessionPhase2(win: BrowserWindow): Promise<void> {
   check('interactive', await waitUntil(() => probeSeen, 8000, 200))
   hub.off('term:data', tap)
 
+  // 分屏恢复：标签 2 的 2 pane 布局经 tmux 权威重建（list-panes 对账），
+  // 且回放覆盖（phase1 时标签 2 首 pane 含 marker 前 shell 输出）与可交互
+  check(
+    'split-restored',
+    await json<boolean>(
+      `[...document.querySelectorAll('.tab-view')].some((v) => v.querySelectorAll('.pane-box').length === 2)`
+    )
+  )
+  const splitPaneId = await json<string>(
+    `(function () {
+      const v = [...document.querySelectorAll('.tab-view')].find(
+        (x) => x.querySelectorAll('.pane-box').length === 2
+      )
+      return v ? (v.querySelectorAll('.pane-box')[1].dataset.paneId ?? '') : ''
+    })()`
+  )
+  check('split-panes-registered', splitPaneId.length > 0)
+  if (splitPaneId) {
+    const probe2 = `SESS2S_${randomUUID().slice(0, 8)}`
+    let probe2Seen = false
+    const tap2 = (_id: string, d: string) => {
+      if (d.includes(probe2)) probe2Seen = true
+    }
+    hub.on('term:data', tap2)
+    backend.write(splitPaneId, `echo ${probe2}\r`)
+    check('split-interactive', await waitUntil(() => probe2Seen, 8000, 200))
+    hub.off('term:data', tap2)
+  }
+
   const allOk = !results.some((r) => r.startsWith('FAIL:'))
   console.log('E2E_SESS2_RESULT ' + JSON.stringify({ ok: allOk, results }))
   sessionStore.clear() // 清场：不留 sessions.json，重跑 phase1 从零开始
@@ -3002,6 +3348,7 @@ async function runSmoke(): Promise<void> {
 const sessionE2E = __E2E__ ? argvFlag('--e2e-session') : undefined
 const sidebarE2E = __E2E__ ? argvHas('--e2e-sidebar') : false
 const paletteE2E = __E2E__ ? argvHas('--e2e-palette') : false
+const splitsE2E = __E2E__ ? argvHas('--e2e-splits') : false
 const profileRefreshE2E = __E2E__ ? argvHas('--e2e-profile-refresh') : false
 const themesE2E = __E2E__ ? argvHas('--e2e-themes') : false
 const pluginsE2E = __E2E__ ? argvHas('--e2e-plugins') : false
@@ -3013,6 +3360,7 @@ const isolatedRun =
   argvHas('--e2e-input') ||
   sidebarE2E ||
   paletteE2E ||
+  splitsE2E ||
   profileRefreshE2E ||
   themesE2E ||
   pluginsE2E ||
@@ -3361,6 +3709,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
           argvHas('--e2e-sidebar') ||
           argvHas('--e2e-palette') ||
           argvHas('--e2e-search') ||
+          argvHas('--e2e-splits') ||
           profileRefreshE2E ||
           themesE2E ||
           pluginsE2E ||
@@ -3372,7 +3721,8 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
           argvHas('--e2e-input') ||
           argvHas('--e2e-sidebar') ||
           argvHas('--e2e-palette') ||
-          argvHas('--e2e-search')
+          argvHas('--e2e-search') ||
+          argvHas('--e2e-splits')
             ? 2
             : Math.max(1, Number(e2eTabs) || 20)
         const win = mainWindow
@@ -3383,6 +3733,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
               if (argvHas('--e2e-input')) await runInputSequence(win)
               else if (argvHas('--e2e-sidebar')) await runSidebarSequence(win)
               else if (argvHas('--e2e-search')) await runSearchSequence(win)
+              else if (argvHas('--e2e-splits')) await runSplitsSequence(win)
               else if (argvHas('--e2e-palette')) await runPaletteSequence(win)
               else if (profileRefreshE2E) await runProfileRefreshSequence(win)
               else if (themesE2E) await runThemesSequence(win)

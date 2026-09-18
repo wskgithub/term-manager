@@ -1,10 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AppSettings,
+  PaneGeom,
   PluginInfo,
   Profile,
   RestoredSession,
   SessionUiSync,
+  SplitDir,
   TermInfo,
   ThemeDef
 } from '../shared/types'
@@ -50,6 +52,23 @@ const api = {
   resize: (id: string, cols: number, rows: number): void =>
     ipcRenderer.send('term:resize', id, cols, rows),
   kill: (id: string): void => ipcRenderer.send('term:kill', id),
+  // 分屏：在 fromId pane 旁分出新 pane（同 tab 的 profile），返回新 pane 的 termId
+  splitPane: (tabId: string, fromId: string, dir: SplitDir): Promise<string> =>
+    ipcRenderer.invoke('pane:split', tabId, fromId, dir),
+  // 把手拖拽落点：pane 级尺寸（resize-pane，window 总尺寸不变）
+  resizePane: (id: string, cols: number, rows: number): void =>
+    ipcRenderer.send('pane:resize', id, cols, rows),
+  // 同步 tmux 侧 active pane（点击/键盘导航后）
+  selectPane: (id: string): void => ipcRenderer.send('pane:select', id),
+  // 关闭单个 pane（window 里只剩它时降级为关标签）
+  killPane: (id: string): void => ipcRenderer.send('pane:kill', id),
+  // pane 布局权威推送（%layout-change → list-panes 对账后的几何清单）
+  onPanes: (cb: (tabId: string, panes: PaneGeom[]) => void): (() => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, tabId: string, panes: PaneGeom[]): void =>
+      cb(tabId, panes)
+    ipcRenderer.on('term:panes', handler)
+    return () => ipcRenderer.removeListener('term:panes', handler)
+  },
   writeClipboard: (text: string): void => ipcRenderer.send('clipboard:write', text),
   readClipboard: (): Promise<string> => ipcRenderer.invoke('clipboard:read'),
   onData: (cb: (id: string, data: string) => void): (() => void) => {
