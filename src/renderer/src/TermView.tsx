@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { Terminal } from '@xterm/xterm'
+import { Terminal, type ILinkHandler } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
+import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { api, type ThemeDef } from './api'
@@ -17,6 +18,9 @@ interface Props {
   // GPU 渲染开关（设置页「渲染」节）：开=尝试 WebGL 渲染器，失败/上下文丢失
   // 自动回退 DOM 渲染器；关=DOM。变化即时生效，不重建终端实例
   gpu: boolean
+  // OSC 52 剪贴板开关（设置页「剪贴板」节）：关=忽略终端程序发出的写剪贴板
+  // 序列。变化即时生效（handler fire 时经 ref 读），不重建终端实例
+  osc52: boolean
   onTitle: (title: string) => void
   onTerminal: (id: string, t: Terminal | null) => void
   // 搜索 addon 实例上交 App（镜像 onTerminal 惯例）：App 的查找框经它对
@@ -48,7 +52,11 @@ interface Thumb {
   height: number
 }
 
-export function TermView({ termId, fontFamily, fontSize, scheme, gpu, onTitle, onTerminal, onSearchAddon, onMetrics, onContextMenu, onInput, onCycleTab, onCyclePane, onZoomToggle }: Props) {
+// OSC 52 写剪贴板的解码字节上限（1MB）：覆盖正常复制场景，挡住恶意 pane
+// 程序的超大 payload
+const OSC52_MAX_BYTES = 1 << 20
+
+export function TermView({ termId, fontFamily, fontSize, scheme, gpu, osc52, onTitle, onTerminal, onSearchAddon, onMetrics, onContextMenu, onInput, onCycleTab, onCyclePane, onZoomToggle }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -71,6 +79,9 @@ export function TermView({ termId, fontFamily, fontSize, scheme, gpu, onTitle, o
   // onData 同理：广播路由依赖 App 的实时分组态，必须每次按键都拿到最新闭包
   const inputRef = useRef(onInput)
   inputRef.current = onInput
+  // OSC 52 开关：parser handler 在 mount-once 的 effect 里注册，fire 时经 ref 读
+  const osc52Ref = useRef(osc52)
+  osc52Ref.current = osc52
   // 设置是异步加载的：建实例时用最新值，晚到的变化由下面的 effect 补齐
   const latest = useRef({ fontFamily, fontSize })
   latest.current = { fontFamily, fontSize }
@@ -145,6 +156,13 @@ export function TermView({ termId, fontFamily, fontSize, scheme, gpu, onTitle, o
   }
 
   useEffect(() => {
+    // OSC 8 超链接的点击出口：不设 linkHandler 时 xterm 内核会弹 confirm 再
+    // window.open（被 setWindowOpenHandler 拒掉后返回 null）；显式接管直达
+    // 主进程白名单。allowNonHttpProtocols 缺省 false——内核直接忽略非
+    // http/https 链接，与 openExternalHttp 白名单双保险
+    const linkHandler: ILinkHandler = {
+      activate: (_e, text) => api.openExternal(text)
+    }
     const term = new Terminal({
       fontFamily: resolveFontStack(latest.current.fontFamily),
       fontSize: latest.current.fontSize,
@@ -153,6 +171,7 @@ export function TermView({ termId, fontFamily, fontSize, scheme, gpu, onTitle, o
       // 搜索高亮（addon-search 装饰）依赖提案期 API（registerDecoration），必须
       // 显式开启；xterm 实例只在自研代码内使用（插件永不接触），无暴露面
       allowProposedApi: true,
+      linkHandler,
       theme: scheme.terminal
     })
     const fit = new FitAddon()
@@ -264,6 +283,31 @@ export function TermView({ termId, fontFamily, fontSize, scheme, gpu, onTitle, o
     const search = new SearchAddon()
     term.loadAddon(search)
     onSearchAddon(termId, search)
+    // URL 检测（纯文本里的 http/https 链接）：自定义 handler 直达主进程白名单
+    // ——addon 默认 handler 走 window.open，被 setWindowOpenHandler deny 后
+    // 返回 null 再赋 location 会 throw。与终端同生命周期（term.dispose 释放）
+    term.loadAddon(new WebLinksAddon((_ev, uri) => api.openExternal(uri)))
+    // OSC 52：终端程序请求写系统剪贴板（ssh 远端复制的主通路）。%output 是
+    // pane 原始字节流的解析前抽头，序列原样到达这里的 xterm parser——tmux
+    // 控制模式客户端从不转发 OSC 52，也不需要它转发。xterm 5.5 内核对 52 无
+    // 内置 handler，这里注册即唯一持有者；payload 为 "Pc;Pd"（选择符;base64）。
+    // 读方向（Pd='?'）不响应——剪贴板内容不外流；1MB 解码上限防滥用（先查
+    // base64 长度再解码，远低于 xterm parser 的 10MB payload 上限）
+    term.parser.registerOscHandler(52, (data) => {
+      const semi = data.indexOf(';')
+      if (semi < 0) return true // 已消费：畸形序列也不落 buffer
+      const b64 = data.slice(semi + 1)
+      // 解码字节数 ≈ b64 长度 × 3/4；超限丢弃（先查长度再解码）
+      if (b64 === '?' || b64.length * 3 > OSC52_MAX_BYTES * 4) return true
+      if (!osc52Ref.current) return true
+      try {
+        const text = new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
+        if (text) api.writeClipboard(text)
+      } catch {
+        // 非法 base64：静默丢弃
+      }
+      return true
+    })
 
     const ro = new ResizeObserver(() => fitIfVisible())
     ro.observe(ref.current!)

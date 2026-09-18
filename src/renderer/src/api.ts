@@ -100,6 +100,8 @@ export interface Api {
   onPanes(cb: (tabId: string, panes: PaneGeom[]) => void): () => void
   writeClipboard(text: string): void
   readClipboard(): Promise<string>
+  // 终端里点击的链接交给系统浏览器（主进程 http/https 白名单）
+  openExternal(url: string): void
   onData(cb: (id: string, data: string) => void): () => void
   onExit(cb: (id: string, code: number) => void): () => void
 }

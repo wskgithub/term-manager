@@ -26,6 +26,7 @@ interface Props {
   fontSize: number
   scheme: ThemeDef
   gpu: boolean
+  osc52: boolean
   onTitle: (id: string, title: string) => void
   onTerminal: (id: string, t: Terminal | null) => void
   onSearchAddon: (id: string, addon: SearchAddon | null) => void
@@ -48,6 +49,7 @@ export function PaneLayout({
   fontSize,
   scheme,
   gpu,
+  osc52,
   onTitle,
   onTerminal,
   onSearchAddon,
@@ -276,6 +278,7 @@ export function PaneLayout({
                 fontSize={fontSize}
                 scheme={scheme}
                 gpu={gpu}
+                osc52={osc52}
                 onTitle={(t) => onTitle(b.id, t)}
                 onTerminal={onTerminal}
                 onSearchAddon={onSearchAddon}
@@ -314,6 +317,7 @@ export function PaneLayout({
                   fontSize={fontSize}
                   scheme={scheme}
                   gpu={gpu}
+                  osc52={osc52}
                   onTitle={(t) => onTitle(p.id, t)}
                   onTerminal={onTerminal}
                   onSearchAddon={onSearchAddon}

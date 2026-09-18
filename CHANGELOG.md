@@ -3,6 +3,32 @@
 All notable changes to Term Manager are documented in this file.
 本项目的所有重要变更都记录在此文件中。
 
+## Unreleased / 未发布
+
+### English
+
+- **Clickable links**: URLs printed by programs are detected and become clickable
+  (hover underline, click opens in the system browser), as are explicit OSC 8
+  hyperlinks from modern CLIs. Opening goes through the main process with the same
+  http/https-only whitelist as `window.open`; `file://` and other schemes are refused
+  (non-http OSC 8 links are filtered out by the terminal core before activation).
+- **OSC 52 clipboard**: terminal programs can write the system clipboard — the main
+  path for copying from ssh remotes (remote `vim` / `tmux copy-mode` yanks land in the
+  local clipboard, no X forwarding). Works with zero tmux configuration; payloads are
+  decode-capped at 1 MB per write, the read direction (`?` query) is never answered,
+  and a settings toggle (Terminal page, on by default) disables the pathway.
+
+### 中文
+
+- **可点击链接**：程序输出的 URL 自动检测为可点击链接（悬停下划线，点击交给
+  系统浏览器打开），显式 OSC 8 超链接同样支持。打开走主进程、与 `window.open`
+  同一条仅限 http/https 的白名单；`file://` 等其他协议拒绝（非 http 的 OSC 8
+  链接在终端内核层即被过滤）。
+- **OSC 52 剪贴板**：终端里的程序可写系统剪贴板——ssh 远程复制的主通路
+  （远端 `vim` / `tmux copy-mode` 的复制直接落到本地剪贴板，无需 X 转发）。
+  零 tmux 配置；单次写入解码上限 1MB，读方向（`?` 查询）一律不响应，设置页
+  （终端页，默认开）可整体关闭。
+
 ## 0.3.0 — 2026-09-17
 
 ### English

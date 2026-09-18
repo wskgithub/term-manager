@@ -521,6 +521,37 @@ export function setupE2E(ctx: E2ECtx): void {
     return false
   }
 
+  /** 链接回归：定位 sub 在活跃终端 buffer 里的行/列并换算成窗口点击坐标。
+      cell 尺寸按 xterm 自身的测量算法（canvas TextMetrics + 终端当前字体选项，
+      CharSizeService 默认策略同源）；.xterm-screen 左上角即 (0,0) cell。
+      测试须保证 URL 独占一行（printf 换行输出），行内列偏移不受宽字符影响 */
+  w.__e2eLinkPoint = (sub: string): { visible: boolean; x?: number; y?: number } | null => {
+    const t = termsInOrder().at(-1)
+    if (!t) return null
+    const b = t.buffer.active
+    for (let i = b.length - 1; i >= Math.max(0, b.length - 200); i--) {
+      const line = b.getLine(i)?.translateToString(true) ?? ''
+      const col = line.indexOf(sub)
+      if (col < 0) continue
+      if (i < b.viewportY || i >= b.viewportY + t.rows) return { visible: false }
+      const screen = t.element?.querySelector<HTMLElement>('.xterm-screen')
+      const ctx2d = document.createElement('canvas').getContext('2d')
+      if (!screen || !ctx2d) return null
+      ctx2d.font = `${t.options.fontSize}px ${t.options.fontFamily}`
+      const m = ctx2d.measureText('W')
+      const cw = m.width
+      const ch = m.fontBoundingBoxAscent + m.fontBoundingBoxDescent
+      if (!(cw > 0 && ch > 0)) return null
+      const r = screen.getBoundingClientRect()
+      return {
+        visible: true,
+        x: Math.round(r.left + (col + sub.length / 2) * cw),
+        y: Math.round(r.top + (i - b.viewportY + 0.5) * ch)
+      }
+    }
+    return { visible: false }
+  }
+
   /** 第 idx 个终端的末几行文本（套件失败时的诊断输出；idx 越界返回 null） */
   w.__e2ePaneText = (idx: number): string[] | null => {
     const t = termsInOrder()[idx]
@@ -531,6 +562,19 @@ export function setupE2E(ctx: E2ECtx): void {
       lines.push(b.getLine(i)?.translateToString(true) ?? '')
     }
     return lines
+  }
+
+  /** 第 idx 个终端 buffer 里含 sub 的行（含行号，计数类断言失败的诊断用） */
+  w.__e2ePaneLinesWith = (idx: number, sub: string): Array<{ line: number; text: string }> => {
+    const t = termsInOrder()[idx]
+    if (!t) return []
+    const b = t.buffer.active
+    const hits: Array<{ line: number; text: string }> = []
+    for (let i = 0; i < b.length; i++) {
+      const s = b.getLine(i)?.translateToString(true) ?? ''
+      if (s.includes(sub)) hits.push({ line: i, text: s.slice(0, 160) })
+    }
+    return hits
   }
 
   /** 含 U+FFFD 的终端及行内容（应为空：多字节字符跨 %output chunk 解码损坏的标志） */

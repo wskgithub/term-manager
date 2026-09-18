@@ -73,6 +73,8 @@ const api = {
   },
   writeClipboard: (text: string): void => ipcRenderer.send('clipboard:write', text),
   readClipboard: (): Promise<string> => ipcRenderer.invoke('clipboard:read'),
+  // 终端里点击的链接交给系统浏览器（主进程 http/https 白名单，file:// 等拒绝）
+  openExternal: (url: string): void => ipcRenderer.send('shell:openExternal', url),
   onData: (cb: (id: string, data: string) => void): (() => void) => {
     const handler = (_e: Electron.IpcRendererEvent, id: string, data: string): void => cb(id, data)
     ipcRenderer.on('term:data', handler)

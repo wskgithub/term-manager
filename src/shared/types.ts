@@ -265,6 +265,11 @@ export interface AppSettings {
   //（驱动不支持/被开关禁用）或运行中上下文丢失时自动回退 DOM 渲染器，功能
   // 不受影响；关闭后一律 DOM 渲染。即时生效，不重建已开终端
   gpuRendering: boolean
+  // 终端程序写系统剪贴板（OSC 52，默认开）：任意 pane 内程序（含 ssh 远端
+  // 经转发到达的序列）输出的 OSC 52 可把文本写入系统剪贴板——ssh 远程复制
+  // 的主通路。有 1MB 解码上限防滥用；读方向（'?' 查询）一律不响应，剪贴板
+  // 内容不外流。即时生效，不重建已开终端
+  osc52Copy: boolean
 }
 
 // 主进程 settings.ts 的兜底值，渲染层 App 也用它做异步加载前的初值
@@ -279,7 +284,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   keepSessionOnExit: true,
   groupBroadcast: false,
   sidebarVisible: false,
-  gpuRendering: true
+  gpuRendering: true,
+  osc52Copy: true
 }
 
 export interface TermInfo {

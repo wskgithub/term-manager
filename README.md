@@ -74,6 +74,9 @@ Windows Terminal: category navigation on the left — "Appearance" and "Terminal
   [Session persistence](#session-persistence) below).
 - **Group broadcast** (Terminal page): the "broadcast input to group" toggle
   (**off by default**, see [Group broadcast](#group-broadcast) below).
+- **OSC 52 clipboard** (Terminal page): the "terminal programs may write the clipboard"
+  toggle (on by default, see [Clickable links & OSC 52 clipboard](#clickable-links--osc-52-clipboard)
+  below).
 
 Changes apply immediately to all open terminals and persist to `settings.json`.
 
@@ -358,6 +361,25 @@ The shortcut is deliberately `Ctrl+Shift+F` (terminal-emulator convention: GNOME
 Terminal, Konsole), not `Ctrl+F` — plain `Ctrl+F` is the readline forward-char binding
 and keeps reaching the shell untouched.
 
+## Clickable links & OSC 52 clipboard
+
+URLs printed by programs (build logs, error messages, `git` output…) are detected and
+become clickable: hover underlines the link, a click hands it to the system browser via
+the main process — the same http/https-only whitelist that governs `window.open`
+(`file://` and other schemes are refused, non-http OSC 8 links are filtered out by the
+terminal core before activation). Explicit OSC 8 hyperlinks (emitted by modern CLIs
+like `gh`, `jq --argjson` helpers or CI tooling) work the same way.
+
+OSC 52 lets *terminal programs* write the system clipboard — the main path for copying
+from SSH remotes: run `vim`/`tmux copy-mode`/`wl-copy`-style tools on the remote host
+and the text lands in your local clipboard, no X forwarding needed. It works with zero
+tmux configuration: the tmux control-mode `%output` stream is a pre-parser tap of the
+pane's raw bytes, so the escape sequence reaches this app's xterm parser no matter what
+the remote or the tmux server does with it. Limits: payloads decode-capped at 1 MB per
+write, and the read direction (the `?` query) is never answered — your clipboard never
+flows out to a program. A settings toggle (Terminal page, on by default) disables the
+whole pathway.
+
 ## Split panes
 
 `Ctrl+Shift+D` splits the active pane side by side, `Ctrl+Shift+E` stacks it (iTerm
@@ -600,6 +622,16 @@ npx electron out/main/index.js --e2e-zoom --e2e-quit --no-sandbox
 ```
 
 ```bash
+# Links & OSC 52 regression: real full-path OSC 52 writes (printf → pane output →
+# %output → xterm parser → clipboard IPC, asserted by reading the clipboard in the
+# main process), UTF-8 payloads, sequence not landing in the buffer, the 1 MB cap,
+# the '?' read query never answered, the settings toggle via a real settings-page
+# click, and real mouse-driven link clicks (URL detection + OSC 8, non-http refused
+# both ways; the openExternal handler is swapped in-main so no browser launches)
+npx electron out/main/index.js --e2e-links --e2e-quit --no-sandbox
+```
+
+```bash
 # Profile runtime-refresh regression (self-contained env: isolated userData + an empty
 # "install dir" on PATH). Writing/removing a fake shell simulates install/uninstall;
 # asserts profiles:list re-probes on every call, the renderer re-fetches when the +
@@ -749,6 +781,11 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
 - [x] Pane zoom (`Ctrl+Shift+Enter` toggles tmux `resize-pane -Z`; zoom state survives
       session keep-and-restore; navigating/splitting/closing auto-unzooms, covered by
       `--e2e-zoom`)
+- [x] Clickable links (detected URLs + OSC 8 hyperlinks open in the system browser via
+      the main-process http/https whitelist, covered by `--e2e-links`)
+- [x] OSC 52 clipboard (terminal programs — including anything reached over ssh — write
+      the local clipboard; 1 MB cap, read direction never answered, settings toggle,
+      zero tmux configuration, covered by `--e2e-links`)
 - [x] AppImage and rpm package formats (deb / AppImage / rpm from one `npm run dist`)
 
 ## Notes

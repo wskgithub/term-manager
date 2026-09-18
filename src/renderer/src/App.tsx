@@ -1069,6 +1069,7 @@ export default function App() {
               fontFamily={settings.fontFamily}
               fontSize={settings.fontSize}
               gpu={settings.gpuRendering}
+              osc52={settings.osc52Copy}
               scheme={scheme}
               onTitle={shellTitle}
               onTerminal={registerTerminal}
