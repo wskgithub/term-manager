@@ -232,8 +232,12 @@ export function setupE2E(ctx: E2ECtx): void {
           const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
           setter?.call(input, '已改名')
           input.dispatchEvent(new Event('input', { bubbles: true }))
-          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-          resolve(true)
+          // Enter 与填值隔一个宏任务：让 input 事件的 setDraft 先完成渲染提交，
+          // Enter 的提交闭包才能读到新名（同步连发时闭包读的是进编辑时的预填值）
+          setTimeout(() => {
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+            resolve(true)
+          }, 30)
         }, 150)
       })
     }
@@ -354,8 +358,11 @@ export function setupE2E(ctx: E2ECtx): void {
           const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
           setter?.call(input, '侧栏改名')
           input.dispatchEvent(new Event('input', { bubbles: true }))
-          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-          resolve(true)
+          // Enter 与填值隔一个宏任务（理由同 __e2eTabMenu）：保证提交闭包读到新名
+          setTimeout(() => {
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+            resolve(true)
+          }, 30)
         }, 150)
       })
     }
