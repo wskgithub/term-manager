@@ -166,7 +166,9 @@ export function Sidebar(props: Props) {
           onChange={(e) => setDraft(e.target.value)}
           onBlur={() => commitRename(t.id)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+            // Enter 直接提交，不经 blur→onBlur 链：提交语义不应依赖 input
+            // 持有焦点——焦点被外部夺走时 blur() 不派发事件，编辑态会残留
+            if (e.key === 'Enter') commitRename(t.id)
             if (e.key === 'Escape') {
               setEditingId(null)
               onRenameEnd(t.id)
@@ -289,7 +291,8 @@ export function Sidebar(props: Props) {
                     onChange={(e) => setGroupDraft(e.target.value)}
                     onBlur={() => commitGroupRename(seg.group.id)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                      // 与标签改名同理：Enter 直接提交，不依赖 input 持焦
+                      if (e.key === 'Enter') commitGroupRename(seg.group.id)
                       if (e.key === 'Escape') {
                         setEditingGroupId(null)
                         onGroupRenameEnd()

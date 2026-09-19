@@ -210,7 +210,13 @@ export function SettingsPage({
                   onChange={(e) => setSizeDraft(e.target.value)}
                   onBlur={commitSize}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                    // Enter 直接提交（不经 blur→onBlur 链——提交语义不应依赖
+                    // input 持有焦点）；随后 blur 维持「Enter 后离开输入框」的
+                    // 原有手感，onBlur 幂等重复提交无害
+                    if (e.key === 'Enter') {
+                      commitSize()
+                      ;(e.target as HTMLInputElement).blur()
+                    }
                   }}
                 />
                 <button

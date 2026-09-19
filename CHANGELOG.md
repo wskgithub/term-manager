@@ -7,6 +7,11 @@ All notable changes to Term Manager are documented in this file.
 
 ### English
 
+- **Fix**: pressing Enter in an inline rename box (tab title / group name in the tab
+  bar or the sidebar tree, font-size stepper in settings) now commits directly
+  instead of routing through `blur()`. The old path silently no-op'ed when the
+  input had lost focus (autoFocus failure or focus stolen by the terminal), which
+  could leave the editor stuck open and the rename never committed.
 - **Clickable links**: URLs printed by programs are detected and become clickable
   (hover underline, click opens in the system browser), as are explicit OSC 8
   hyperlinks from modern CLIs. Opening goes through the main process with the same
@@ -20,6 +25,10 @@ All notable changes to Term Manager are documented in this file.
 
 ### 中文
 
+- **修复**：内联改名框（标签栏/侧栏树的标签标题与组名、设置页字号步进器）
+  按 Enter 改为直接提交，不再借道 `blur()`。旧实现下输入框一旦失焦
+  （autoFocus 失效或焦点被终端夺走），Enter 的 `blur()` 静默无事件，编辑态
+  会卡住、改名永不提交。
 - **可点击链接**：程序输出的 URL 自动检测为可点击链接（悬停下划线，点击交给
   系统浏览器打开），显式 OSC 8 超链接同样支持。打开走主进程、与 `window.open`
   同一条仅限 http/https 的白名单；`file://` 等其他协议拒绝（非 http 的 OSC 8
