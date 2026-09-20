@@ -86,6 +86,9 @@ export default function App() {
   const settingsOpenRef = useRef(false)
   settingsOpenRef.current = settingsOpen
   const [exited, setExited] = useState<Set<string>>(() => new Set())
+  // e2e 快照用（--e2e-keep=prune 断言被裁标签的「会话已退出」态）
+  const exitedRef = useRef(exited)
+  exitedRef.current = exited
   // Tier 2 待批准的插件网络权限队列（每次弹队首；决策后 pluginHost 补挂帧）
   const [permPrompts, setPermPrompts] = useState<PluginPermPrompt[]>([])
 
@@ -319,13 +322,11 @@ export default function App() {
       enqueuePermPrompts(loadCodePlugins(infos))
       void api.cliReady().then(async (dirs) => {
         if (!alive) return
-        for (const d of dirs) {
-          if (d.agentId) void launchAgent(d.agentId, { dir: d.dir })
-          else void newTab(undefined, d.dir)
-        }
-        if (dirs.length || tabsRef.current.length) return
-        // 会话恢复：上次退出保留的 tmux 会话已由主进程附着，这里取回标签
-        // （含固定/分组/活跃/改名态）；恢复成功则不再裸启动开默认终端
+        // 会话恢复先于外部目录请求：--open-dir / --agent 冷启动（Nautilus 右键）
+        // 此前会直接跳过恢复，留下已附着却不可见的会话；且 newTab 抢在主进程
+        // 附着流程完成前执行，新窗口会落进附着的副产品 session 被连带销毁
+        //（永久空白标签）。先取恢复态，再追加目录标签，两件事都被主进程启动
+        // 门闩串行化。恢复成功则不再裸启动开默认终端
         const restored = await api.restoreSession()
         if (!alive) return
         if (restored && restored.tabs.length > 0) {
@@ -333,8 +334,12 @@ export default function App() {
           setTabs(restored.tabs)
           setGroups(restored.groups)
           setActiveId(restored.activeId || restored.tabs[0]!.id)
-          return
         }
+        for (const d of dirs) {
+          if (d.agentId) void launchAgent(d.agentId, { dir: d.dir })
+          else void newTab(undefined, d.dir)
+        }
+        if (dirs.length || restored || tabsRef.current.length) return
         // 裸启动（应用菜单/命令行，无右键或 CLI 目录请求，无可恢复会话）开一个
         // 默认终端；cwd 不传，后端回退 ~（profile.cwd 优先）
         void api.getSettings().then((s) => {
@@ -1069,6 +1074,7 @@ export default function App() {
         getTabs: () => tabsRef.current,
         getGroups: () => groupsRef.current,
         getRenamed: () => [...renamed.current],
+        getExited: () => [...exitedRef.current],
         getBroadcast: () => [...broadcastRef.current],
         getSidebarVisible: () => settingsRef.current.sidebarVisible
       })

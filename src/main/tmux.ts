@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { randomUUID } from 'crypto'
-import { existsSync, readdirSync, unlinkSync } from 'fs'
+import { existsSync, readdirSync, readFileSync, unlinkSync } from 'fs'
 import os from 'os'
 import { basename, join } from 'path'
 import { StringDecoder } from 'string_decoder'
@@ -80,6 +80,34 @@ const OUT_PREFIX = Buffer.from('%output ')
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
+// 「空闲 shell」的 pane_current_command 取值集：tmux 报告 pane 前台进程名，
+// shell 本体在提示符待命时就是这些名字（login/参数形态不出现，comm 名恒裸）。
+// 不在此集内 = 前台有别的程序在跑（vim/ssh/sleep/python REPL…）= 在保
+const IDLE_SHELL_CMDS = new Set([
+  'sh', 'bash', 'zsh', 'fish', 'dash', 'ksh', 'mksh', 'csh', 'tcsh',
+  'yash', 'elvish', 'xonsh', 'oil', 'osh', 'nu', 'nushell', 'pwsh', 'powershell'
+])
+
+/** shell 是否还挂着活子进程（后台任务/挂起的作业）：pane_current_command 只看
+    前台，`sleep 300 &` 时的报值仍是 shell 本体——用 /proc 的 children 判定。
+    读不到（进程已死/文件缺失）视为无子进程；目标是 Linux，/proc 恒在 */
+function shellHasLiveChildren(pid: string): boolean {
+  try {
+    const kids = readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8').trim()
+    if (!kids) return false
+    return kids.split(/\s+/).some((k) => {
+      try {
+        process.kill(Number(k), 0)
+        return true
+      } catch {
+        return false
+      }
+    })
+  } catch {
+    return false
+  }
+}
+
 /** 清理崩溃实例遗留的私有 tmux 服务器。socket 名固定为 termmgr-<创建进程 pid>：
     名字经 ^termmgr-(\d+)$ 白名单校验后只可能是「termmgr-」+纯数字，无注入面；
     pid 已死而 socket 仍在 ⇒ 上次实例未正常退出（会话保持下也可能是崩溃前的在保
@@ -87,7 +115,8 @@ const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
     服务器；smoke/e2e 隔离进程不调用，避免误杀用户在保会话）。
     pid 存活（另一运行实例 / pid 被复用）时保守跳过 */
 export function sweepStaleServers(keepSocket?: string): void {
-  const dir = process.env.TMUX_TMPDIR ?? `/tmp/tmux-${process.getuid?.() ?? 0}`
+  const uid = process.getuid?.() ?? 0
+  const dir = join(process.env.TMUX_TMPDIR ?? '/tmp', `tmux-${uid}`)
   let names: string[]
   try {
     names = readdirSync(dir)
@@ -172,6 +201,11 @@ export class TmuxBackend {
   // takeReplay 时的 capture-pane 快照必然覆盖取走时刻之前的全部屏幕内容
   private replayPending = new Set<string>()
   private disposed = false
+  // 启动/附着进行中的 promise（start() 的门闩）：attach 期间外部命令（term:create
+  // 等）必须等它完成——new-window 若抢在 attach-session 之前执行，会落进控制
+  // 客户端连接时自动创建的副产品 session，随后被附着流程的清场 kill-session
+  // 连带销毁（Nautilus --open-dir 冷启动 + 在保会话时必现，标签永久空白）
+  private starting: Promise<TermInfo[]> | null = null
 
   constructor(private emit: (channel: string, ...args: unknown[]) => void) {}
 
@@ -181,7 +215,19 @@ export class TmuxBackend {
    * （遗留服务器清理由 index.ts 在真实 GUI 启动时先行调用 sweepStaleServers）
    */
   async start(attach?: PersistedSession): Promise<TermInfo[]> {
+    if (this.starting) return this.starting
     if (this.proc) return []
+    // 先登记门闩再执行：create() 等外部入口据此等待，杜绝与附着流程交错
+    const p = this.doStart(attach)
+    this.starting = p
+    try {
+      return await p
+    } finally {
+      this.starting = null
+    }
+  }
+
+  private async doStart(attach?: PersistedSession): Promise<TermInfo[]> {
     if (attach) {
       try {
         return await this.startAttach(attach)
@@ -194,9 +240,12 @@ export class TmuxBackend {
     return []
   }
 
-  /** tmux 私有 socket 目录（spawn 只传 -L 名，路径规则与 tmux/sweep 一致） */
+  /** tmux 私有 socket 目录（spawn 只传 -L 名，路径规则与 tmux/sweep 一致）。
+      tmux 的实际落盘是 <TMPDIR>/tmux-<uid>/<name>：设了 TMUX_TMPDIR 时也要
+      拼上 tmux-<uid> 子层，否则 attach 的 existsSync 判空错误回落全新启动 */
   private socketDir(): string {
-    return process.env.TMUX_TMPDIR ?? `/tmp/tmux-${process.getuid?.() ?? 0}`
+    const uid = process.getuid?.() ?? 0
+    return join(process.env.TMUX_TMPDIR ?? '/tmp', `tmux-${uid}`)
   }
 
   private spawnClient(socketName: string): void {
@@ -539,8 +588,12 @@ export class TmuxBackend {
       }
       return
     }
-    if (line.startsWith('%window-close ')) {
-      const win = line.slice('%window-close '.length).trim()
+    if (line.startsWith('%window-close ') || line.startsWith('%unlinked-window-close ')) {
+      // 两种事件同一语义：我们登记的 window 死了。%unlinked-window-close 指
+      // 死亡发生在控制客户端未附着的 session 里（如 kill-session 清场连带、
+      // 外部 tmux 操作）——不处理的话渲染层永远收不到退出通知，留下一个写不进
+      // 也刷不出的永久空白标签
+      const win = line.slice(line.indexOf(' ') + 1).trim()
       const id = this.windowToTerm.get(win)
       if (id) {
         const tab = this.tabs.get(id)
@@ -640,6 +693,9 @@ export class TmuxBackend {
   }
 
   async create(profile: Profile, cwdOverride?: string): Promise<TermInfo> {
+    // 启动/附着进行中先等它完成（见 starting 注释）：否则 new-window 会建进
+    // 即将被清场的副产品 session，窗口被连带杀掉且渲染层无从得知
+    if (this.starting) await this.starting.catch(() => undefined)
     if (!this.proc) await this.start()
 
     // 注意：不要在命令前加 `exec`（tmux 会经 /bin/sh -c "exec …" 包装执行，
@@ -959,6 +1015,68 @@ export class TmuxBackend {
     this.fire(`kill-window -t ${tab.window}`)
     this.exitAllPanes(id, 0)
     this.cleanupTab(id)
+  }
+
+  /**
+   * 回收空闲终端：遍历当前会话全部 window，所有 pane 都「空闲」（空提示符的
+   shell：前台是 shell 本体且无活子进程）的 window 直接 kill-window——PTY、
+   shell 及其后台子进程随 tmux 一并终结。有程序或命令在执行（前台非 shell
+   命令，或 shell 挂着后台任务/挂起作业）的 window 保留，返回保留数。
+   供退出保留路径调用（空闲即彻底回收，忙碌才留在 tmux 上等下次附着恢复）。
+   探测失败一律保守保留（宁可多留，不可误杀用户的程序）。
+   */
+  async pruneIdleWindows(): Promise<number> {
+    if (!this.proc || !this.session) return 0
+    let wins: string[]
+    try {
+      wins = await this.send(`list-windows -t ${this.session} -F '#{window_id}'`)
+    } catch {
+      return this.windowIds().size // 服务器无响应：不裁，按账面现状返回
+    }
+    const busyWins = new Set<string>()
+    for (const w of wins) {
+      const win = w.trim()
+      if (!win.startsWith('@')) continue
+      let panes: string[]
+      try {
+        panes = await this.send(
+          `list-panes -t ${win} -F '#{pane_dead} #{pane_current_command} #{pane_pid}'`
+        )
+      } catch {
+        busyWins.add(win) // 窗口将死/服务器忙：保留，交给下一次退出或附着
+        continue
+      }
+      for (const p of panes) {
+        const m = p.trim().match(/^([01]) (\S+) (\d+)$/)
+        if (!m) {
+          busyWins.add(win) // 格式对不上：保守保留
+          break
+        }
+        if (m[1] === '1') continue // 已死 pane 按空闲计
+        if (!IDLE_SHELL_CMDS.has(m[2]) || shellHasLiveChildren(m[3])) {
+          busyWins.add(win)
+          break
+        }
+      }
+    }
+    for (const w of wins) {
+      const win = w.trim()
+      if (!win.startsWith('@') || busyWins.has(win)) continue
+      try {
+        // 等回执再裁下一个：后续的落盘对账（windowIds）与 kill-session 不竞态
+        await this.send(`kill-window -t ${win}`)
+      } catch {
+        // 窗口恰好已被外部关闭：继续
+      }
+      for (const [id, t] of [...this.tabs]) {
+        if (t.window === win) {
+          t.alive = false
+          this.exitAllPanes(id, 0) // 渲染层即时收到退出（标签转「会话已退出」态）
+          this.cleanupTab(id)
+        }
+      }
+    }
+    return busyWins.size
   }
 
   /** pane 级状态清理（退出/死亡后：解码器、标题残片、暂存、输入/resize 防抖） */

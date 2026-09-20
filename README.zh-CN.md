@@ -399,6 +399,22 @@ npx electron out/main/index.js --e2e-session=phase2 --e2e-user-data=$U --e2e-ses
 ```
 
 ```bash
+# 在保会话 × 外部目录冷启动回归（隔离 userData 两段）：
+# seed 建标签打标记 → 保留退出；open 以 --open-dir=<dir> 冷启动模拟 Nautilus
+# 右键 → 断言恢复标签与目录标签并存、两个标签都可交互（历史 bug：new-window
+# 抢在附着前执行落进副产品 session 被连带销毁，标签永久空白）
+U=/tmp/e2e-keep-ud; rm -rf $U; mkdir -p $U /tmp/e2e-keep-open
+npx electron out/main/index.js --e2e-keep=seed --e2e-user-data=$U --no-sandbox
+npx electron out/main/index.js --e2e-keep=open --e2e-user-data=$U --open-dir=/tmp/e2e-keep-open --no-sandbox
+
+# 退出裁剪回归：3 空闲标签 + 1 前台 sleep 的忙碌标签 → pruneIdleWindows
+# 只留忙碌窗口；被裁标签渲染层呈现「会话已退出」态、忙碌标签可交互、
+# 落盘只剩忙碌标签
+U=/tmp/e2e-keep-ud; rm -rf $U; mkdir -p $U
+npx electron out/main/index.js --e2e-keep=prune --e2e-user-data=$U --no-sandbox
+```
+
+```bash
 # 分组侧栏回归：三条开关通路（标签栏按钮/侧栏✕/真实输入管线的 Ctrl+Shift+B）、
 # 树结构与标签数组一致性、菜单建组+改名、合成拖拽入组/出组/同父重排、折叠、
 # 点选激活焦点归属、侧栏开合的终端实时重排
@@ -522,9 +538,17 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
 （`capture-pane -e` 带颜色历史 + 光标定位，shell 提示符与 vim/htop 等全屏程序均精确还原）。
 崩溃同样可恢复：会话状态每次变更即落盘（`sessions.json`），重启后按窗口对账收养。
 
-- 设置页「终端 → 会话」可关闭该行为，回到"退出即终结"
+保留是**按标签智能判定**的：退出时逐个检查终端是否有程序或命令在执行——
+前台是 shell 本体且无后台任务/挂起作业的标签视为空闲，随即 kill-window
+回收（PTY、shell 及其子进程一并终结）；有程序在跑（vim/ssh/训练脚本，或
+shell 挂着后台任务）的标签才留在 tmux 上等下次附着恢复。全部空闲则 tmux
+服务器一并终结、记录清空，不留任何后台资源。
+
+- 设置页「终端 → 会话」可关闭该行为，回到"退出即终结"（全部标签不区分空闲）
 - `Ctrl+Shift+Q` 随时显式终结全部会话后退出
 - 恢复的终端可继续交互（非只读快照）；上次运行期间已退出的标签不恢复
+- 从文件管理器右键（`--open-dir` / agent 子菜单）冷启动时同样先恢复在保
+  会话再打开目标目录标签——外部目录请求不再跳过恢复，也不会撞上附着流程
 
 ## 组内广播
 
@@ -644,9 +668,9 @@ pane 一个不少。
 - [x] tmux Control Mode 后端：UTF-8（StringDecoder 处理跨 chunk 多字节字符）、自适应尺寸、输入防抖合批（5ms/8KB）、
       进程异常兜底（tmux 缺失/被杀不再崩主进程）、启动时清理崩溃实例遗留的 tmux 服务器（socket 名内嵌 pid 探活）
 - [x] 设置页（外观：字体选择/字号，fc-list 枚举本机等宽字体，即时生效 + 持久化）
-- [x] E2E 测试设施（冒烟 + 20 标签基准 + 截图 + 键盘注入 + 输入回归[含广播路由] + 会话保持两段回归）
+- [x] E2E 测试设施（冒烟 + 20 标签基准 + 截图 + 键盘注入 + 输入回归[含广播路由] + 会话保持两段回归 + 在保会话×外部目录冷启动/退出裁剪回归）
 - [x] 固定标签页 + 标签分组（标签栏内颜色组：组头单击折叠、右键重命名/换色/解散；固定与分组互斥）
-- [x] 会话保持：退出保留 tmux 会话，重启附着恢复标签/固定/分组/改名态与屏幕回放（`--e2e-session` 两段回归覆盖）
+- [x] 会话保持：退出只保留有程序在跑的标签（空闲终端 kill 回收、全空闲则服务器终结），重启附着恢复标签/固定/分组/改名态与屏幕回放（`--e2e-session` 与 `--e2e-keep` 回归覆盖）
 - [x] 组内广播输入（按标签粒度，超越 Terminator；设置开关默认关，广播态不跨重启，`--e2e-input` 覆盖）
 - [x] electron-builder deb 打包（桌面入口/图标/依赖元数据齐全）
 - [x] Nautilus 右键菜单集成（在目录中打开 + 单实例复用窗口，随 deb/rpm 分发）

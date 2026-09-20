@@ -7,6 +7,25 @@ All notable changes to Term Manager are documented in this file.
 
 ### English
 
+- **Smart session keep on exit**: closing the window no longer parks every terminal
+  on tmux forever. Each tab is checked at exit for a running program or command —
+  tabs whose foreground is just an idle shell prompt (no background jobs, no
+  suspended processes) are killed and fully reclaimed (PTY, shell, and children);
+  only tabs with something actually running survive on the tmux server for the next
+  attach. An all-idle exit terminates the server and clears the record, leaving
+  nothing in the background.
+- **Fix**: launching from the file manager right-click menu (`--open-dir` / the agent
+  submenu) while a kept session exists no longer hangs on a permanently blank tab.
+  Two defects combined: the renderer skipped session restore whenever an external
+  directory request existed, and the `new-window` for that request raced the attach
+  flow — it landed in the throwaway session the attach cleanup then killed
+  (`%unlinked-window-close` was ignored, so the renderer never learned its window
+  died). Restore now happens first, and backend `create()` waits for the attach to
+  finish; unlinked-window-close is handled like window-close as a safety net.
+- **Fix**: with `TMUX_TMPDIR` set, the backend looked for sockets in
+  `$TMUX_TMPDIR/<name>` while tmux actually uses `$TMUX_TMPDIR/tmux-<uid>/<name>`,
+  so attach fell back to a fresh server. Both the sweeper and the attach check now
+  use the correct directory.
 - **AI Agent launching (auto-discovery)**: right-click any terminal pane and the new
   "Launch AI Agent" submenu lists AI Agent CLIs discovered on the machine (Claude Code,
   Codex, OpenCode, CodeBuddy, Gemini CLI, Qwen Code, Aider, Crush, iFlow CLI); clicking
@@ -36,6 +55,20 @@ All notable changes to Term Manager are documented in this file.
 
 ### 中文
 
+- **退出智能保留会话**：关闭窗口不再把所有终端永久挂在 tmux 上。退出时逐标签
+  检查是否有程序或命令在执行——前台只是空闲 shell 提示符（无后台任务、无挂起
+  作业）的标签立即 kill 并彻底回收（PTY、shell 及其子进程）；只有真正有程序
+  在跑的标签留在 tmux 服务器上等下次附着恢复。全部空闲则服务器一并终结、
+  记录清空，后台零残留。
+- **修复**：存在在保会话时从文件管理器右键（`--open-dir` / agent 子菜单）冷启动，
+  不再卡在永久空白的标签页。此前两个缺陷叠加：渲染层只要有外部目录请求就整体
+  跳过会话恢复；且该请求触发的 `new-window` 与附着流程竞态——建进了附着清场时
+  会连带杀掉的副产品 session（`%unlinked-window-close` 无人处理，渲染层永远
+  不知道自己的窗口已死）。现在恢复先行、后端 `create()` 等附着完成后再执行，
+  unlinked-window-close 也按 window-close 同语义兜底处理。
+- **修复**：设置 `TMUX_TMPDIR` 时后端在 `$TMUX_TMPDIR/<name>` 找 socket，而 tmux
+  实际落在 `$TMUX_TMPDIR/tmux-<uid>/<name>`，导致附着误判 socket 不存在而回落
+  全新启动。sweep 与附着检查均已改为正确目录。
 - **AI Agent 启动（自发现）**：任意终端 pane 右键新增「启动 AI Agent」子菜单，列出
   本机自动发现的 AI Agent CLI（Claude Code、Codex、OpenCode、CodeBuddy、Gemini CLI、
   Qwen Code、Aider、Crush、iFlow CLI），点击即在该 pane 的当前工作目录开新标签启动。

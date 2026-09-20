@@ -282,11 +282,23 @@ colored history + cursor repositioning, exact for both shell prompts and full-sc
 apps like vim/htop). Crashes are recoverable the same way: session state is persisted on
 every change (`sessions.json`) and windows are reconciled/adopted on restart.
 
+What survives is decided **per tab**: on exit each terminal is checked for a running
+program or command. A tab whose foreground is just the shell prompt — with no background
+jobs or suspended processes — is considered idle and killed on the spot (kill-window
+reclaims the PTY, the shell, and its children). Only tabs with something actually
+running (vim/ssh/a training script, or a shell holding background jobs) stay on the
+tmux server for the next attach. When every tab is idle the tmux server itself is
+terminated and the record cleared — nothing is left running in the background.
+
 - The settings page (Terminal → Session) can turn this off to return to
-  "exit terminates everything"
+  "exit terminates everything" (no idle/busy distinction)
 - `Ctrl+Shift+Q` explicitly terminates all sessions and exits at any time
 - Restored terminals remain fully interactive (not a read-only snapshot); tabs whose
   shell had already exited are not restored
+- Cold-starting from the file manager right-click menu (`--open-dir` / the agent
+  submenu) restores the kept session first and then opens the requested directory
+  tab — external directory requests no longer skip restore, nor do they race the
+  attach flow
 
 ## Group broadcast
 
@@ -618,6 +630,22 @@ npx electron out/main/index.js --e2e-session=phase2 --e2e-user-data=$U --e2e-ses
 ```
 
 ```bash
+# Kept-session × external-directory cold start regression (isolated userData, two
+# phases): seed creates a tab with a marker and exits keeping the session; open
+# cold-starts with --open-dir=<dir> like the Nautilus right-click menu and asserts
+# the restored tab and the directory tab coexist, both interactive (historical bug:
+# new-window raced the attach flow, landed in the throwaway session and was killed
+# with it, leaving a permanently blank tab). prune covers exit-time reclamation:
+# 3 idle tabs + 1 busy (foreground sleep) → only the busy window survives, pruned
+# tabs flip to "session exited" in the UI, and sessions.json keeps just the busy tab.
+U=/tmp/e2e-keep-ud; rm -rf $U; mkdir -p $U /tmp/e2e-keep-open
+npx electron out/main/index.js --e2e-keep=seed --e2e-user-data=$U --no-sandbox
+npx electron out/main/index.js --e2e-keep=open --e2e-user-data=$U --open-dir=/tmp/e2e-keep-open --no-sandbox
+rm -rf $U; mkdir -p $U
+npx electron out/main/index.js --e2e-keep=prune --e2e-user-data=$U --no-sandbox
+```
+
+```bash
 # Group sidebar regression: all three toggle paths (tab-bar button / sidebar close /
 # Ctrl+Shift+B through the real input pipeline), tree structure vs the tab array,
 # menu-driven grouping + rename, synthetic-drag into/out-of-group and same-parent
@@ -775,11 +803,14 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
       applied live + persisted)
 - [x] E2E test infrastructure (smoke + 20-tab benchmark + screenshots + keyboard
       injection + input regression [incl. broadcast routing] + two-phase
-      session-persistence regression)
+      session-persistence regression + kept-session × external-directory cold-start
+      and exit-pruning regressions)
 - [x] Pinned tabs + tab groups (colored groups in the tab bar: collapse by clicking the
       group head, right-click to rename/recolor/dissolve; pin and group are mutually exclusive)
-- [x] Session persistence: exit keeps tmux sessions; relaunch re-attaches and restores
-      tabs/pin/group/rename state plus screen replay (covered by `--e2e-session`)
+- [x] Session persistence: exit keeps only tabs with something running (idle terminals
+      are killed and reclaimed; an all-idle exit terminates the server); relaunch
+      re-attaches and restores tabs/pin/group/rename state plus screen replay
+      (covered by `--e2e-session` and `--e2e-keep`)
 - [x] Per-group broadcast input (tab granularity, beyond Terminator; settings toggle
       off by default, broadcast state does not survive restart, covered by `--e2e-input`)
 - [x] electron-builder deb packaging (desktop entry / icons / dependency metadata included)
