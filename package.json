@@ -1,6 +1,6 @@
 {
   "name": "term-manager",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Linux 终端管理器：标签页重命名/分组/排序 + 多 profile，类似 Windows Terminal",
   "main": "./out/main/index.js",
   "author": "wskgithub <wskgithub@users.noreply.github.com>",
