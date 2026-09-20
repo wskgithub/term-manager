@@ -687,6 +687,21 @@ export class TmuxBackend {
     return info
   }
 
+  /** 查询 termId 所在 pane 的实际工作目录（splitPane 同款探测：format 产物
+      不带换行，CR/LF 一并拒收）。pane 不存在/探测失败 → null，回退由调用方定 */
+  async paneCwdOf(termId: string): Promise<string | null> {
+    const rec = this.paneRecords.get(termId)
+    if (!rec) return null
+    try {
+      const r = await this.send(`display-message -p -t ${rec.pane} '#{pane_current_path}'`)
+      const p = (r[r.length - 1] ?? '').trim()
+      if (p && !p.includes('\n') && !p.includes('\r')) return p
+    } catch {
+      // 探测失败走调用方回退
+    }
+    return null
+  }
+
   /**
    * 在 fromId 所在 pane 的右侧（h）或下方（v）分出新 pane：同 tab 的 profile
    * 命令，cwd 继承源 pane 的实际工作目录（tmux 经 /proc 探测的

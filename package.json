@@ -69,11 +69,12 @@
         "libappindicator3-1",
         "python3-nautilus"
       ],
-      "fpm": [
-        "build/nautilus-python/term_manager_nautilus.py=/usr/share/nautilus-python/extensions/term_manager_nautilus.py"
-      ]
-    },
-    "rpm": {
+    "fpm": [
+      "build/nautilus-python/term_manager_nautilus.py=/usr/share/nautilus-python/extensions/term_manager_nautilus.py",
+      "src/shared/agents.json=/usr/share/nautilus-python/extensions/term-manager-agents.json"
+    ]
+  },
+  "rpm": {
       "depends": [
         "gtk3",
         "libnotify",
@@ -87,11 +88,12 @@
         "libsecret",
         "tmux"
       ],
-      "fpm": [
-        "build/nautilus-python/term_manager_nautilus.py=/usr/share/nautilus-python/extensions/term_manager_nautilus.py"
-      ]
-    }
-  },
+    "fpm": [
+      "build/nautilus-python/term_manager_nautilus.py=/usr/share/nautilus-python/extensions/term_manager_nautilus.py",
+      "src/shared/agents.json=/usr/share/nautilus-python/extensions/term-manager-agents.json"
+    ]
+  }
+},
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-search": "^0.15.0",

@@ -7,7 +7,10 @@ export interface MenuItem {
   shortcut?: string
   icon?: ReactNode
   disabled?: boolean
-  action: () => void
+  // 无 children 的普通项：动作执行后关闭菜单
+  action?: () => void
+  // 有 children 即父项：点击/Enter = 展开（再点收起），不关闭菜单、无 action
+  children?: MenuEntry[]
 }
 
 /** 分隔线条目：不占键盘焦点，方向键/回车都会跳过 */
@@ -168,16 +171,45 @@ export function SidebarIcon({ size = 14 }: { size?: number }) {
   )
 }
 
+/** 「启动 AI Agent」父项图标（lucide bot 风格：方头 + 双眼 + 天线） */
+export const BotIcon = (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="5" y="9" width="14" height="10" rx="2" />
+    <path d="M12 9V5" />
+    <circle cx="12" cy="3.5" r="1" />
+    <path d="M9.2 13.5h.01" />
+    <path d="M14.8 13.5h.01" />
+    <path d="M9.5 16.5h5" />
+  </svg>
+)
+
 /**
  * 终端右键菜单：portal 到 body 的自绘浮层。
  * 弹出前用 useLayoutEffect 量自身尺寸并钳到视口内（贴边时向反方向翻转），
  * 首帧就在最终位置，不闪跳。关闭途径：点击外部 / Escape / 滚轮 / 窗口失焦、缩放。
+ * 支持 children 二级子菜单：hover 或点击/Enter 展开（→ 键进入、←/Esc 返回），
+ * 子菜单 portal 到 body、锚在父项右缘（右侧放不下翻到左侧），键盘导航与
+ * 父层共用 window 捕获层的同一套 active/subActive 状态（菜单项不占真实焦点）。
  */
 export function ContextMenu({ x, y, items, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ x, y, flipX: false, flipY: false })
   // 键盘高亮项：默认落在首个可用项上
   const [active, setActive] = useState(() => Math.max(0, items.findIndex(selectable)))
+  // 子菜单状态：openSub = 展开中的父项 key；subAnchor = 打开瞬间的父项矩形
+  //（定位锚）；subActive = 子菜单键盘高亮。hover 父项即开、移到其他顶层项即收，
+  // 子菜单贴父项右缘（移动路径不经过兄弟项），无需关闭容差定时器
+  const [openSub, setOpenSub] = useState<string | null>(null)
+  const [subAnchor, setSubAnchor] = useState<{ right: number; left: number; top: number } | null>(null)
+  const [subActive, setSubActive] = useState(0)
+  const [subPos, setSubPos] = useState({ x: 0, y: 0 })
+  const subRef = useRef<HTMLDivElement>(null)
+  const itemRefs = useRef(new Map<string, HTMLDivElement>())
+
+  const parentItem = openSub
+    ? items.find((i): i is MenuItem => !('sep' in i) && i.key === openSub)
+    : undefined
+  const subItems: MenuEntry[] = parentItem?.children ?? []
 
   useLayoutEffect(() => {
     const el = ref.current
@@ -201,39 +233,113 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
     setPos({ x: nx, y: ny, flipX, flipY })
   }, [x, y])
 
+  // 子菜单钳位：右侧放不下整宽翻到父项左侧，底部溢出上移（与主菜单同语义）
+  useLayoutEffect(() => {
+    const el = subRef.current
+    if (!el || !subAnchor) return
+    const r = el.getBoundingClientRect()
+    const m = 8
+    let nx = subAnchor.right + 2
+    if (nx + r.width + m > window.innerWidth) nx = Math.max(m, subAnchor.left - r.width - 2)
+    const ny = Math.max(m, Math.min(subAnchor.top, window.innerHeight - r.height - m))
+    setSubPos({ x: nx, y: ny })
+  }, [subAnchor])
+
+  // 展开子菜单：锚定父项矩形，键盘高亮重置到首个可用子项
+  const openSubmenu = (item: MenuItem, el: HTMLElement) => {
+    const r = el.getBoundingClientRect()
+    setSubAnchor({ right: r.right, left: r.left, top: r.top })
+    setSubPos({ x: r.right + 2, y: r.top })
+    setOpenSub(item.key)
+    const children = item.children ?? []
+    setSubActive(Math.max(0, children.findIndex(selectable)))
+  }
+
   useEffect(() => {
     const onPointerDown = (e: PointerEvent) => {
-      if (!ref.current?.contains(e.target as Node)) onClose()
+      const t = e.target as Node
+      // 主菜单与子菜单都在「菜单内」，点外部（两者之外）才关闭
+      if (!ref.current?.contains(t) && !subRef.current?.contains(t)) onClose()
     }
     const onWheel = () => onClose()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation()
-        onClose()
+        // 已开子菜单时首个 Escape 只收子菜单（菜单本体保留，再 Esc 才关）
+        if (openSub) setOpenSub(null)
+        else onClose()
         return
       }
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        e.preventDefault()
-        e.stopPropagation()
-        const dir = e.key === 'ArrowDown' ? 1 : -1
-        setActive((cur) => {
-          for (let step = 1; step <= items.length; step++) {
-            const idx = (cur + dir * step + items.length * step) % items.length
-            if (selectable(items[idx])) return idx
-          }
-          return cur
-        })
-        return
-      }
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault()
-        e.stopPropagation()
-        const item = items[active]
-        if (item && selectable(item)) {
-          item.action()
-          onClose()
+      if (openSub) {
+        // 子菜单持有键盘：上下导航/回车执行/左箭头返回父层
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault()
+          e.stopPropagation()
+          const dir = e.key === 'ArrowDown' ? 1 : -1
+          setSubActive((cur) => {
+            for (let step = 1; step <= subItems.length; step++) {
+              const idx = (cur + dir * step + subItems.length * step) % subItems.length
+              if (selectable(subItems[idx])) return idx
+            }
+            return cur
+          })
+          return
         }
-        return
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault()
+          e.stopPropagation()
+          setOpenSub(null)
+          return
+        }
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          e.stopPropagation()
+          const item = subItems[subActive]
+          if (item && selectable(item)) {
+            item.action?.()
+            onClose()
+          }
+          return
+        }
+      } else {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault()
+          e.stopPropagation()
+          const dir = e.key === 'ArrowDown' ? 1 : -1
+          setActive((cur) => {
+            for (let step = 1; step <= items.length; step++) {
+              const idx = (cur + dir * step + items.length * step) % items.length
+              if (selectable(items[idx])) return idx
+            }
+            return cur
+          })
+          return
+        }
+        if (e.key === 'ArrowRight') {
+          const item = items[active]
+          if (item && selectable(item) && item.children?.length) {
+            e.preventDefault()
+            e.stopPropagation()
+            const el = itemRefs.current.get(item.key)
+            if (el) openSubmenu(item, el)
+            return
+          }
+          // 非父项上的右箭头不拦：像原生菜单一样收起并送达终端
+        } else if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          e.stopPropagation()
+          const item = items[active]
+          if (item && selectable(item)) {
+            if (item.children?.length) {
+              const el = itemRefs.current.get(item.key)
+              if (el) openSubmenu(item, el)
+            } else {
+              item.action?.()
+              onClose()
+            }
+          }
+          return
+        }
       }
       // 其余按键像原生菜单一样收起菜单，按键本身照常送达终端（不吞快速输入）
       if (!['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) onClose()
@@ -251,43 +357,98 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
       window.removeEventListener('blur', onClose)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, active, onClose])
+  }, [items, active, onClose, openSub, subActive, subItems])
 
   const origin = `${pos.flipY ? 'bottom' : 'top'} ${pos.flipX ? 'right' : 'left'}`
 
   return createPortal(
-    <div
-      ref={ref}
-      className="ctx-menu"
-      style={{ left: pos.x, top: pos.y, transformOrigin: origin }}
-      onContextMenu={(e) => e.preventDefault()}
-    >
-      {items.map((item, i) =>
-        'sep' in item ? (
-          <div key={item.key} className="ctx-sep" />
-        ) : (
+    <>
+      <div
+        ref={ref}
+        className="ctx-menu"
+        style={{ left: pos.x, top: pos.y, transformOrigin: origin }}
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        {items.map((item, i) =>
+          'sep' in item ? (
+            <div key={item.key} className="ctx-sep" />
+          ) : (
+            <div
+              key={item.key}
+              ref={(el) => {
+                if (el) itemRefs.current.set(item.key, el)
+                else itemRefs.current.delete(item.key)
+              }}
+              data-key={item.key}
+              className={
+                'ctx-item' +
+                (i === active || openSub === item.key ? ' active' : '') +
+                (item.disabled ? ' disabled' : '')
+              }
+              onMouseEnter={(e) => {
+                setActive(i)
+                if (item.children?.length) openSubmenu(item, e.currentTarget)
+                else setOpenSub(null)
+              }}
+              onClick={(e) => {
+                if (item.disabled) return
+                if (item.children?.length) {
+                  if (openSub === item.key) setOpenSub(null)
+                  else openSubmenu(item, e.currentTarget)
+                  return
+                }
+                item.action?.()
+                onClose()
+              }}
+            >
+              {item.icon !== undefined && <span className="ctx-icon">{item.icon}</span>}
+              <span className="ctx-label">{item.label}</span>
+              {item.children?.length ? (
+                <span className="ctx-sub-arrow">
+                  <ChevronIcon className="ctx-sub-chevron" />
+                </span>
+              ) : (
+                item.shortcut && <span className="ctx-kbd">{item.shortcut}</span>
+              )}
+            </div>
+          )
+        )}
+      </div>
+      {openSub &&
+        createPortal(
           <div
-            key={item.key}
-            data-key={item.key}
-            className={
-              'ctx-item' +
-              (i === active ? ' active' : '') +
-              (item.disabled ? ' disabled' : '')
-            }
-            onMouseEnter={() => setActive(i)}
-            onClick={() => {
-              if (item.disabled) return
-              item.action()
-              onClose()
-            }}
+            ref={subRef}
+            className="ctx-menu ctx-submenu"
+            style={{ left: subPos.x, top: subPos.y }}
+            onContextMenu={(e) => e.preventDefault()}
           >
-            {item.icon !== undefined && <span className="ctx-icon">{item.icon}</span>}
-            <span className="ctx-label">{item.label}</span>
-            {item.shortcut && <span className="ctx-kbd">{item.shortcut}</span>}
-          </div>
-        )
-      )}
-    </div>,
+            {subItems.map((item, i) =>
+              'sep' in item ? (
+                <div key={item.key} className="ctx-sep" />
+              ) : (
+                <div
+                  key={item.key}
+                  data-key={item.key}
+                  className={
+                    'ctx-item' + (i === subActive ? ' active' : '') + (item.disabled ? ' disabled' : '')
+                  }
+                  onMouseEnter={() => setSubActive(i)}
+                  onClick={() => {
+                    if (item.disabled) return
+                    item.action?.()
+                    onClose()
+                  }}
+                >
+                  {item.icon !== undefined && <span className="ctx-icon">{item.icon}</span>}
+                  <span className="ctx-label">{item.label}</span>
+                  {item.shortcut && <span className="ctx-kbd">{item.shortcut}</span>}
+                </div>
+              )
+            )}
+          </div>,
+          document.body
+        )}
+    </>,
     document.body
   )
 }

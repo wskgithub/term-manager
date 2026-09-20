@@ -752,6 +752,41 @@ body,
   background: var(--hairline);
 }
 
+/* 父项的子菜单指示箭头（▸：下折箭头旋转 -90°；与 .ctx-kbd 同位互斥展示） */
+.ctx-sub-arrow {
+  display: flex;
+  opacity: 0.6;
+}
+
+.ctx-item.active .ctx-sub-arrow {
+  opacity: 0.9;
+  color: var(--accent);
+}
+
+.ctx-sub-chevron {
+  transform: rotate(-90deg);
+}
+
+/* 子菜单浮层：复用 .ctx-menu 视觉，仅收窄最小宽并压过主菜单一层 */
+.ctx-submenu {
+  min-width: 172px;
+  z-index: 101;
+}
+
+/* agent 条目首字母圆标（monogram）：不引入品牌资产的轻量图标 */
+.ctx-mono {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 5px;
+  background: var(--surface);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
 .tab input {
   background: var(--bg-inset);
   color: var(--text-bright);
@@ -1146,6 +1181,68 @@ body,
 .settings-hint {
   opacity: 0.5;
   font-size: 12px;
+}
+
+/* ── 设置页 · AI Agent ── */
+/* 内置 agent 行右侧的检测状态（路径截断省略，title 由文本本身可见） */
+.agent-status {
+  font-size: 12px;
+  opacity: 0.55;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 自定义 agent 编辑行：名称 + 命令（含参数） + 删除 */
+.agent-custom-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.agent-custom-row input {
+  background: var(--bg-inset);
+  color: var(--text-bright);
+  border: 1px solid var(--surface-hover);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+.agent-custom-row input:focus {
+  outline: 1px solid var(--accent);
+}
+
+.agent-name-input {
+  width: 140px;
+  flex: none;
+}
+
+.agent-cmd-input {
+  flex: 1;
+  min-width: 200px;
+}
+
+.agent-btn {
+  flex: none;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--surface-hover);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.agent-btn:hover {
+  background: var(--surface-hover);
+}
+
+.agent-btn.danger:hover {
+  color: var(--warn);
+  border-color: var(--warn);
 }
 
 .preview-row {

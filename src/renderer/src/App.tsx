@@ -6,6 +6,7 @@ import {
   DEFAULT_SETTINGS,
   nextGroupColor,
   nextGroupName,
+  type AgentEntry,
   type AppSettings,
   type PaneGeom,
   type PluginInfo,
@@ -22,7 +23,7 @@ import { TermSearch } from './TermSearch'
 import { CommandPalette } from './CommandPalette'
 import { buildCommands, type PaletteCommand } from './palette'
 import { SettingsPage } from './SettingsPage'
-import { ContextMenu, CopyIcon, PasteIcon, SplitHIcon, SplitVIcon, MaximizeIcon, XIcon } from './ContextMenu'
+import { ContextMenu, CopyIcon, PasteIcon, SplitHIcon, SplitVIcon, MaximizeIcon, XIcon, BotIcon, GearIcon, type MenuEntry } from './ContextMenu'
 import {
   applyUiVars,
   pickScheme,
@@ -46,10 +47,14 @@ import {
   type PluginPermPrompt,
 } from './pluginHost'
 
+// agent 子菜单条目的首字母圆标（monogram）：不引入品牌资产，取显示名首字符
+function agentMono(name: string): string {
+  return (name.trim()[0] ?? '?').toUpperCase()
+}
+
 // 摘出标签并给出插回锚点：原本在组内则锚在原组块末尾之后（原地改组会把同组切成
 // 前后两段，破坏「同组连续」不变量），未分组则锚在原位置
-function takeTabOut(ts: TermInfo[], id: string): { list: TermInfo[]; tab: TermInfo; insertAt: number } {
-  const idx = ts.findIndex((t) => t.id === id)
+function takeTabOut(ts: TermInfo[], id: string): { list: TermInfo[]; tab: TermInfo; insertAt: number } {  const idx = ts.findIndex((t) => t.id === id)
   const tab = ts[idx]
   const list = ts.filter((_, i) => i !== idx)
   let insertAt = idx
@@ -108,8 +113,17 @@ export default function App() {
   const [broadcastGroups, setBroadcastGroups] = useState<Set<string>>(() => new Set())
   const broadcastRef = useRef(new Set<string>())
   broadcastRef.current = broadcastGroups
-  // 终端右键菜单：坐标 + 打开瞬间的可复制状态（随打开冻结，避免后续选择变化影响已开菜单）
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; canCopy: boolean } | null>(null)
+  // 终端右键菜单：坐标 + 打开瞬间的可复制状态与目标 pane（随打开冻结，避免
+  // 后续选择/焦点变化影响已开菜单；右键前的 mousedown 已把该 pane 切成活跃）
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; canCopy: boolean; termId: string } | null>(null)
+  // AI Agent 列表（右键「启动 AI Agent」子菜单数据源）：挂载/窗口聚焦/设置
+  // 变更/右键时后台重探，不阻塞菜单渲染（下次打开即吸收新装条目）
+  const [agents, setAgents] = useState<AgentEntry[]>([])
+  const refreshAgents = () => {
+    void api.listAgents().then(setAgents)
+  }
+  // 「管理 AI Agent…」入口带出的设置页定位区块（打开时消费；关闭即清回默认）
+  const [settingsSection, setSettingsSection] = useState<'agents' | null>(null)
   // 新建终端失败提示（tmux 死了/profile 失效等），下次成功即清除
   const [createError, setCreateError] = useState('')
   // 命令面板开关（Ctrl+Shift+P；纯运行时态，不持久化）
@@ -285,10 +299,14 @@ export default function App() {
       writeInput: (id, data) => api.write(id, data)
     })
     onHostChange(setHostSnap)
-    // 先订阅外部目录请求（Nautilus 右键 / CLI），再做 ready 握手取走排队项
-    const offOpenDir = api.onOpenDir((dir) => {
-      if (alive) void newTab(undefined, dir)
+    // 先订阅外部目录请求（Nautilus 右键 / CLI），再做 ready 握手取走排队项。
+    // agentId 存在 = 在该目录启动指定 agent（Nautilus 子菜单 / --agent=）
+    const offOpenDir = api.onOpenDir((req) => {
+      if (req.agentId) void launchAgent(req.agentId, { dir: req.dir })
+      else void newTab(undefined, req.dir)
     })
+    refreshAgents()
+    window.addEventListener('focus', refreshAgents)
     void Promise.all([api.listProfiles(), api.listPlugins()]).then(([ps, infos]) => {
       if (!alive) return
       // 同步刷 ref：下面 drain 时 newTab 需要据此选默认 profile（含插件注入的条目）
@@ -301,7 +319,10 @@ export default function App() {
       enqueuePermPrompts(loadCodePlugins(infos))
       void api.cliReady().then(async (dirs) => {
         if (!alive) return
-        for (const d of dirs) void newTab(undefined, d)
+        for (const d of dirs) {
+          if (d.agentId) void launchAgent(d.agentId, { dir: d.dir })
+          else void newTab(undefined, d.dir)
+        }
         if (dirs.length || tabsRef.current.length) return
         // 会话恢复：上次退出保留的 tmux 会话已由主进程附着，这里取回标签
         // （含固定/分组/活跃/改名态）；恢复成功则不再裸启动开默认终端
@@ -374,6 +395,7 @@ export default function App() {
       offPanes()
       offExit()
       offOpenDir()
+      window.removeEventListener('focus', refreshAgents)
     }
   }, [])
 
@@ -395,6 +417,29 @@ export default function App() {
     } catch (e) {
       // 后端不可用（tmux 缺失/服务器死了）不能只静默 reject：用户按了新建却毫无反馈
       console.error('[term] create failed:', e)
+      setCreateError(e instanceof Error ? e.message : String(e))
+      return undefined
+    }
+    setCreateError('')
+    setTabs((ts) => [...ts, info])
+    setActiveId(info.id)
+    setSettingsOpen(false)
+    emitTmEvent('tab-created', { id: info.id, profileId: info.profileId })
+    return info
+  }
+
+  // 在指定目录（dir，外部指名）或某 pane 的当前工作目录（fromTermId，右键菜单）
+  // 新标签启动 AI Agent：与 newTab 同构收尾。解析失败主进程已回退为普通终端标签
+  // 并发系统通知，这里按成功路径处理（标题为目录名）
+  const launchAgent = async (
+    agentId: string,
+    opts?: { dir?: string; fromTermId?: string }
+  ): Promise<TermInfo | undefined> => {
+    let info: TermInfo
+    try {
+      info = await api.launchAgent(agentId, opts)
+    } catch (e) {
+      console.error('[agent] launch failed:', e)
       setCreateError(e instanceof Error ? e.message : String(e))
       return undefined
     }
@@ -549,7 +594,11 @@ export default function App() {
   // 乐观更新即时生效，回包以主进程 sanitize 结果为准
   const applySettings = (patch: Partial<AppSettings>) => {
     setSettings((s) => ({ ...s, ...patch }))
-    void api.setSettings(patch).then(setSettings)
+    void api.setSettings(patch).then((next) => {
+      setSettings(next)
+      // 自定义/隐藏 agent 变更后重探列表（子菜单即时反映）
+      if ('customAgents' in patch || 'hiddenAgents' in patch) refreshAgents()
+    })
     // 代码级插件事件：通告本次变更请求（同步语义，非回包确认）
     if (patch.theme) emitTmEvent('theme-changed', { theme: patch.theme })
     if (patch.darkTheme) emitTmEvent('scheme-changed', { schemeId: patch.darkTheme })
@@ -841,11 +890,58 @@ export default function App() {
   // 已把该 pane 切成活跃）。点击菜单项会把 DOM 焦点从 xterm 的 textarea 挪走
   // （原生 Menu 无此问题），动作完成后必须把焦点还给终端，否则后续按键全部丢失
   const openTermContextMenu = (x: number, y: number) => {
-    setCtxMenu({ x, y, canCopy: !!terms.current.get(resolveActiveTermId())?.hasSelection() })
+    setCtxMenu({
+      x,
+      y,
+      canCopy: !!terms.current.get(resolveActiveTermId())?.hasSelection(),
+      termId: resolveActiveTermId()
+    })
+    // 后台重探不阻塞菜单：本次用缓存渲染，下次打开即吸收新装条目
+    refreshAgents()
   }
 
   const focusActiveTerm = () => {
     terms.current.get(resolveActiveTermId())?.focus()
+  }
+
+  // 「启动 AI Agent」子菜单条目：可见（未隐藏且已安装）agent + 内置/自定义分隔 +
+  // 「管理…」入口；一个都没有时灰显提示占位。点击 = 在右键目标 pane 的当前
+  // 目录（打开菜单瞬间冻结的 termId）开新标签启动
+  const buildAgentMenuChildren = (): MenuEntry[] => {
+    const hidden = new Set(settings.hiddenAgents)
+    const visible = agents.filter((a) => a.available && !hidden.has(a.id))
+    const manage: MenuEntry = {
+      key: 'agent-manage',
+      label: '管理 AI Agent…',
+      icon: <GearIcon size={15} />,
+      action: () => {
+        setCtxMenu(null)
+        setSettingsSection('agents')
+        setSettingsOpen(true)
+      }
+    }
+    if (!visible.length) {
+      return [
+        { key: 'agent-none', label: '未检测到已安装的 AI Agent CLI', disabled: true },
+        { key: 'sep-agent-manage', sep: true },
+        manage
+      ]
+    }
+    const out: MenuEntry[] = visible.map((a) => ({
+      key: `agent-${a.id}`,
+      label: a.name,
+      icon: <span className="ctx-mono">{agentMono(a.name)}</span>,
+      action: () => {
+        const from = ctxMenu?.termId
+        void launchAgent(a.id, from ? { fromTermId: from } : undefined)
+      }
+    }))
+    // 内置与自定义两组都有才加分隔
+    if (visible.some((a) => a.builtIn) && visible.some((a) => !a.builtIn)) {
+      out.push({ key: 'sep-agent-custom', sep: true })
+    }
+    out.push({ key: 'sep-agent-manage', sep: true }, manage)
+    return out
   }
 
   const copySelection = () => {
@@ -1104,10 +1200,12 @@ export default function App() {
               profiles={allProfiles}
               themes={themeDefs}
               pluginInfos={pluginInfos}
+              initialSection={settingsSection ?? undefined}
               onPluginsChanged={refreshProfiles}
               onChange={applySettings}
               onClose={() => {
                 setSettingsOpen(false)
+                setSettingsSection(null)
                 // × 关闭与 Esc 同语义：归还焦点到活跃终端（防 body 吞键盘）
                 focusActiveTerm()
               }}
@@ -1202,6 +1300,13 @@ export default function App() {
               // 单 pane 时关闭=关标签，语义已有更明确的入口（× / 关闭标签页）
               disabled: (paneGeomsRef.current[activeRef.current]?.length ?? 1) < 2,
               action: () => closePane(resolveActiveTermId())
+            },
+            { key: 'sep-agents', sep: true },
+            {
+              key: 'agent-menu',
+              label: '启动 AI Agent',
+              icon: BotIcon,
+              children: buildAgentMenuChildren()
             }
           ]}
         />

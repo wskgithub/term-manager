@@ -77,6 +77,9 @@ Windows Terminal: category navigation on the left — "Appearance" and "Terminal
 - **OSC 52 clipboard** (Terminal page): the "terminal programs may write the clipboard"
   toggle (on by default, see [Clickable links & OSC 52 clipboard](#clickable-links--osc-52-clipboard)
   below).
+- **AI Agent** (AI Agent page): detection status and visibility for the built-in agent
+  list, plus custom agent entries (see [AI Agent launching](#ai-agent-launching-auto-discovery)
+  below).
 
 Changes apply immediately to all open terminals and persist to `settings.json`.
 
@@ -424,17 +427,44 @@ Works out of the box, nothing to configure:
 - The cost: one WebGL context + glyph atlas per terminal, a modest memory increase
   (measured ~+200MB with 20 tabs); constrained machines can turn it off
 
+## AI Agent launching (auto-discovery)
+
+Right-click any terminal pane and the "Launch AI Agent" submenu lists the AI Agent CLIs
+discovered on this machine (Claude Code, Codex, OpenCode, CodeBuddy, Gemini CLI,
+Qwen Code, Aider, Crush, iFlow CLI). Clicking one opens a new tab running that agent
+**in the pane's current working directory**; the tab closes when the agent exits, the
+same lifecycle as any other tab.
+
+- **Discovery**: probes `$PATH` plus common global bin dirs (`~/.local/bin`,
+  `~/.npm-global/bin`, `~/.bun/bin`, `~/.volta/bin`), re-checked every time the menu
+  opens (newly installed agents appear without a restart). Launching uses the resolved
+  absolute path, so "visible in the menu" always means "launchable" even when the
+  desktop session's PATH is narrower than your shell's. The built-in registry
+  (`src/shared/agents.json`) is also the data source for the Nautilus extension.
+- **Settings → AI Agent**: per-agent detection status with visibility checkboxes, plus
+  custom agent entries (name + command with args; the command charset is whitelisted,
+  no shell metacharacters). Custom entries appear in both the in-app submenu and the
+  Nautilus right-click submenu.
+- **Fallback**: if the binary can no longer be resolved at click time (just uninstalled
+  / PATH changed), a plain terminal tab opens in that directory instead and a desktop
+  notification explains why — the click is never silently lost.
+
 ## Nautilus context-menu integration
 
 The file manager's right-click menu (on a directory or in the empty area of a directory)
-offers "Open in Term Manager": opens a tab in that directory. When the app is already
-running the existing window is reused and focused (single instance); the command line
-also accepts `term-manager --open-dir=<dir>` or `term-manager <dir>`.
+offers "Open in Term Manager" as a parent item with a submenu (shaped like the built-in
+"New Document" entry): the first child "Open terminal tab" opens a tab in that directory,
+and below it the discovered AI Agent CLIs launch in that directory directly. When the app
+is already running the existing window is reused and focused (single instance); the
+command line also accepts `term-manager --open-dir=<dir>` (or `term-manager <dir>`),
+paired with `--agent=<id>` to launch a specific agent (the Nautilus submenu uses exactly
+this path).
 
 - The deb installs the extension to
-  `/usr/share/nautilus-python/extensions/term_manager_nautilus.py` and Recommends
-  `python3-nautilus`: `apt install ./*.deb` pulls it in automatically, `dpkg -i` needs a
-  manual `sudo apt install python3-nautilus`. The rpm carries the same file (install
+  `/usr/share/nautilus-python/extensions/term_manager_nautilus.py` together with the
+  agent registry `term-manager-agents.json` (same bytes as `src/shared/agents.json`),
+  and Recommends `python3-nautilus`: `apt install ./*.deb` pulls it in automatically, `dpkg -i` needs a
+  manual `sudo apt install python3-nautilus`. The rpm carries the same files (install
   `python3-nautilus` manually — rpm has no Recommends here); the AppImage does not include
   it. Without that dependency the extension
   silently does nothing (the app itself is unaffected).
@@ -557,6 +587,16 @@ npx electron out/main/index.js --e2e-tabs=20 --e2e-out=/tmp/e2e --e2e-quit --no-
 Watch the `E2E_RESULT` log line; screenshots land in `--e2e-out` (boot/tabs5/all-tabs/
 after-typing). Add `--e2e-settings` to also open the settings page and capture
 `05-settings.png`.
+
+```bash
+# AI Agent launch regression: CLI cold-start queueing (--open-dir + --agent) → submenu
+# visibility and keyboard navigation (→ opens, Esc closes the submenu first) →
+# click-to-launch (cwd = the right-clicked pane's real working directory) → the settings
+# hide toggle and custom-agent flow end to end → hot delivery and unresolved-agent
+# fallback. The fixture is a fake agent on a prepended PATH dir; assertions never
+# depend on what is actually installed on the machine
+npx electron out/main/index.js --e2e-agents --open-dir=/tmp/e2e-agents-ud --agent=c-fake --e2e-quit --no-sandbox
+```
 
 ```bash
 # Real input-path regression: sendInputEvent trusted events — focus lands in the

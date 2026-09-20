@@ -1,7 +1,9 @@
 // 领域类型（Profile/AppSettings/TermInfo/TabGroup）与主进程同源自 src/shared/types，
 // 此处 re-export 供渲染层各组件统一从 './api' 导入
 import type {
+  AgentEntry,
   AppSettings,
+  OpenDirRequest,
   PaneGeom,
   PluginInfo,
   Profile,
@@ -23,7 +25,10 @@ export type {
   ThemeDef,
   PluginInfo,
   PaneGeom,
-  SplitDir
+  SplitDir,
+  AgentEntry,
+  CustomAgent,
+  OpenDirRequest
 } from '../../shared/types'
 export { DEFAULT_SETTINGS } from '../../shared/types'
 
@@ -77,12 +82,17 @@ export interface Api {
   // 管理 UI：插件根目录路径（纯查询，无副作用）
   pluginsDirPath(): Promise<string>
   createTerm(profileId: string, cwd?: string): Promise<TermInfo>
-  cliReady(): Promise<string[]>
+  // AI Agent 列表（每次调用主进程重探）：右键子菜单/设置页数据源
+  listAgents(): Promise<AgentEntry[]>
+  // 新标签启动 agent：cwd 取 dir（外部指名）或 fromTermId 所在 pane 的当前目录。
+  // 只传 id，命令体由主进程注册表解析（term:create 同一安全约定）
+  launchAgent(agentId: string, opts?: { dir?: string; fromTermId?: string }): Promise<TermInfo>
+  cliReady(): Promise<OpenDirRequest[]>
   restoreSession(): Promise<RestoredSession | null>
   replayTerm(id: string): Promise<string>
   syncSession(payload: SessionUiSync): void
   quitAll(): void
-  onOpenDir(cb: (dir: string) => void): () => void
+  onOpenDir(cb: (req: OpenDirRequest) => void): () => void
   write(id: string, data: string): void
   resize(id: string, cols: number, rows: number): void
   kill(id: string): void
