@@ -325,7 +325,7 @@ let backendStarted: Promise<TermInfo[]> | null = null
 /** 组装并落盘当前会话：标签顺序/UI 态取 lastSync（渲染层权威），窗口映射取后端
     实况；新建未及上报的标签以主进程侧 TermInfo 兜底追加，已死窗口剔除 */
 function persistSession(): void {
-  if (isolatedRun && !sessionE2E) return
+  if (isolatedRun && !sessionE2E && !keepE2E) return
   const desc = backend.describe()
   if (!desc) {
     sessionStore.clear()
@@ -519,7 +519,7 @@ function registerIpc(): void {
 
   // 渲染层 UI 态上报（debounce 合并）：与后端窗口映射对账后落盘
   ipcMain.on('session:sync', (_e, payload: unknown) => {
-    if (isolatedRun && !sessionE2E) return
+    if (isolatedRun && !sessionE2E && !keepE2E) return
     const p = payload as SyncedUiState | null
     if (
       !p ||
@@ -3808,6 +3808,180 @@ async function runSessionPhase2(win: BrowserWindow): Promise<void> {
   app.exit(allOk ? 0 : 1)
 }
 
+// ── 在保会话 × 外部目录冷启动回归（--e2e-keep=seed / open，共享 --e2e-user-data）──
+// 历史 bug：Nautilus 右键（--open-dir）冷启动撞上在保会话的附着流程——渲染层
+// cli:open-dir 触发的 new-window 抢在 attach-session 前执行，落进控制客户端的
+// 副产品 session，随即被附着清场的 kill-session 连带销毁（%unlinked-window-close
+// 无人处理），标签永久空白；且 --open-dir 启动会整体跳过会话恢复。两段回归：
+// seed 建一个在保标签保留退出；open 以 --open-dir=<dir> 冷启动，断言恢复标签
+// 与目录标签并存、目录标签可交互（空白即 FAIL）
+
+async function runKeepSeedSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string) => JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+
+  // 裸启动的默认标签就位（__e2eStart 不掺和，保持「真实用户使用后退出」形态）
+  await waitUntil(
+    async () => await json<boolean>('window.__e2eSessionState().count >= 1'),
+    30000,
+    300
+  )
+  // 标签打上活体标记（open 段断言回放内容）
+  const marker = `KEEPSEED_${randomUUID().slice(0, 8)}`
+  const ids = await json<string[]>('window.__e2eIds()')
+  let seen = false
+  const tap = (_id: string, d: string) => {
+    if (d.includes(marker)) seen = true
+  }
+  hub.on('term:data', tap)
+  backend.write(ids[0], `echo ${marker}\r`)
+  const echoed = await waitUntil(() => seen, 8000, 200)
+  hub.off('term:data', tap)
+  console.log(`E2E_KEEPSEED ${echoed ? 'marker-ok' : 'marker-FAIL'}`)
+  console.log(`E2E_KEEPSEED_MARKER ${marker}`)
+
+  await delay(700) // 等渲染层 session:sync debounce 到达主进程
+  // 保留退出（与真实关窗路径的差异：不经 window-all-closed 的空闲裁剪，idle
+  // shell 原样保留——open 段要恢复的正是它）
+  persistSession()
+  await backend.dispose({ keep: true })
+  console.log('E2E_KEEPSEED_DONE')
+  app.exit(echoed ? 0 : 1)
+}
+
+async function runKeepOpenSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string) => JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_KEEPOPEN ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+
+  // 启动命令行带 --open-dir=<dir>：恢复标签 + 目录标签应并存（历史上此刻只剩
+  // 一个永久空白的目录标签）
+  const dir = cliOpenDir ?? ''
+  const dirTitle = dir.split('/').filter(Boolean).pop() ?? ''
+  const got = await waitUntil(
+    async () => {
+      const st = await json<{ count: number; titles: string[] }>('window.__e2eSessionState()')
+      return st.count === 2 && st.titles.includes(dirTitle)
+    },
+    30000,
+    300
+  )
+  const st = await json<{ count: number; titles: string[] }>('window.__e2eSessionState()')
+  check(
+    'tabs-restored-and-opened',
+    got && st.count === 2 && st.titles.includes(dirTitle),
+    JSON.stringify(st)
+  )
+
+  const ids = await json<string[]>('window.__e2eIds()')
+  check('ids-registered', ids.length === 2, JSON.stringify(ids))
+  // 目录标签（按标题定位 tab，再经 terms 顺序换 pane 下标）必须活着：回显往返。
+  // 竞态未修复时该窗口已被 kill，写进去的输入永远没有回音
+  const idxByTitle = await json<number>(
+    `(function () { const t = ${JSON.stringify(dirTitle)}; ` +
+      'const tabs = window.__e2eSessionState().titles; return tabs.indexOf(t) })()'
+  )
+  // terms Map 顺序 == 标签顺序（恢复标签先挂载、目录标签后建）
+  const echoTo = async (idx: number, tag: string): Promise<boolean> => {
+    const m = `${tag}_${randomUUID().slice(0, 6)}`
+    let seen = false
+    const tap = (_id: string, d: string) => {
+      if (d.includes(m)) seen = true
+    }
+    hub.on('term:data', tap)
+    backend.write(ids[idx], `echo ${m}\r`)
+    const ok = await waitUntil(() => seen, 8000, 200)
+    hub.off('term:data', tap)
+    return ok
+  }
+  check('open-dir-tab-live', await echoTo(idxByTitle, 'KEEPOPEN'))
+  // 恢复的 seed 标签同样可交互（附着 + 回放 + 输入链路整体健康）
+  check('restored-tab-live', await echoTo(idxByTitle === 0 ? 1 : 0, 'KEEPREST'))
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_KEEPOPEN_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  sessionStore.clear()
+  await backend.dispose()
+  app.exit(allOk ? 0 : 1)
+}
+
+// ── 空闲终端回收回归（--e2e-keep=prune）：3 个空闲 shell 标签 + 1 个前台
+// sleep 的忙碌标签 → pruneIdleWindows 只留忙碌窗口；渲染层对被裁标签呈现
+// 「会话已退出」态、忙碌标签不受影响且可交互；落盘只余忙碌标签 ──
+
+async function runKeepPruneSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string) => JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_KEEPPRUNE ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+
+  // 裸启动 1 个 + 追加 2 个 = 3 个空闲标签
+  await waitUntil(
+    async () => await json<boolean>('window.__e2eSessionState().count >= 1'),
+    30000,
+    300
+  )
+  await js('window.__e2eStart(2)')
+  await waitUntil(
+    async () => await json<boolean>('window.__e2eSessionState().count >= 3'),
+    60000,
+    300
+  )
+  // 中间标签跑前台 sleep（pane_current_command=sleep ⇒ 忙碌在保）
+  const ids = await json<string[]>('window.__e2eIds()')
+  const busyId = ids[1]
+  backend.write(busyId, 'sleep 300\r')
+  await delay(1500)
+
+  const kept = await backend.pruneIdleWindows()
+  check('kept-count', kept === 1, `kept=${kept}`)
+
+  // 渲染层：被裁的两个标签进「会话已退出」态，忙碌标签无恙
+  await delay(600)
+  const st = await json<{ count: number; exited: number }>('window.__e2eSessionState()')
+  check('idle-tabs-exited', st.count === 3 && st.exited === 2, JSON.stringify(st))
+
+  // 忙碌标签仍可交互（窗口没被误杀）
+  const m = `PRUNE_${randomUUID().slice(0, 6)}`
+  let seen = false
+  const tap = (_id: string, d: string) => {
+    if (d.includes(m)) seen = true
+  }
+  hub.on('term:data', tap)
+  backend.write(busyId, '\u0003') // Ctrl+C 结束 sleep 回到提示符再回显
+  await delay(400)
+  backend.write(busyId, `echo ${m}\r`)
+  check('busy-tab-live', await waitUntil(() => seen, 8000, 200))
+  hub.off('term:data', tap)
+
+  // 退出路径同款落盘：sessions.json 只剩忙碌标签
+  persistSession()
+  const saved = JSON.parse(
+    readFileSync(join(app.getPath('userData'), 'sessions.json'), 'utf8')
+  ) as { tabs: Array<{ id: string }> }
+  check(
+    'persist-only-busy',
+    Array.isArray(saved.tabs) && saved.tabs.length === 1 && saved.tabs[0].id === busyId,
+    JSON.stringify(saved.tabs)
+  )
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_KEEPPRUNE_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  sessionStore.clear()
+  await backend.dispose()
+  app.exit(allOk ? 0 : 1)
+}
+
 /** --e2e-agents：AI Agent 子菜单 + 自发现 + 启动链路回归。夹具见 AGENTS_UD
     （fake-claude 假 agent + 预写 settings），启动命令行须带
     --open-dir=/tmp/e2e-agents-ud --agent=c-fake 走真实 CLI 冷启动排队链路 */
@@ -3961,6 +4135,7 @@ async function runSmoke(): Promise<void> {
 // sessionE2E/sidebarE2E 套 __E2E__ 门：剥离构建把参数名与 userData 重定向
 // 逻辑一并摇出产物（--smoke/--e2e-tabs/--e2e-input 为历史基线字面量，保留）
 const sessionE2E = __E2E__ ? argvFlag('--e2e-session') : undefined
+const keepE2E = __E2E__ ? argvFlag('--e2e-keep') : undefined
 const sidebarE2E = __E2E__ ? argvHas('--e2e-sidebar') : false
 const paletteE2E = __E2E__ ? argvHas('--e2e-palette') : false
 const splitsE2E = __E2E__ ? argvHas('--e2e-splits') : false
@@ -3987,7 +4162,8 @@ const isolatedRun =
   codePluginsE2E ||
   agentsE2E ||
   webglE2E ||
-  sessionE2E !== undefined
+  sessionE2E !== undefined ||
+  keepE2E !== undefined
 const cliOpenDir = extractOpenDir(process.argv)
 const cliAgentId = extractAgentArg(process.argv)
 
@@ -4001,11 +4177,11 @@ if (__E2E__ && argvHas('--e2e-webgl-fallback')) {
   app.commandLine.appendSwitch('disable-software-rasterizer')
 }
 
-// --e2e-session 用独立 userData 跑两段，避免污染真实 profiles/settings/sessions
-if (sessionE2E) {
+// --e2e-session / --e2e-keep 用独立 userData 跑多段，避免污染真实 profiles/settings/sessions
+if (sessionE2E || keepE2E) {
   const dir = argvFlag('--e2e-user-data')
   if (!dir) {
-    console.error('E2E_FAIL: --e2e-session 需要 --e2e-user-data=<dir>')
+    console.error('E2E_FAIL: --e2e-session/--e2e-keep 需要 --e2e-user-data=<dir>')
     process.exit(1)
   }
   app.setPath('userData', resolve(dir))
@@ -4313,8 +4489,9 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
 
     // 附着候选：上次退出保留的会话（属主进程已死 + socket 在）。smoke/e2e 隔离
     // 运行一律全新启动（共享真实 userData 时附着会破坏断言基数并误杀在保会话），
-    // 唯 --e2e-session=phase2 是"模拟重启附着"本身
-    const attachAllowed = !isolatedRun || sessionE2E === 'phase2'
+    // 唯 --e2e-session=phase2 / --e2e-keep=open 是"模拟重启附着/外部目录冷启动
+    // 撞附着"本身
+    const attachAllowed = !isolatedRun || sessionE2E === 'phase2' || keepE2E === 'open'
     const attach = attachAllowed ? sessionStore.attachCandidate() ?? undefined : undefined
     // 遗留服务器清理只在真实 GUI 启动做：会话保持下"pid 死 + socket 在"可能是
     // 在保会话，隔离测试进程不该动它（清理目标也排除本次附着对象）
@@ -4372,7 +4549,8 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
           pluginsE2E ||
           codePluginsE2E ||
           agentsE2E ||
-          webglE2E) &&
+          webglE2E ||
+          keepE2E) &&
         mainWindow
       ) {
         const n =
@@ -4382,7 +4560,8 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
           argvHas('--e2e-search') ||
           argvHas('--e2e-splits') ||
           zoomE2E ||
-          linksE2E
+          linksE2E ||
+          keepE2E
             ? 2
             : Math.max(1, Number(e2eTabs) || 20)
         const win = mainWindow
@@ -4403,6 +4582,9 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
               else if (codePluginsE2E) await runCodePluginsSequence(win)
               else if (agentsE2E) await runAgentsSequence(win)
               else if (webglE2E) await runWebglSequence(win)
+              else if (keepE2E === 'seed') await runKeepSeedSequence(win)
+              else if (keepE2E === 'open') await runKeepOpenSequence(win)
+              else if (keepE2E === 'prune') await runKeepPruneSequence(win)
               else await runE2ESequence(win, n)
             })
             .catch(async (e) => {
@@ -4422,16 +4604,38 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
 
 process.on('unhandledRejection', (e) => console.error('UNHANDLED_REJECTION:', e))
 
-// 退出语义：keepSessionOnExit（默认开）= 只 detach 不 kill，tmux 服务器与其上的
-// shell 继续存活，下次启动附着恢复；关闭该设置或 Ctrl+Shift+Q 则终结会话退出。
-// smoke/e2e 隔离运行一律终结，测试不残留服务器
+// 退出语义：keepSessionOnExit（默认开）= 保留有程序在跑的标签（空闲终端先
+// 回收：空提示符 shell 的窗口 kill，PTY/进程随 tmux 终结；全部空闲则服务器
+// 一并终结、记录清空——彻底回收资源），下次启动附着恢复；关闭该设置或
+// Ctrl+Shift+Q 则终结全部会话退出。smoke/e2e 隔离运行一律终结，测试不残留服务器
 app.on('window-all-closed', () => {
   if (isolatedRun) {
     void backend.dispose().then(() => app.quit())
     return
   }
   const keep = settingsStore.get().keepSessionOnExit
-  if (keep) persistSession() // 渲染层 sync 是 debounce 的，退出前以主进程权威状态兜底落盘
-  else sessionStore.clear()
-  void backend.dispose({ keep }).then(() => app.quit())
+  if (!keep) {
+    sessionStore.clear()
+    void backend.dispose().then(() => app.quit())
+    return
+  }
+  void backend
+    .pruneIdleWindows()
+    .then(async (kept) => {
+      if (kept > 0) {
+        persistSession() // 与裁剪后的 windowIds 对账，只剩有程序在跑的标签
+        await backend.dispose({ keep: true })
+      } else {
+        // 无一在保：kill-session 终结会话与服务器（exit-empty 关闭的用户配置
+        // 也覆盖到），记录清空
+        sessionStore.clear()
+        await backend.dispose()
+      }
+    })
+    .catch(async () => {
+      // 裁剪路径自身异常：按原保留语义退出，不做破坏性动作
+      persistSession()
+      await backend.dispose({ keep: true }).catch(() => undefined)
+    })
+    .finally(() => app.quit())
 })

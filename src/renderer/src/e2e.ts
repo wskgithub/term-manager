@@ -17,6 +17,8 @@ interface E2ECtx {
   getTabs: () => TermInfo[]
   getGroups: () => TabGroup[]
   getRenamed: () => string[]
+  // 标签「会话已退出」态（--e2e-keep=prune 断言被裁标签的渲染层呈现）
+  getExited: () => string[]
   // 组内广播回归（--e2e-input 断言用）：广播中的组 id
   getBroadcast: () => string[]
   // 分组侧栏回归（--e2e-sidebar 断言用）：设置开关实时值
@@ -267,10 +269,12 @@ export function setupE2E(ctx: E2ECtx): void {
     const tabs = ctx.getTabs()
     const groups = ctx.getGroups()
     const renamed = new Set(ctx.getRenamed())
+    const exited = new Set(ctx.getExited())
     return {
       count: tabs.length,
       pinned: tabs.filter((t) => t.pinned).length,
       renamed: tabs.filter((t) => renamed.has(t.id)).length,
+      exited: tabs.filter((t) => exited.has(t.id)).length,
       groups: groups.map((g) => ({
         name: g.name,
         color: g.color,
