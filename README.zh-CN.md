@@ -63,6 +63,8 @@ PTY 由 **tmux Control Mode 后端**托管（WindTerm/iTerm2 同款架构，会�
 - **组内广播**（终端页）：「广播输入到全组」开关（**默认关**，开启后见[组内广播](#组内广播)）。
 - **OSC 52 剪贴板**（终端页）：「终端程序写剪贴板」开关（默认开，见
   [可点击链接与 OSC 52 剪贴板](#可点击链接与-osc-52-剪贴板)）。
+- **AI Agent**（AI Agent 页）：内置 agent 的检测状态与可见性勾选、自定义 agent
+  增删（见下文 [AI Agent 启动](#ai-agent-启动自发现)）。
 - 改动即时应用到所有已开终端并写入 `settings.json`，重启保持。
 
 ## 自定义主题
@@ -228,13 +230,35 @@ API 逐组讲解、权限与 CSP 说明、上限总表与调试方法见[插件�
 决策、重新弹批准框（拒绝即保持零网络）。插件目录路径旁有「打开目录」按钮；
 文件夹增删仍是安装/卸载的语义。
 
+## AI Agent 启动（自发现）
+
+在任意终端 pane 上右键，「启动 AI Agent」子菜单列出本机自动发现的 AI Agent CLI
+（Claude Code、Codex、OpenCode、CodeBuddy、Gemini CLI、Qwen Code、Aider、Crush、
+iFlow CLI），点击即在**该 pane 的当前工作目录**开新标签启动所选 agent——agent
+退出即关标签，与普通标签生命周期一致。
+
+- **自发现**：探测 `$PATH` 与常见全局 bin 目录（`~/.local/bin`、`~/.npm-global/bin`、
+  `~/.bun/bin`、`~/.volta/bin`），每次打开菜单实时重探（新装 agent 无需重启）；
+  启动用探测到的绝对路径，桌面会话 PATH 盲区下「看得到即起得来」。内置注册表
+  （`src/shared/agents.json`）同时是 Nautilus 扩展的数据源。
+- **设置页「AI Agent」**：内置清单逐项显示检测状态并可勾选隐藏；下方可添加自定义
+  agent（名称 + 命令及参数，命令字符集白名单校验、禁 shell 元字符），自定义条目
+  同时进入应用内子菜单与 Nautilus 右键子菜单。
+- **解析失败回退**：点击时命令已不可解析（刚卸载 / PATH 变化）→ 该目录改开普通
+  终端标签并发系统通知说明原因，点击不会无声无效。
+
 ## Nautilus 右键集成
 
-文件管理器右键（目录上或目录空白处）有「在 Term Manager 中打开」：在该目录开一个标签。
-应用已在运行时复用现有窗口并聚焦（单实例）；命令行同样支持 `term-manager --open-dir=<dir>` 或 `term-manager <dir>`。
+文件管理器右键（目录上或目录空白处）的「在 Term Manager 中打开」是带子菜单的父项
+（形态类似「新建文档」）：首子项「打开终端标签页」在该目录开一个标签，其后列出自动
+发现的 AI Agent CLI，点击在该目录直接启动所选 agent。应用已在运行时复用现有窗口并
+聚焦（单实例）；命令行同样支持 `term-manager --open-dir=<dir>`（或 `term-manager <dir>`），
+配对 `--agent=<id>` 可指名启动 agent（Nautilus 子菜单即走此通路）。
 
-- deb 将扩展装到 `/usr/share/nautilus-python/extensions/term_manager_nautilus.py`，并 Recommends
-  `python3-nautilus`：`apt install ./*.deb` 会自动装上，`dpkg -i` 需手动 `sudo apt install python3-nautilus`。
+- deb 将扩展装到 `/usr/share/nautilus-python/extensions/term_manager_nautilus.py`，
+  并把 agent 注册表 `term-manager-agents.json`（与主进程 `src/shared/agents.json`
+  同一份字节）装到同目录，Recommends `python3-nautilus`：`apt install ./*.deb` 会自动装上，
+  `dpkg -i` 需手动 `sudo apt install python3-nautilus`。
   rpm 携带同一文件（手动装 `python3-nautilus`——rpm 侧没有 Recommends）；AppImage 不含该扩展。
   缺该依赖时扩展静默不生效（应用功能不受影响）。
 - 装完执行 `nautilus -q`（或注销重登）让文件管理器重新加载扩展。
@@ -348,6 +372,14 @@ npx electron out/main/index.js --e2e-tabs=20 --e2e-out=/tmp/e2e --e2e-quit --no-
 
 结果看 `E2E_RESULT` 日志行；截图落在 `--e2e-out` 目录（boot/tabs5/all-tabs/after-typing 四张）。
 加 `--e2e-settings` 会额外打开设置页并截 `05-settings.png`。
+
+```bash
+# AI Agent 启动回归：CLI 冷启动排队（--open-dir + --agent）→ 子菜单可见性与键盘导航
+#（→ 展开、Esc 先收子菜单）→ 点击启动（cwd 取右键 pane 实际目录）→ 设置页隐藏开关/
+# 自定义 agent 全链路 → 热投递与解析失败回退。夹具是 PATH 前插的假 agent（fake-claude），
+# 断言不依赖本机真实装了哪些 agent
+npx electron out/main/index.js --e2e-agents --open-dir=/tmp/e2e-agents-ud --agent=c-fake --e2e-quit --no-sandbox
+```
 
 ```bash
 # 真实输入链路回归：sendInputEvent 可信事件驱动——

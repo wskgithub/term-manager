@@ -236,6 +236,36 @@ export interface TermManagerGlobal {
   init(pluginId: string): TmScopedApi
 }
 
+// ── AI Agent CLI（终端右键子菜单 / Nautilus 右键子菜单的启动目标）──
+// 内置注册表单源是 src/shared/agents.json：主进程 TS 直接 import，Nautilus
+// python 扩展读 deb/rpm 装到 /usr/share/nautilus-python/extensions/ 的同一份
+// （fpm 原样拷贝），三端零漂移。此处只放跨进程类型，探测逻辑归 main/agents.ts
+export interface CustomAgent {
+  id: string
+  name: string
+  // 启动命令（首项 + 参数）：字符集白名单在 settings.ts sanitize（禁 shell 元字符）
+  argv: string[]
+}
+
+// agents:list 下发条目：命令体（argv）不出主进程——渲染层只拿展示与可用性
+export interface AgentEntry {
+  id: string
+  name: string
+  builtIn: boolean
+  // 可执行文件可寻址（$PATH + agents.json 的 extraBinDirs）
+  available: boolean
+  resolvedPath: string | null
+  // 本机有使用痕迹（hintDirs 配置目录存在）：仅用于排序/设置页提示，不参与 available
+  usedHint: boolean
+}
+
+// cli:open-dir / cli:ready 的排队请求：agentId 存在 = 在 dir 启动该 agent
+//（Nautilus 子菜单 / CLI --agent=），否则 = 原有「打开目录」语义
+export interface OpenDirRequest {
+  dir: string
+  agentId?: string
+}
+
 export interface AppSettings {
   // 空串 = 自动（渲染层解析为 Nerd Font 优先栈，见 renderer/fonts.ts）
   fontFamily: string
@@ -270,6 +300,11 @@ export interface AppSettings {
   // 的主通路。有 1MB 解码上限防滥用；读方向（'?' 查询）一律不响应，剪贴板
   // 内容不外流。即时生效，不重建已开终端
   osc52Copy: boolean
+  // 自定义 AI Agent 条目（设置页增删）：id 由渲染层生成（c- 前缀），与内置
+  // 注册表合并后进「启动 AI Agent」子菜单；Nautilus 右键子菜单也会读它
+  customAgents: CustomAgent[]
+  // 被隐藏的 agent id（内置或自定义）：不出现在子菜单（设置页可再开）
+  hiddenAgents: string[]
 }
 
 // 主进程 settings.ts 的兜底值，渲染层 App 也用它做异步加载前的初值
@@ -285,7 +320,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   groupBroadcast: false,
   sidebarVisible: false,
   gpuRendering: true,
-  osc52Copy: true
+  osc52Copy: true,
+  customAgents: [],
+  hiddenAgents: []
 }
 
 export interface TermInfo {

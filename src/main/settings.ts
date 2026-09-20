@@ -2,7 +2,7 @@ import { app } from 'electron'
 import { execFile } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { DEFAULT_SETTINGS, type AppSettings } from '../shared/types'
+import { DEFAULT_SETTINGS, type AppSettings, type CustomAgent } from '../shared/types'
 
 export type { AppSettings, ThemeOption } from '../shared/types'
 export { DEFAULT_SETTINGS }
@@ -15,6 +15,16 @@ const DEFAULT_PROFILE_MAX = 100
 // 不校验存在性——方案列表归 ThemeRegistry 管，渲染层解析不到时回退内建
 const SCHEME_ID_MAX = 80
 const SCHEME_ID_RE = /^[A-Za-z0-9/_-]+$/
+// agent id（内置注册表/自定义/hiddenAgents 键）：小写字母数字与连字符
+const AGENT_ID_RE = /^[a-z0-9][a-z0-9-]*$/
+const AGENT_NAME_MAX = 40
+const AGENT_ARGV_MAX = 8
+const AGENT_ARG_MAX = 200
+const CUSTOM_AGENTS_MAX = 20
+// argv 白名单：命令名/绝对路径/常见参数形态，禁空格与全部 shell 元字符——
+// 自定义 agent 最终经 tmux sh -c 执行，从输入侧根绝注入面（主进程侧另有
+// shQuote/tmuxToken 双层转义，这里是最外一道）
+const AGENT_ARG_RE = /^[A-Za-z0-9_./=,:@%+-]+$/
 const CONFIG_VERSION = 1
 
 interface ConfigFile extends AppSettings {
@@ -75,6 +85,38 @@ function sanitize(input: unknown, base: AppSettings): AppSettings {
   }
   if (typeof raw.osc52Copy === 'boolean') {
     out.osc52Copy = raw.osc52Copy
+  }
+  if (Array.isArray(raw.customAgents)) {
+    const list: CustomAgent[] = []
+    for (const c of raw.customAgents) {
+      if (typeof c !== 'object' || c === null) continue
+      const r = c as Record<string, unknown>
+      if (typeof r.id !== 'string' || !AGENT_ID_RE.test(r.id)) continue
+      if (typeof r.name !== 'string') continue
+      const name = r.name.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, AGENT_NAME_MAX)
+      if (!name) continue
+      if (!Array.isArray(r.argv) || r.argv.length === 0 || r.argv.length > AGENT_ARGV_MAX) continue
+      const argv: string[] = []
+      let bad = false
+      for (const a of r.argv) {
+        if (typeof a !== 'string' || !a || a.length > AGENT_ARG_MAX || !AGENT_ARG_RE.test(a)) {
+          bad = true
+          break
+        }
+        argv.push(a)
+      }
+      if (bad) continue
+      if (list.some((x) => x.id === r.id)) continue
+      list.push({ id: r.id, name, argv })
+    }
+    out.customAgents = list.slice(0, CUSTOM_AGENTS_MAX)
+  }
+  if (Array.isArray(raw.hiddenAgents)) {
+    const seen = new Set<string>()
+    for (const h of raw.hiddenAgents) {
+      if (typeof h === 'string' && AGENT_ID_RE.test(h)) seen.add(h)
+    }
+    out.hiddenAgents = [...seen].slice(0, 64)
   }
   if (raw.fontSize !== undefined) {
     const n = Math.round(Number(raw.fontSize))

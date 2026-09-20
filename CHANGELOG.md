@@ -7,6 +7,17 @@ All notable changes to Term Manager are documented in this file.
 
 ### English
 
+- **AI Agent launching (auto-discovery)**: right-click any terminal pane and the new
+  "Launch AI Agent" submenu lists AI Agent CLIs discovered on the machine (Claude Code,
+  Codex, OpenCode, CodeBuddy, Gemini CLI, Qwen Code, Aider, Crush, iFlow CLI); clicking
+  one opens a new tab running that agent in the pane's current working directory.
+  Discovery probes `$PATH` plus common global bin dirs on every menu open and launches
+  via the resolved absolute path, so entries are always actually launchable. The
+  Nautilus "Open in Term Manager" entry becomes a parent item with the same agent
+  submenu (launching via `--open-dir` + `--agent`); a new Settings → AI Agent page adds
+  visibility toggles and custom agent entries (charset-whitelisted commands, no shell
+  metacharacters). If an agent cannot be resolved at click time, the directory opens as
+  a plain terminal tab with a desktop notification instead of silently doing nothing.
 - **Fix**: pressing Enter in an inline rename box (tab title / group name in the tab
   bar or the sidebar tree, font-size stepper in settings) now commits directly
   instead of routing through `blur()`. The old path silently no-op'ed when the
@@ -25,6 +36,14 @@ All notable changes to Term Manager are documented in this file.
 
 ### 中文
 
+- **AI Agent 启动（自发现）**：任意终端 pane 右键新增「启动 AI Agent」子菜单，列出
+  本机自动发现的 AI Agent CLI（Claude Code、Codex、OpenCode、CodeBuddy、Gemini CLI、
+  Qwen Code、Aider、Crush、iFlow CLI），点击即在该 pane 的当前工作目录开新标签启动。
+  探测在每次打开菜单时重跑（`$PATH` + 常见全局 bin 目录），启动用解析出的绝对路径，
+  「看得到即起得来」。Nautilus 的「在 Term Manager 中打开」改为带同一 agent 子菜单的
+  父项（经 `--open-dir` + `--agent` 拉起）；设置页新增「AI Agent」页：内置条目可见性
+  勾选 + 自定义 agent（命令字符集白名单、禁 shell 元字符）。点击时命令已不可解析的，
+  该目录改开普通终端标签并发系统通知，不会无声无效。
 - **修复**：内联改名框（标签栏/侧栏树的标签标题与组名、设置页字号步进器）
   按 Enter 改为直接提交，不再借道 `blur()`。旧实现下输入框一旦失焦
   （autoFocus 失效或焦点被终端夺走），Enter 的 `blur()` 静默无事件，编辑态

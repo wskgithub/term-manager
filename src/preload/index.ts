@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
+  AgentEntry,
   AppSettings,
+  OpenDirRequest,
   PaneGeom,
   PluginInfo,
   Profile,
@@ -38,13 +40,21 @@ const api = {
   pluginsDirPath: (): Promise<string> => ipcRenderer.invoke('plugins:dir-path'),
   createTerm: (profileId: string, cwd?: string): Promise<TermInfo> =>
     ipcRenderer.invoke('term:create', profileId, cwd),
-  cliReady: (): Promise<string[]> => ipcRenderer.invoke('cli:ready'),
+  // AI Agent 列表（每次调用主进程重探）：右键子菜单/设置页数据源
+  listAgents: (): Promise<AgentEntry[]> => ipcRenderer.invoke('agents:list'),
+  // 新标签启动 agent：cwd 取 dir（外部指名）或 fromTermId 所在 pane 的当前目录。
+  // 只传 id，命令体由主进程注册表解析（term:create 同一安全约定）
+  launchAgent: (
+    agentId: string,
+    opts?: { dir?: string; fromTermId?: string }
+  ): Promise<TermInfo> => ipcRenderer.invoke('agent:launch', agentId, opts),
+  cliReady: (): Promise<OpenDirRequest[]> => ipcRenderer.invoke('cli:ready'),
   restoreSession: (): Promise<RestoredSession | null> => ipcRenderer.invoke('session:restore'),
   replayTerm: (id: string): Promise<string> => ipcRenderer.invoke('session:replay', id),
   syncSession: (payload: SessionUiSync): void => ipcRenderer.send('session:sync', payload),
   quitAll: (): void => ipcRenderer.send('session:quit-all'),
-  onOpenDir: (cb: (dir: string) => void): (() => void) => {
-    const handler = (_e: Electron.IpcRendererEvent, dir: string): void => cb(dir)
+  onOpenDir: (cb: (req: OpenDirRequest) => void): (() => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, req: OpenDirRequest): void => cb(req)
     ipcRenderer.on('cli:open-dir', handler)
     return () => ipcRenderer.removeListener('cli:open-dir', handler)
   },

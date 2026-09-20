@@ -1,0 +1,21 @@
+{
+  "agents": [
+    { "id": "claude", "name": "Claude Code", "argv": ["claude"], "hintDirs": [".claude"] },
+    { "id": "codex", "name": "Codex CLI", "argv": ["codex"], "hintDirs": [".codex"] },
+    { "id": "opencode", "name": "OpenCode", "argv": ["opencode"], "hintDirs": [".config/opencode"] },
+    { "id": "codebuddy", "name": "CodeBuddy", "argv": ["codebuddy"], "hintDirs": [".codebuddy"] },
+    { "id": "gemini", "name": "Gemini CLI", "argv": ["gemini"], "hintDirs": [".gemini"] },
+    { "id": "qwen", "name": "Qwen Code", "argv": ["qwen"], "hintDirs": [".qwen"] },
+    { "id": "aider", "name": "Aider", "argv": ["aider"], "hintDirs": [] },
+    { "id": "crush", "name": "Crush", "argv": ["crush"], "hintDirs": [".config/crush"] },
+    { "id": "iflow", "name": "iFlow CLI", "argv": ["iflow"], "hintDirs": [".iflow"] }
+  ],
+  "extraBinDirs": [
+    ".local/bin",
+    ".npm-global/bin",
+    ".bun/bin",
+    ".volta/bin",
+    ".opencode/bin",
+    ".nvm/versions/node/*/bin"
+  ]
+}

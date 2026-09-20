@@ -700,4 +700,150 @@ export function setupE2E(ctx: E2ECtx): void {
     el.click()
     return new Promise((resolve) => setTimeout(() => resolve(searchState()), 400))
   }
+
+  // ── AI Agent 回归（--e2e-agents）：终端右键 → 「启动 AI Agent」子菜单驱动 ──
+
+  /** 对首个 .term-pane 派发真实 contextmenu，等浮层渲染后（可选先点父项展开
+      子菜单）按 data-key 点菜单项，走 onContextMenu → ContextMenu action 全链路 */
+  w.__e2eTermMenu = (action: string, parentKey?: string) => {
+    const pane = document.querySelector<HTMLElement>('.term-pane')
+    if (!pane) return Promise.resolve(false)
+    const r = pane.getBoundingClientRect()
+    pane.dispatchEvent(
+      new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        clientX: Math.round(r.left + 40),
+        clientY: Math.round(r.top + 40)
+      })
+    )
+    const click = (key: string) =>
+      document.querySelector<HTMLElement>(`.ctx-item[data-key="${key}"]`)?.click()
+    return new Promise<boolean>((resolve) => {
+      setTimeout(() => {
+        if (parentKey) click(parentKey)
+        setTimeout(() => {
+          const el = document.querySelector<HTMLElement>(`.ctx-item[data-key="${action}"]`)
+          el?.click()
+          resolve(!!el)
+        }, 140)
+      }, 150)
+    })
+  }
+
+  /** 右键并展开 agent 子菜单，回子菜单条目快照（key/label），随后两级 Escape
+      收场（先子菜单后整个菜单；两次之间留重渲染间隙，window 捕获层监听需换新） */
+  w.__e2eAgentMenuState = () => {
+    const pane = document.querySelector<HTMLElement>('.term-pane')
+    if (!pane) return Promise.resolve({ open: false, items: [] as Array<{ key: string; label: string }> })
+    const r = pane.getBoundingClientRect()
+    pane.dispatchEvent(
+      new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        clientX: Math.round(r.left + 40),
+        clientY: Math.round(r.top + 40)
+      })
+    )
+    return new Promise<{ open: boolean; items: Array<{ key: string; label: string }> }>((resolve) => {
+      setTimeout(() => {
+        document.querySelector<HTMLElement>('.ctx-item[data-key="agent-menu"]')?.click()
+        setTimeout(() => {
+          const sub = document.querySelector<HTMLElement>('.ctx-submenu')
+          const items = [...(sub?.querySelectorAll<HTMLElement>('.ctx-item') ?? [])].map((el) => ({
+            key: el.dataset.key ?? '',
+            label: el.querySelector('.ctx-label')?.textContent ?? ''
+          }))
+          const out = { open: !!sub, items }
+          // 两级收场（先子菜单后整个菜单）完成后再 resolve：清理事件若晚于
+          // 返回，会误关掉调用方紧接着打开的下一个菜单
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+          setTimeout(() => {
+            window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+            setTimeout(() => resolve(out), 120)
+          }, 120)
+        }, 140)
+      }, 150)
+    })
+  }
+
+  /** 子菜单键盘导航：右键 → ArrowDown 逐项走到父项（禁用/分隔项会被导航跳过，
+      逐次轮询 .ctx-item.active 定位，禁用态组合无关）→ ArrowRight 展开 →
+      Escape 只收子菜单（菜单本体应在）→ 再 Escape 收菜单 */
+  w.__e2eAgentMenuKeys = () => {
+    const pane = document.querySelector<HTMLElement>('.term-pane')
+    if (!pane)
+      return Promise.resolve({ opened: false, subGone: false, menuAlive: false, menuGone: false })
+    const r = pane.getBoundingClientRect()
+    pane.dispatchEvent(
+      new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        clientX: Math.round(r.left + 40),
+        clientY: Math.round(r.top + 40)
+      })
+    )
+    const key = (k: string) => window.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }))
+    return new Promise<{ opened: boolean; subGone: boolean; menuAlive: boolean; menuGone: boolean }>(
+      (resolve) => {
+        setTimeout(() => {
+          let steps = 0
+          const walker = setInterval(() => {
+            const cur = document.querySelector<HTMLElement>('.ctx-item.active')
+            if (cur?.dataset.key === 'agent-menu' || ++steps > 16) {
+              clearInterval(walker)
+              key('ArrowRight')
+              setTimeout(() => {
+                const opened = !!document.querySelector('.ctx-submenu')
+                key('Escape')
+                setTimeout(() => {
+                  const subGone = !document.querySelector('.ctx-submenu')
+                  const menuAlive = !!document.querySelector('.ctx-menu')
+                  key('Escape')
+                  setTimeout(() => {
+                    resolve({ opened, subGone, menuAlive, menuGone: !document.querySelector('.ctx-menu') })
+                  }, 120)
+                }, 120)
+              }, 140)
+            } else {
+              key('ArrowDown')
+            }
+          }, 60)
+        }, 150)
+      }
+    )
+  }
+
+  /** 设置页添加自定义 agent 全链路：切到 agents 区块 → 点「添加」→ 以 React
+      受控方式填新行 名称/命令 → Enter 提交（直调 commit，不依赖 blur）。
+      返回新行 id（供主进程断言 settingsStore 与子菜单条目） */
+  w.__e2eAgentCustomAdd = () => {
+    const nav = document.querySelector<HTMLElement>('.settings-nav-item[data-key="nav-agents"]')
+    if (!nav) return Promise.resolve({ ok: false, id: '' })
+    nav.click()
+    return new Promise<{ ok: boolean; id: string }>((resolve) => {
+      setTimeout(() => {
+        const add = document.querySelector<HTMLButtonElement>('.agent-add')
+        if (!add) return resolve({ ok: false, id: '' })
+        add.click()
+        setTimeout(() => {
+          const row = [...document.querySelectorAll<HTMLElement>('.agent-custom-row')].at(-1)
+          const id = row?.dataset.id ?? ''
+          const nameInput = row?.querySelector<HTMLInputElement>('.agent-name-input')
+          const cmdInput = row?.querySelector<HTMLInputElement>('.agent-cmd-input')
+          if (!row || !nameInput || !cmdInput) return resolve({ ok: false, id })
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+          setter?.call(nameInput, 'E2E新增')
+          nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+          setter?.call(cmdInput, 'fake-claude')
+          cmdInput.dispatchEvent(new Event('input', { bubbles: true }))
+          // Enter 与填值隔一个宏任务（理由同 __e2eTabMenu）：保证提交闭包读到新草稿
+          setTimeout(() => {
+            cmdInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+            setTimeout(() => resolve({ ok: true, id }), 150)
+          }, 30)
+        }, 140)
+      }, 150)
+    })
+  }
 }

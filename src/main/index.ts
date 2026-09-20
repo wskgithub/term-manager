@@ -1,13 +1,14 @@
-import { app, BrowserWindow, clipboard, ipcMain, nativeTheme, protocol, shell } from 'electron'
+import { app, BrowserWindow, clipboard, ipcMain, nativeTheme, Notification, protocol, shell } from 'electron'
 import { execFile } from 'child_process'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
 import { createServer, type Server } from 'http'
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { extname, join, resolve, sep } from 'path'
-import { ProfileRegistry } from './profiles'
+import { ProfileRegistry, type Profile } from './profiles'
 import { SettingsStore, listMonospaceFonts } from './settings'
+import { agentName, listAgents, resolveAgent } from './agents'
 import { SessionStore } from './session'
 import { ThemeRegistry } from './themes'
 import { PluginRegistry, validEntryPath } from './plugins'
@@ -15,7 +16,7 @@ import { PluginPermStore } from './pluginPerms'
 import { PluginStateStore } from './pluginState'
 import { BRIDGE_BODY } from './tmplugBridge'
 import { TmuxBackend, sweepStaleServers, type TermInfo } from './tmux'
-import type { SessionTab, TabGroup } from '../shared/types'
+import type { OpenDirRequest, SessionTab, TabGroup } from '../shared/types'
 
 const registry = new ProfileRegistry()
 const settingsStore = new SettingsStore()
@@ -39,8 +40,9 @@ const backend = new TmuxBackend((channel, ...args) => {
 let mainWindow: BrowserWindow | null = null
 
 // 外部目录请求（CLI --open-dir= / 第二次启动）的排队区：
-// 渲染层 cli:ready 之前先入队，之后就绪后直接推送，避免事件丢失
-const pendingOpenDirs: string[] = []
+// 渲染层 cli:ready 之前先入队，之后就绪后直接推送，避免事件丢失。
+// agentId 存在 = 在该目录启动指定 agent（Nautilus 子菜单 / CLI --agent=）
+const pendingOpenDirs: OpenDirRequest[] = []
 let rendererReady = false
 
 // ── tmplug://：代码级插件（L3）的资源协议 ──
@@ -208,14 +210,38 @@ function syncTitleBarVariant(win: BrowserWindow, dark: boolean): void {
   }
 }
 
-function enqueueOpenDir(raw: string | undefined): void {
+function enqueueOpenDir(raw: string | undefined, agentId?: string): void {
   const dir = existingDir(raw)
   if (!dir) return
+  const req: OpenDirRequest = agentId ? { dir, agentId } : { dir }
   if (rendererReady && mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('cli:open-dir', dir)
+    mainWindow.webContents.send('cli:open-dir', req)
   } else {
-    pendingOpenDirs.push(dir)
+    pendingOpenDirs.push(req)
   }
+}
+
+/** agent 解析失败时的系统通知：Nautilus 侧探测与主进程此刻的 PATH 视角可能
+    不一致（或刚被卸载），点击不能无声无效——回退已开普通终端，这里说明原因 */
+function notifyAgentFallback(name: string): void {
+  try {
+    if (!Notification.isSupported()) return
+    new Notification({ title: 'Term Manager', body: `未找到 ${name} 命令，已在该目录打开普通终端` }).show()
+  } catch {
+    // 通知失败不影响回退动作本身
+  }
+}
+
+/** agent 回退标签用的默认 profile：与渲染层 newTab 的默认选择同规则
+（settings.defaultProfileId 优先，失效取首个可用） */
+function defaultProfileForFallback(): Profile {
+  const s = settingsStore.get()
+  const def = s.defaultProfileId ? registry.get(s.defaultProfileId) : undefined
+  return (
+    (def && def.available !== false ? def : undefined) ??
+    registry.list().find((p) => p.available !== false) ??
+    registry.list()[0] ?? { id: 'sh', name: 'sh', command: '/bin/sh' }
+  )
 }
 
 // 外链统一出口：只放行网页协议交给系统浏览器；file:// 等其他 scheme 交给
@@ -420,8 +446,51 @@ function registerIpc(): void {
     return info
   })
 
+  // AI Agent 列表：每次调用重探（$PATH + 常见全局 bin 目录），右键菜单/设置页
+  // 打开时拉取——运行中新装的 agent 无需重启即入菜单
+  ipcMain.handle('agents:list', () => listAgents(settingsStore.get()))
+
+  // 新标签启动 agent：cwd 取 opts.dir（外部指定）或 opts.fromTermId 所在 pane
+  // 的实际工作目录（右键菜单）。渲染层只传 agent id，命令体由主进程注册表
+  // （内置 agents.json / 设置页自定义条目）解析——与 term:create 同一安全约定。
+  // 解析失败回退默认 shell 标签 + 系统通知
+  ipcMain.handle('agent:launch', async (_e, agentId: unknown, opts?: unknown) => {
+    if (typeof agentId !== 'string' || !agentId) throw new Error('agent:launch: bad agent id')
+    const o = (typeof opts === 'object' && opts !== null ? opts : {}) as {
+      dir?: unknown
+      fromTermId?: unknown
+    }
+    let cwd: string | undefined
+    if (typeof o.dir === 'string') cwd = existingDir(o.dir) ?? undefined
+    if (!cwd && typeof o.fromTermId === 'string') {
+      cwd = (await backend.paneCwdOf(o.fromTermId)) ?? undefined
+    }
+    const resolved = resolveAgent(agentId, settingsStore.get())
+    if (!resolved) {
+      const info = await backend.create(defaultProfileForFallback(), cwd)
+      persistSession()
+      notifyAgentFallback(agentName(agentId, settingsStore.get()))
+      return info
+    }
+    // 合成 profile：argv[0] 已是解析出的绝对路径（PATH 盲区下照常可启动）；
+    // create 的标题规则在带 cwd 时取目录名，这里覆盖回 agent 名（tabs map 里
+    // 是同一引用，内外一致）
+    const info = await backend.create(
+      {
+        id: `agent:${agentId}`,
+        name: resolved.name,
+        command: resolved.argv[0],
+        args: resolved.argv.slice(1)
+      },
+      cwd
+    )
+    info.title = resolved.name
+    persistSession()
+    return info
+  })
+
   // 渲染层完成 onOpenDir 订阅后调用：取走排队中的目录并放开后续推送
-  ipcMain.handle('cli:ready', (): string[] => {
+  ipcMain.handle('cli:ready', (): OpenDirRequest[] => {
     rendererReady = true
     return pendingOpenDirs.splice(0)
   })
@@ -542,17 +611,35 @@ function argvFlag(name: string): string | undefined {
   return a ? a.split('=').slice(1).join('=') : undefined
 }
 
-/** 外部目录参数：优先 --open-dir=<path>，否则第一个非选项位置参数（dev 下 argv[1] 是脚本路径） */
+/** 外部目录参数：--open-dir=<path> / --open-dir <path>（Nautilus 扩展用两段式，
+    参数列表零拼接），否则第一个非选项位置参数（dev 下 argv[1] 是脚本路径） */
 function extractOpenDir(argv: string[]): string | undefined {
   const flag = argv.find((a) => a.startsWith('--open-dir='))
   if (flag) {
     const p = flag.slice('--open-dir='.length)
     if (p) return p
   }
+  const i = argv.indexOf('--open-dir')
+  if (i >= 0 && i + 1 < argv.length && argv[i + 1] && !argv[i + 1].startsWith('-')) {
+    return argv[i + 1]
+  }
   for (const a of argv.slice(app.isPackaged ? 1 : 2)) {
     if (!a.startsWith('-')) return a
   }
   return undefined
+}
+
+/** --agent=<id> / --agent <id>：与 --open-dir 配对（Nautilus 子菜单 / CLI 指名
+    在目录启动 agent）。id 字符集与 settings 的 AGENT_ID_RE 同口径，非法值按
+    未提供处理 */
+function extractAgentArg(argv: string[]): string | undefined {
+  const eq = argv.find((a) => a.startsWith('--agent='))
+  let v = eq ? eq.slice('--agent='.length) : undefined
+  if (!v) {
+    const i = argv.indexOf('--agent')
+    if (i >= 0 && i + 1 < argv.length) v = argv[i + 1]
+  }
+  return v && /^[a-z0-9][a-z0-9-]*$/.test(v) ? v : undefined
 }
 
 async function waitUntil(
@@ -3721,6 +3808,122 @@ async function runSessionPhase2(win: BrowserWindow): Promise<void> {
   app.exit(allOk ? 0 : 1)
 }
 
+/** --e2e-agents：AI Agent 子菜单 + 自发现 + 启动链路回归。夹具见 AGENTS_UD
+    （fake-claude 假 agent + 预写 settings），启动命令行须带
+    --open-dir=/tmp/e2e-agents-ud --agent=c-fake 走真实 CLI 冷启动排队链路 */
+async function runAgentsSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string): Promise<T> =>
+    JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_AGENTS ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+  const sess = () => json<{ count: number; titles: string[] }>('window.__e2eSessionState()')
+  const paneHas = (idx: number, sub: string) =>
+    json<boolean>(`window.__e2ePaneHas(${idx}, ${JSON.stringify(sub)})`)
+
+  // 1) CLI 冷启动：--open-dir + --agent 排队 → cli:ready 取走 → launchAgent 分支。
+  // 带排队目录的启动不开默认标签也不走会话恢复，首个标签即 agent（标题 = agent 名）
+  check('cold-cli-tab', await waitUntil(async () => (await sess()).count === 1, 20000))
+  check('cold-cli-title', (await sess()).titles[0] === 'FakeAgent')
+  check('cold-cli-marker', await waitUntil(() => paneHas(0, 'AGENT_FAKE_READY'), 10000))
+
+  // 2) 主进程自发现语义：fake 可用（解析到绝对路径）/坏命令不可用/内置在列。
+  // 机器上真装了哪些 agent 不可控，断言只落在 fake 与设置项上
+  const entries = listAgents(settingsStore.get())
+  const fake = entries.find((e) => e.id === 'c-fake')
+  const bad = entries.find((e) => e.id === 'c-bad')
+  check('list-fake-available', !!fake?.available && (fake.resolvedPath ?? '').includes('fake-claude'))
+  check('list-bad-missing', bad?.available === false)
+  check('list-builtin-present', entries.some((e) => e.id === 'gemini' && e.builtIn))
+
+  // 3) 终端右键子菜单：fake 在列，未安装的 c-bad 与被隐藏的 gemini 不在，管理入口在。
+  //    （__e2eAgentMenuState 返回 Promise，须用 js 直取经 executeJavaScript await，
+  //    走 json() 会被 JSON.stringify(Promise) 吃成 {}）
+  const menu = await js<{ open: boolean; items: Array<{ key: string; label: string }> }>(
+    'window.__e2eAgentMenuState()'
+  )
+  const keys = menu.items.map((i) => i.key)
+  check(
+    'menu-sub-items',
+    menu.open &&
+      keys.includes('agent-c-fake') &&
+      !keys.includes('agent-c-bad') &&
+      !keys.includes('agent-gemini') &&
+      keys.includes('agent-manage'),
+    JSON.stringify(menu.items)
+  )
+
+  // 4) 子菜单点击启动：cwd 取右键 pane 的 pane_current_path（此处 = AGENTS_UD），
+  //    新标签出现且 fake 输出标记
+  check('menu-launch-click', await js<boolean>('window.__e2eTermMenu("agent-c-fake", "agent-menu")'))
+  check('menu-launch-tab', await waitUntil(async () => (await sess()).count === 2, 15000))
+  check('menu-launch-title', (await sess()).titles[1] === 'FakeAgent')
+  check('menu-launch-marker', await waitUntil(() => paneHas(1, 'AGENT_FAKE_READY'), 10000))
+
+  // 5) 键盘导航：父项 ArrowRight 展开；首个 Escape 只收子菜单；再 Escape 收整个菜单
+  const nav = await js<{ opened: boolean; subGone: boolean; menuAlive: boolean; menuGone: boolean }>(
+    'window.__e2eAgentMenuKeys()'
+  )
+  check('menu-keyboard', nav.opened && nav.subGone && nav.menuAlive && nav.menuGone, JSON.stringify(nav))
+
+  // 6) 管理…入口 → 设置页 AI Agent 区块（导航项 + 内置行 + 两条预写自定义行）
+  check('manage-open', await js<boolean>('window.__e2eTermMenu("agent-manage", "agent-menu")'))
+  await delay(400)
+  check(
+    'manage-section',
+    (await json<boolean>("!!document.querySelector('.settings-nav-item[data-key=\"nav-agents\"]')")) &&
+      (await json<boolean>("!!document.querySelector('.agent-row[data-key=\"agent-claude\"]')")) &&
+      (await json<number>("document.querySelectorAll('.agent-custom-row').length") === 2)
+  )
+
+  // 7) 隐藏开关全链路：取消隐藏 gemini（DOM → onChange → settings:set → 主进程 store）
+  await js("document.querySelector('input[data-setting=\"agent-visible-gemini\"]')?.click()")
+  await delay(300)
+  check('unhide-persisted', !settingsStore.get().hiddenAgents.includes('gemini'))
+  await js('window.__e2eSettings(false)')
+  await delay(200)
+
+  // 8) 自定义 agent 添加全链路：设置页填名/命令 → 提交 → 主进程 store + 子菜单出现
+  await js('window.__e2eSettings(true)')
+  await delay(300)
+  const added = await js<{ ok: boolean; id: string }>('window.__e2eAgentCustomAdd()')
+  await delay(300)
+  const stored = settingsStore.get().customAgents.find((c) => c.id === added.id)
+  check('custom-add-persisted', !!stored && stored.name === 'E2E新增' && stored.argv[0] === 'fake-claude')
+  await js('window.__e2eSettings(false)')
+  await delay(200)
+  // 子菜单出现与否有异步刷新（settings:set → 主进程 sanitize 回包 → refreshAgents），
+  // 轮询直到新增条目出现或超时取末次快照
+  let menu2 = { items: [] as Array<{ key: string; label: string }> }
+  for (let i = 0; i < 16 && !menu2.items.some((x) => x.key === `agent-${added.id}`); i++) {
+    menu2 = await js<{ items: Array<{ key: string; label: string }> }>('window.__e2eAgentMenuState()')
+    if (menu2.items.some((x) => x.key === `agent-${added.id}`)) break
+    await delay(250)
+  }
+  const addedItem = menu2.items.find((i) => i.key === `agent-${added.id}`)
+  check('custom-add-in-menu', !!addedItem && addedItem.label === 'E2E新增', JSON.stringify(menu2.items))
+
+  // 9) CLI 热投递（second-instance 同款出口：就绪后直接推 cli:open-dir）
+  win.webContents.send('cli:open-dir', { dir: AGENTS_UD, agentId: 'c-fake' })
+  check('hot-cli-tab', await waitUntil(async () => (await sess()).count === 3, 15000))
+  check('hot-cli-title', (await sess()).titles[2] === 'FakeAgent')
+  check('hot-cli-marker', await waitUntil(() => paneHas(2, 'AGENT_FAKE_READY'), 10000))
+
+  // 10) 解析失败回退：不存在的 agent id → 该目录普通终端标签（标题为目录名）
+  win.webContents.send('cli:open-dir', { dir: AGENTS_UD, agentId: 'no-such-agent' })
+  check('fallback-tab', await waitUntil(async () => (await sess()).count === 4, 15000))
+  check('fallback-title', (await sess()).titles[3] === 'e2e-agents-ud')
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_AGENTS_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  await backend.dispose()
+  app.exit(allOk ? 0 : 1)
+}
+
 function argvHas(name: string): boolean {
   return process.argv.includes(name)
 }
@@ -3767,6 +3970,7 @@ const profileRefreshE2E = __E2E__ ? argvHas('--e2e-profile-refresh') : false
 const themesE2E = __E2E__ ? argvHas('--e2e-themes') : false
 const pluginsE2E = __E2E__ ? argvHas('--e2e-plugins') : false
 const codePluginsE2E = __E2E__ ? argvHas('--e2e-code-plugins') : false
+const agentsE2E = __E2E__ ? argvHas('--e2e-agents') : false
 const webglE2E = __E2E__ ? argvHas('--e2e-webgl') || argvHas('--e2e-webgl-fallback') : false
 const isolatedRun =
   argvHas('--smoke') ||
@@ -3781,9 +3985,11 @@ const isolatedRun =
   themesE2E ||
   pluginsE2E ||
   codePluginsE2E ||
+  agentsE2E ||
   webglE2E ||
   sessionE2E !== undefined
 const cliOpenDir = extractOpenDir(process.argv)
+const cliAgentId = extractAgentArg(process.argv)
 
 // --e2e-webgl-fallback：启动早期禁用 WebGL（appendSwitch 必须早于 app ready），
 // 确定性触发 WebglAddon 创建失败路径 → 断言自动回退 DOM 渲染后功能完好。
@@ -3832,6 +4038,39 @@ if (profileRefreshE2E) {
   )
   process.env.PATH = `${PROF_BIN}:${process.env.PATH ?? ''}`
   app.setPath('userData', PROF_UD)
+}
+
+// --e2e-agents 的自备环境，须在 whenReady 的 settingsStore.load() 与首次探测
+// 之前就绪：隔离 userData 预写 settings.json（可用/不可用各自定义 agent + 隐藏
+// 内置 gemini），PATH 前插假 agent bin（fake-claude 打标记后驻留 60s）。
+// 机器上真装了哪些 agent 不可控，断言全部落在 fake 与设置项上。套件命令行
+// 须带 --open-dir=/tmp/e2e-agents-ud --agent=c-fake 走真实 CLI 冷启动链路
+const AGENTS_UD = '/tmp/e2e-agents-ud'
+const AGENTS_BIN = '/tmp/e2e-agents-bin'
+if (agentsE2E) {
+  rmSync(AGENTS_UD, { recursive: true, force: true })
+  rmSync(AGENTS_BIN, { recursive: true, force: true })
+  mkdirSync(AGENTS_UD, { recursive: true })
+  mkdirSync(AGENTS_BIN, { recursive: true })
+  writeFileSync(join(AGENTS_BIN, 'fake-claude'), '#!/bin/sh\nprintf "AGENT_FAKE_READY\\n"\nsleep 60\n')
+  chmodSync(join(AGENTS_BIN, 'fake-claude'), 0o755)
+  writeFileSync(
+    join(AGENTS_UD, 'settings.json'),
+    JSON.stringify(
+      {
+        version: 1,
+        customAgents: [
+          { id: 'c-fake', name: 'FakeAgent', argv: ['fake-claude'] },
+          { id: 'c-bad', name: 'BadCmd', argv: ['e2e-no-such-cmd-xyz'] }
+        ],
+        hiddenAgents: ['gemini']
+      },
+      null,
+      2
+    )
+  )
+  process.env.PATH = `${AGENTS_BIN}:${process.env.PATH ?? ''}`
+  app.setPath('userData', AGENTS_UD)
 }
 
 // --e2e-themes 的自备环境，须在 whenReady 的 themes.load() 之前就绪：隔离
@@ -4043,14 +4282,14 @@ if (codePluginsE2E) {
   app.setPath('userData', CODE_UD)
 }
 
-if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null })) {
-  // 第二实例：目录已通过 additionalData 带给首实例，自己直接退出
+if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null, agentId: cliAgentId ?? null })) {
+  // 第二实例：目录与 agent 已通过 additionalData 带给首实例，自己直接退出
   app.quit()
 } else {
   if (!isolatedRun) {
     app.on('second-instance', (_e, argv, _wd, additionalData) => {
-      const data = additionalData as { openDir?: string | null } | undefined
-      enqueueOpenDir(data?.openDir ?? extractOpenDir(argv))
+      const data = additionalData as { openDir?: string | null; agentId?: string | null } | undefined
+      enqueueOpenDir(data?.openDir ?? extractOpenDir(argv), data?.agentId ?? extractAgentArg(argv))
       focusMainWindow()
     })
   }
@@ -4089,7 +4328,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
       }
 
       createWindow()
-      enqueueOpenDir(cliOpenDir)
+      enqueueOpenDir(cliOpenDir, cliAgentId)
       const started = backend.start(attach)
       backendStarted = started
       // GUI 路径不 await start：这里挂一个兜底 catch 防止 tmux 缺失时
@@ -4132,6 +4371,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
           themesE2E ||
           pluginsE2E ||
           codePluginsE2E ||
+          agentsE2E ||
           webglE2E) &&
         mainWindow
       ) {
@@ -4161,6 +4401,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
               else if (themesE2E) await runThemesSequence(win)
               else if (pluginsE2E) await runPluginsSequence(win)
               else if (codePluginsE2E) await runCodePluginsSequence(win)
+              else if (agentsE2E) await runAgentsSequence(win)
               else if (webglE2E) await runWebglSequence(win)
               else await runE2ESequence(win, n)
             })
