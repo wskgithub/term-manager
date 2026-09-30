@@ -11,20 +11,29 @@ All notable changes to Term Manager are documented in this file.
   (Ctrl+Shift+G / tab-bar folder button / palette). Shipped as the first bundled official
   plugin — same plugin system, same permission gates, disableable like any plugin, and a
   same-id folder in the user plugins directory replaces it. Features: virtual-scrolling
-  browse with vim keys and dotfile toggle, type-to-filter fuzzy matching, previews
-  (text/images/directories/binary detection), terminal integration (yank quoted path,
-  cd, new-tab-here, optional follow-terminal) and reversible file operations (create,
-  rename, trash-only delete with confirmation). Under the hood the plugin system gained
-  three general capabilities: a visible panel host for `panel` plugins (the sandboxed
-  iframe mounts into a resizable right-side panel instead of the headless container,
-  CSS-only open/close keeps the plugin realm alive), a `fs` permission vocabulary with a
-  main-process-gated RPC (list/stat/readText/readBase64/write/mkdir/rename/trash;
-  scope-based grants, absolute-path/size/concurrency defenses, deletion goes to the
-  system trash only), and `terminals.cwd` + `ui.colors` APIs. Covered by the new
-  `--e2e-files` suite (15 assertions: builtin loading, permission dialog + persistence,
-  panel toggling, frame-internal navigation/filter/preview via WebFrameMain, real-pane
-  yank/cd/new-tab, create/rename/trash verified on disk, gate denial/guard/disabled
-  paths).
+  browse with vim keys and dotfile toggle, sort switching (`,n`/`,m`/`,s` by
+  name/mtime/size, `,d` toggles directories-first — directories count as size 0 so the
+  dirent block size never drowns small files), type-to-filter fuzzy matching, previews
+  (text/images/directories/binary detection), terminal integration (yank quoted paths,
+  cd, new-tab-here, optional follow-terminal), bulk selection (Space marks, `v`/`V`
+  visual range, Ctrl+A select-all) with a file clipboard (`Y` copy / `X` cut / `p`
+  paste skipping existing targets / `P` overwrite paste), bookmarks (`m`+char / `'`+char),
+  navigation history (`H`/`L`), goto (`:`) and a recursive fuzzy find (`s`, depth-capped
+  results view), plus reversible file operations (create, rename, trash-only delete with
+  confirmation). Under the hood the plugin system gained three general capabilities: a
+  visible panel host for `panel` plugins (the sandboxed iframe mounts into a resizable
+  right-side panel instead of the headless container, CSS-only open/close keeps the
+  plugin realm alive), a `fs` permission vocabulary with a main-process-gated RPC
+  (list/stat/readText/readBase64/write/mkdir/rename/trash/copy/move/find; scope-based
+  grants, absolute-path/size/concurrency defenses, deletion goes to the system trash
+  only — `copy`/`move` refuse to overwrite unless asked, `move` only unlinks its source
+  inside its own cross-device fallback, `find` is depth/count-capped), and
+  `terminals.cwd` + `ui.colors` APIs. Covered by the new `--e2e-files` suite (23
+  assertions: builtin loading, permission dialog + persistence, panel toggling,
+  frame-internal navigation/filter/preview via WebFrameMain, real-pane yank/cd/new-tab,
+  create/rename/trash verified on disk, bulk select/visual/ctrl-A, copy/paste and
+  cut/move verified on disk, goto, sort toggles, bookmarks + history, recursive find,
+  gate denial/guard/new-op defenses/disabled paths).
 
 - **UI polish pass**: three related refinements. (1) The command palette
   (Ctrl+Shift+P) no longer appears to slide in from the right: its centering used
@@ -119,15 +128,22 @@ All notable changes to Term Manager are documented in this file.
 - **文件面板（官方内置插件）**：窗口右侧的 yazi 式文件面板（Ctrl+Shift+G /
   标签栏文件夹按钮 / 命令面板三入口）。以第一个官方内置插件交付——与社区插件同一
   套系统与权限门控、可同样禁用，用户插件目录放同 id 文件夹即整体替换。功能：虚拟
-  滚动浏览（vim 键位、隐藏文件切换）、直接打字模糊过滤、预览（文本/图片/目录/二进
-  制识别）、终端联动（贴引用路径、cd、此处开新标签、可选跟随终端）与可逆文件操作
-  （新建、改名、仅回收站的删除带确认）。底层插件系统新增三项通用能力：`panel` 插件
-  的可见面板宿主（沙箱帧挂进可拖宽的右侧面板而非无头容器，开合纯 CSS 保 realm 不
-  销毁）、`fs` 权限词汇与主进程门控 RPC（list/stat/readText/readBase64/write/mkdir/
-  rename/trash；按档位授权、绝对路径/大小/并发防御、删除只走系统回收站）、
-  `terminals.cwd` 与 `ui.colors` API。新增 `--e2e-files` 套件 15 断言（内置加载、权限
-  弹窗与落盘、面板开合、经 WebFrameMain 的帧内导航/过滤/预览、真实 pane 的贴路径/
-  cd/新标签、新建/改名/删除落盘核验、gate 未授权/防御/禁用路径）。
+  滚动浏览（vim 键位、隐藏文件切换）、排序切换（`,n`/`,m`/`,s` 名称/时间/大小、
+  `,d` 目录优先开关——大小排序时目录按 0 计，dirent 块大小不会淹没小文件）、直接
+  打字模糊过滤、预览（文本/图片/目录/二进制识别）、终端联动（贴引用路径、cd、此处
+  开新标签、可选跟随终端）、批量选择（Space 勾选、`v`/`V` 可视区间、Ctrl+A 全选）
+  与文件剪贴板（`Y` 复制 / `X` 剪切 / `p` 粘贴跳过已存在 / `P` 覆盖粘贴）、书签
+  （`m`+字符 / `'`+字符）、导航历史（`H`/`L`）、`:` 直达路径、`s` 递归模糊找文件
+  （限深结果视图），以及可逆文件操作（新建、改名、仅回收站的删除带确认）。底层
+  插件系统新增三项通用能力：`panel` 插件的可见面板宿主（沙箱帧挂进可拖宽的右侧
+  面板而非无头容器，开合纯 CSS 保 realm 不销毁）、`fs` 权限词汇与主进程门控 RPC
+  （list/stat/readText/readBase64/write/mkdir/rename/trash/copy/move/find；按档位
+  授权、绝对路径/大小/并发防御、删除只走系统回收站——copy/move 默认拒绝覆盖、
+  move 仅在自身跨盘回退内部删源、find 有深度与数量上限）、`terminals.cwd` 与
+  `ui.colors` API。新增 `--e2e-files` 套件 23 断言（内置加载、权限弹窗与落盘、面板
+  开合、经 WebFrameMain 的帧内导航/过滤/预览、真实 pane 的贴路径/cd/新标签、新建/
+  改名/删除落盘核验、批量选择/可视/全选、复制粘贴与剪切移动落盘核验、直达路径、
+  排序切换、书签与历史、递归查找、gate 未授权/防御/新原语防御/禁用路径）。
 
 - **UI 打磨**：三处关联优化。其一，命令面板（Ctrl+Shift+P）不再「从右侧飞到
   中间」：此前居中用 `left:50% + translateX(-50%)`，而 pop-in 动画的 keyframes

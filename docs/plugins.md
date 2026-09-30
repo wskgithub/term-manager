@@ -159,13 +159,16 @@ scopes):
 - ≤200 chars each, deduplicated in order, max 8 entries;
 - approved origins enter the plugin frame CSP's `connect-src`.
 
-`fs` (scopes: `read` covers `fs.list` / `fs.stat` / `fs.readText` / `fs.readBase64`;
-`write` covers `fs.write` / `fs.mkdir` / `fs.rename` / `fs.trash`):
+`fs` (scopes: `read` covers `fs.list` / `fs.stat` / `fs.readText` / `fs.readBase64` /
+`fs.find`; `write` covers `fs.write` / `fs.mkdir` / `fs.rename` / `fs.trash` / `fs.copy` /
+`fs.move`):
 
 - file-manager-style plugins need full-disk addressing (they follow the terminal's cwd),
   so the granularity is the **scope**, not a directory allow-list; the write scope is
   permanently converged on reversible operations — deletion only goes to the system
-  trash, `rename` refuses to overwrite an existing target;
+  trash, `rename` refuses to overwrite an existing target, `copy` / `move` refuse
+  unless `overwrite: true` (and `move` only unlinks the source inside its own
+  cross-device fallback — there is still no exposed delete op);
 - first load after declaring shows the approval dialog (both dimensions listed); allow =
   the whole declared set at once, deny = zero network **and** zero file access;
 - changing the declared set (adding `write`, adding an origin, …) re-prompts — the stored
@@ -491,6 +494,15 @@ await tm.fs.write('/path/new.txt', 'content')      // ≤1MB; the parent directo
 await tm.fs.mkdir('/path/new-dir')                 // recursive
 await tm.fs.rename('/from', '/to')                 // refuses when the target exists
 await tm.fs.trash('/path')                         // the only deletion path — system trash
+await tm.fs.copy('/from', '/to')                   // file or directory tree; refuses an existing
+//                                                   target unless { overwrite: true }; ≤2GiB /
+//                                                   ≤20000 items per op; dst may not be inside src
+await tm.fs.move('/from', '/to')                   // same-device rename; cross-device copies then
+//                                                   removes the source inside the op (still no
+//                                                   exposed delete); same guards as copy
+const { items } = await tm.fs.find('/home/me', 'notes')
+// items: { rel, kind, size, mtime }[] — case-insensitive subsequence match on the
+// basename, depth ≤6, ≤50000 walked, ≤200 results (truncated=true past the caps)
 ```
 
 Guards (all enforced main-side, in `src/main/pluginFs.ts`): paths must be absolute,
@@ -544,6 +556,8 @@ Per-plugin caps against pathological plugins (over-cap registrations silently re
 | `fs.readText` | ≤ 2MB | binary (NUL in first 8KB) rejected |
 | `fs.readBase64` | ≤ 8MB | truncated payload flagged |
 | `fs.write` content | ≤ 1MB | parent directory must exist |
+| `fs.copy` / `fs.move` per op | ≤ 2GiB, ≤ 20000 items | target must not exist (or `overwrite`); dst may not be inside src |
+| `fs.find` | depth ≤ 6, ≤ 50000 walked, ≤ 200 results | non-empty pattern; `truncated` flagged |
 | `fs.*` in flight per plugin | 8 | excess calls rejected, not queued |
 | panel icon file | ≤ 256KB | `.svg` / `.png` |
 | entry file | ≤ 1MB | `.js` / `.mjs` |

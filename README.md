@@ -410,15 +410,22 @@ trash, rename refuses to overwrite). Then:
 
 - **Browse**: virtual-scrolling list (huge directories stay smooth), directories first,
   vim keys (`j/k` move, `Enter`/`l` enter, `h`/`Backspace` up, `gg`/`G`/`Home`/`End`,
-  `r` refresh, `.` toggles dotfiles);
+  `r` refresh, `.` toggles dotfiles); sort cycles via `,n`/`,m`/`,s` (name/mtime/size)
+  with `,d` toggling the directories-first grouping;
 - **Filter**: just type — fuzzy subsequence matching with highlighted hits (`Esc`
-  clears);
+  clears; letters taken by actions go through `/` explicitly);
 - **Preview**: text (truncated), images, directory summaries, binary detection;
-- **Terminal integration**: `y` yanks the selected path as a quoted argument into the
+- **Terminal integration**: `y` yanks the selected path(s) as quoted arguments into the
   active terminal, `c` sends `cd` to it, `t` opens a new tab in that directory; an
   optional "follow terminal" mode re-navigates on tab switches;
-- **File operations**: `a` create (trailing `/` = directory), `F2` rename, `x` delete
-  (trash, with a confirm step).
+- **Bulk selection & clipboard**: `Space` toggles a mark, `v`/`V` visual-range select,
+  `Ctrl+A` selects/clears all; `Y` copies, `X` cuts, `p` pastes into the current
+  directory (skipping existing targets — `P` overwrites); marked items are what `x`
+  (trash, with a confirm step) and `y` act on;
+- **Navigate further**: `m`+char sets a bookmark and `'`+char jumps back, `H`/`L` walk
+  navigation history, `:` jumps to an absolute path, `s` runs a recursive fuzzy
+  find (depth-capped, `Esc` leaves the results view);
+- **File operations**: `a` create (trailing `/` = directory), `F2` rename.
 
 The panel's plugin-system foundations — a visible panel host for `panel` plugins, the
 `fs` permission vocabulary and RPC, `terminals.cwd` and `ui.colors` — are general plugin

@@ -407,6 +407,10 @@ function buildImpls(id: string): Record<string, (...args: unknown[]) => unknown>
     'fs.mkdir': (path) => fsPassthrough(id, 'mkdir', [path]),
     'fs.rename': (from, to) => fsPassthrough(id, 'rename', [from, to]),
     'fs.trash': (path) => fsPassthrough(id, 'trash', [path]),
+    // copy/move 的 overwrite 第三参原样透传（归一在主进程 pluginFs）
+    'fs.copy': (src, dst, overwrite) => fsPassthrough(id, 'copy', [src, dst, overwrite]),
+    'fs.move': (src, dst, overwrite) => fsPassthrough(id, 'move', [src, dst, overwrite]),
+    'fs.find': (root, q) => fsPassthrough(id, 'find', [root, q]),
     'statusbar.setItem': (itemId, wire) => {
       if (typeof itemId !== 'string' || !LOCAL_ID_RE.test(itemId)) return
       const key = `${id}:${itemId}`

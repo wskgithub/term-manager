@@ -264,6 +264,21 @@ export interface FsBlobResult {
   truncated: boolean
 }
 
+export interface FsFindItem {
+  /** 相对 root 的路径（无 ./ 前缀；分隔 /） */
+  rel: string
+  kind: FsEntryKind
+  size: number
+  mtime: number
+}
+
+export interface FsFindResult {
+  root: string
+  items: FsFindItem[]
+  /** 触达条数/结果数上限（深度 ≤6 · 遍历 ≤50000 · 结果 ≤200）截断为 true */
+  truncated: boolean
+}
+
 /** fs 通道的 IPC 形状（永不 reject，错误在 ok:false 里） */
 export type FsCallShape = { ok: true; value: unknown } | { ok: false; error: string }
 
@@ -331,6 +346,15 @@ export interface TmScopedApi {
     rename(from: string, to: string): Promise<void>
     /** 移入系统回收站（唯一的删除通路，不提供真删） */
     trash(path: string): Promise<void>
+    /** 复制文件或目录树（目标已存在时默认拒绝，overwrite 才覆盖；总量
+     *  ≤2GiB / ≤20000 项；目标不得位于源内部——防自递归） */
+    copy(src: string, dst: string, opts?: { overwrite?: boolean }): Promise<void>
+    /** 移动（同盘 rename 原子完成；跨盘复制后删源——删源只在「移动」语义
+     *  内部发生，不构成对外暴露的真删通路） */
+    move(src: string, dst: string, opts?: { overwrite?: boolean }): Promise<void>
+    /** 递归按名找（大小写不敏感子序列匹配 basename；深度 ≤6、遍历 ≤50000、
+     *  结果 ≤200，超限 truncated 标记） */
+    find(root: string, pattern: string): Promise<FsFindResult>
   }
   panel: {
     /** 请求宿主收起面板并归还终端焦点（帧内 Esc 语义；非面板插件调用为空操作） */

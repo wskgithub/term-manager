@@ -137,6 +137,30 @@ body {
   opacity: 0.7;
 }
 
+/* 批量勾选标记列（未勾选时占位保持名称列对齐） */
+.row .mk {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent, #89b4fa);
+  opacity: 0;
+}
+
+.row.marked .mk {
+  opacity: 1;
+}
+
+/* 剪切待粘贴项：整行淡显 + 名称删除线（粘贴后消失） */
+.row.cut {
+  opacity: 0.55;
+}
+
+.row.cut .nm {
+  text-decoration: line-through;
+}
+
 .row mark {
   background: none;
   color: var(--warn, #f9e2af);

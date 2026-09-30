@@ -3732,6 +3732,15 @@ async function runFilesSequence(win: BrowserWindow): Promise<void> {
     )
     await delay(120)
   }
+  // 帧内合成带 Ctrl 的 keydown（Ctrl+A 全选；固定派发到 document——INPUT 聚
+  // 焦时浏览器原生全选语义不归套件模拟）
+  const keyCtrl = async (k: string): Promise<void> => {
+    await fjs(
+      'files',
+      `(function(){document.dispatchEvent(new KeyboardEvent('keydown',{key:${JSON.stringify(k)},ctrlKey:true,bubbles:true,cancelable:true}));return 1})()`
+    )
+    await delay(120)
+  }
   // 帧内向聚焦 INPUT 设值并触发 input（过滤/新建/改名的文本注入）
   const type = async (text: string): Promise<void> => {
     await fjs(
@@ -3917,6 +3926,157 @@ async function runFilesSequence(win: BrowserWindow): Promise<void> {
   const c1 = Number((await snapOf())?.count)
   check('hidden-toggle', c0 === 6 && c1 === 7, JSON.stringify({ c0, c1 }))
 
+  // 11b) 批量选择：Space 勾选 · v 进入可视（移动划区间）· V 提交 ·
+  //      Ctrl+A 全选/再按清空
+  await key('.') // 隐藏文件关回 6 项基准
+  await key('Home')
+  await key(' ')
+  const bs1 = Number((await snapOf())?.selN)
+  await key('j')
+  await key(' ')
+  const bs2 = Number((await snapOf())?.selN)
+  await key('v')
+  const bsVis = (await snapOf())?.visual === true
+  await key('j')
+  await key('V')
+  const bs3 = Number((await snapOf())?.selN)
+  await keyCtrl('a')
+  const bsAll = Number((await snapOf())?.selN)
+  await keyCtrl('a')
+  const bsNone = Number((await snapOf())?.selN)
+  check(
+    'bulk-select',
+    bs1 === 1 && bs2 === 2 && bsVis && bs3 === 3 && bsAll === 6 && bsNone === 0,
+    JSON.stringify({ bs1, bs2, bsVis, bs3, bsAll, bsNone })
+  )
+
+  // 11c) 复制/粘贴：选中 a.txt → Y 复制 → 进 z-dir → p 落盘；再 p 跳过已存在
+  await key(' ') // 勾选 a.txt（光标停在可视选择结束的 a.txt 上）
+  await key('Y')
+  const sYank = await snapOf()
+  await key('Home')
+  await key('j')
+  await key('Enter')
+  await waitUntil(async () => (await snapOf())?.cwd === join(FIX, 'z-dir'), 5000, 200)
+  await key('p')
+  const pasted = await waitUntil(() => Promise.resolve(existsSync(join(FIX, 'z-dir', 'a.txt'))), 5000, 200)
+  await key('p')
+  const skipMsg = await waitUntil(async () => /跳过/.test(String((await snapOf())?.msg ?? '')), 5000, 200)
+  check(
+    'yank-paste',
+    sYank?.clip === 'copy:1' && pasted && skipMsg,
+    JSON.stringify({ clip: sYank?.clip, pasted, skipMsg })
+  )
+
+  // 11d) 直达路径 + 剪切移动：: 进 a-dir；回 FIX 剪切 b.txt 再 : 过去 p 落位
+  await key('h')
+  await waitUntil(async () => (await snapOf())?.cwd === FIX, 5000, 200)
+  await key(':')
+  await type(join(FIX, 'a-dir'))
+  await key('Enter')
+  await waitUntil(async () => (await snapOf())?.cwd === join(FIX, 'a-dir'), 5000, 200)
+  const sGoto = await snapOf()
+  await key('h')
+  await waitUntil(async () => (await snapOf())?.cwd === FIX, 5000, 200)
+  // Y 复制后选中集保留（yazi 习惯）——清空后再标记，cut 断言才只含 b.txt
+  await keyCtrl('a')
+  await keyCtrl('a')
+  await key('Home')
+  await key('j')
+  await key('j')
+  await key('j')
+  await key(' ') // 勾选 b.txt
+  await key('X')
+  const sCut = await snapOf()
+  await key(':')
+  await type(join(FIX, 'a-dir'))
+  await key('Enter')
+  await waitUntil(async () => (await snapOf())?.cwd === join(FIX, 'a-dir'), 5000, 200)
+  await key('p')
+  const moved = await waitUntil(
+    async () => !existsSync(join(FIX, 'b.txt')) && existsSync(join(FIX, 'a-dir', 'b.txt')),
+    5000,
+    200
+  )
+  check('goto-input', sGoto?.cwd === join(FIX, 'a-dir'), JSON.stringify({ cwd: sGoto?.cwd }))
+  check('cut-move', sCut?.clip === 'cut:1' && moved, JSON.stringify({ clip: sCut?.clip, moved }))
+
+  // 11e) 排序：,s 按大小（目录优先在前）· ,d 目录优先开关（目录混入大小序）
+  //      · ,n 回名称；列表前 5 项名字经快照 names 断言
+  await key('h')
+  await waitUntil(async () => (await snapOf())?.cwd === FIX, 5000, 200)
+  await key(',')
+  await key('s')
+  const sSort = await snapOf()
+  await key(',')
+  await key('d')
+  const sSortD = await snapOf()
+  await key(',')
+  await key('d')
+  await key(',')
+  await key('n')
+  const sSortN = await snapOf()
+  check(
+    'sort-toggle',
+    sSort?.sort === 'size+d' &&
+      (sSort?.names as string[] | undefined)?.[2] === 'img.png' &&
+      (sSort?.names as string[] | undefined)?.[3] === 'a.txt' &&
+      sSortD?.sort === 'size' &&
+      (sSortD?.names as string[] | undefined)?.[0] === 'img.png' &&
+      sSortN?.sort === 'name+d' &&
+      (sSortN?.names as string[] | undefined)?.[0] === 'a-dir',
+    JSON.stringify({ sSort: sSort?.sort, sSortNames: sSort?.names, sSortD: sSortD?.sort, sSortDNames: sSortD?.names, sSortN: sSortN?.sort, sSortNNames: sSortN?.names })
+  )
+
+  // 11f) 书签与历史：m k 设书签（当前 FIX）· 进 a-dir · ' k 跳回 · H/L 前后
+  await key('m')
+  await key('k')
+  const sBm = await snapOf()
+  await key('Home')
+  await key('Enter')
+  await waitUntil(async () => (await snapOf())?.cwd === join(FIX, 'a-dir'), 5000, 200)
+  await key("'")
+  await key('k')
+  await waitUntil(async () => (await snapOf())?.cwd === FIX, 5000, 200)
+  const sJump = await snapOf()
+  await key('H')
+  await waitUntil(async () => (await snapOf())?.cwd === join(FIX, 'a-dir'), 5000, 200)
+  const sBmBack = await snapOf()
+  await key('L')
+  await waitUntil(async () => (await snapOf())?.cwd === FIX, 5000, 200)
+  const sFwd = await snapOf()
+  check(
+    'bookmarks-history',
+    /书签/.test(String(sBm?.msg ?? '')) &&
+      sBm?.cwd === FIX &&
+      sJump?.cwd === FIX &&
+      sBmBack?.cwd === join(FIX, 'a-dir') &&
+      sFwd?.cwd === FIX,
+    JSON.stringify({ bmMsg: sBm?.msg, jump: sJump?.cwd, back: sBmBack?.cwd, fwd: sFwd?.cwd })
+  )
+
+  // 11g) 递归查找：s 输入关键词 → 结果视图（相对路径 + 命中数）→ Enter 跳
+  //      父目录并选中
+  await key('s')
+  await type('inner')
+  await key('Enter')
+  const sFind = await waitUntil(async () => (await snapOf())?.view === 'find', 5000, 200).then(async () => snapOf())
+  await key('Enter')
+  const sFindNav = await waitUntil(async () => (await snapOf())?.cwd === join(FIX, 'a-dir'), 5000, 200).then(
+    async () => snapOf()
+  )
+  check(
+    'find-nav',
+    !!sFind &&
+      sFind.view === 'find' &&
+      sFind.findQ === 'inner' &&
+      sFind.sel === 'a-dir/inner.txt' &&
+      Number(sFind.count) === 1 &&
+      sFindNav?.cwd === join(FIX, 'a-dir') &&
+      sFindNav?.sel === 'inner.txt',
+    JSON.stringify({ find: sFind?.findQ, sel: sFind?.sel, count: sFind?.count, nav: sFindNav?.cwd, navSel: sFindNav?.sel })
+  )
+
   // 12) fs gate（已授权态）的路径防御：相对路径/超限写入拒绝，正常读放行
   const relPath = await pluginFsCall(fsDeps, 'files', 'list', ['tmp/rel'])
   const okList = await pluginFsCall(fsDeps, 'files', 'list', [FIX])
@@ -3930,6 +4090,30 @@ async function runFilesSequence(win: BrowserWindow): Promise<void> {
       tooLarge.ok === false && tooLargeErr.includes('too large') &&
       okMkdir.ok === true && existsSync(join(FIX, 'a-dir', 'made-by-gate')),
     JSON.stringify({ relPath: relPath.ok, okList: okList.ok, tooLargeErr })
+  )
+
+  // 12b) 新原语的防御面：copy 拒绝「目标在源内部」· find 空关键词与相对根
+  //      拒绝 · find 正常命中（相对路径）
+  const cycCopy = await pluginFsCall(fsDeps, 'files', 'copy', [FIX, join(FIX, 'a-dir'), false])
+  const badFind = await pluginFsCall(fsDeps, 'files', 'find', [FIX, ''])
+  const relFind = await pluginFsCall(fsDeps, 'files', 'find', ['relative/root', 'x'])
+  const okFind = await pluginFsCall(fsDeps, 'files', 'find', [FIX, 'inner'])
+  const okFindItems = okFind.ok ? ((okFind.value as { items?: Array<{ rel: string }> }).items ?? []) : []
+  check(
+    'fs-newops-guarded',
+    cycCopy.ok === false &&
+      String(cycCopy.error).includes('inside') &&
+      badFind.ok === false &&
+      String(badFind.error).includes('bad pattern') &&
+      relFind.ok === false &&
+      okFind.ok === true &&
+      okFindItems.some((it) => it.rel === 'a-dir/inner.txt'),
+    JSON.stringify({
+      cyc: cycCopy.ok ? null : cycCopy.error,
+      badFind: badFind.ok ? null : badFind.error,
+      relFind: relFind.ok,
+      found: okFindItems.length
+    })
   )
 
   // 13) 禁用态：plugin-state.json 置禁用后 gate 拒绝（帧拆除由渲染层常规链路

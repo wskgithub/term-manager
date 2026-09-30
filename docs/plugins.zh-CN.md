@@ -143,11 +143,14 @@ EOF
 - 每条 ≤200 字符，去重保序，上限 8 条；
 - 批准的 origin 进插件帧 CSP 的 `connect-src`。
 
-`fs`（档位：`read` 涵盖 `fs.list` / `fs.stat` / `fs.readText` / `fs.readBase64`；
-`write` 涵盖 `fs.write` / `fs.mkdir` / `fs.rename` / `fs.trash`）：
+`fs`（档位：`read` 涵盖 `fs.list` / `fs.stat` / `fs.readText` / `fs.readBase64` /
+`fs.find`；`write` 涵盖 `fs.write` / `fs.mkdir` / `fs.rename` / `fs.trash` /
+`fs.copy` / `fs.move`）：
 
 - 文件管理器类插件需要全盘寻址（跟随终端 cwd），所以授权粒度是**档位**而非目录白名单；
-  write 档位被永久收敛为可逆操作——删除只走系统回收站，`rename` 拒绝覆盖已存在目标；
+  write 档位被永久收敛为可逆操作——删除只走系统回收站，`rename` 拒绝覆盖已存在目标，
+  `copy` / `move` 默认拒绝覆盖（显式 `overwrite: true` 才覆盖；`move` 只在自身跨盘
+  回退内部删源，对外仍不暴露真删通路）；
 - 声明后首次加载弹批准框（两维权益一起列出）；允许 = 声明全集一次授予，拒绝 =
   零网络**且**零文件访问；
 - 改声明集合（加 `write`、加 origin……）会重新弹——落盘的决策快照两维都记。
@@ -443,6 +446,14 @@ await tm.fs.write('/path/new.txt', '内容')          // ≤1MB；父目录必�
 await tm.fs.mkdir('/path/new-dir')                 // 递归
 await tm.fs.rename('/from', '/to')                 // 目标已存在即拒绝
 await tm.fs.trash('/path')                         // 唯一的删除通路——系统回收站
+await tm.fs.copy('/from', '/to')                   // 文件或目录树；目标已存在即拒绝（显式
+//                                                   { overwrite: true } 才覆盖）；单次 ≤2GiB /
+//                                                   ≤20000 项；目标不得位于源内部
+await tm.fs.move('/from', '/to')                   // 同盘 rename；跨盘复制后删源（删源只发生
+//                                                   在移动语义内部，对外无真删通路）；防御同 copy
+const { items } = await tm.fs.find('/home/me', 'notes')
+// items: { rel, kind, size, mtime }[]——按 basename 大小写不敏感子序列匹配；
+// 深度 ≤6、遍历 ≤50000、结果 ≤200（超限 truncated 标记）
 ```
 
 防御（全部在主进程 `src/main/pluginFs.ts` 收口）：路径必须绝对、无 NUL、≤4096 字符；
@@ -491,6 +502,8 @@ tm.statusbar.setItem('clock', null)   // 删除该项
 | `fs.readText` | ≤ 2MB | 二进制（前 8KB 含 NUL）拒绝 |
 | `fs.readBase64` | ≤ 8MB | 截断负载有标记 |
 | `fs.write` 内容 | ≤ 1MB | 父目录必须已存在 |
+| `fs.copy` / `fs.move` 单次 | ≤ 2GiB、≤ 20000 项 | 目标已存在即拒（或 `overwrite`）；目标不得位于源内部 |
+| `fs.find` | 深度 ≤ 6、遍历 ≤ 50000、结果 ≤ 200 | 关键词非空；超限 `truncated` 标记 |
 | `fs.*` 单插件在飞 | 8 个 | 超出直接拒绝，不排队 |
 | 面板 icon 文件 | ≤ 256KB | `.svg` / `.png` |
 | entry 文件 | ≤ 1MB | `.js` / `.mjs` |

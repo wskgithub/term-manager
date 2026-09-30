@@ -168,7 +168,11 @@ export const BRIDGE_BODY = `
       write: function (path, content) { return fsCall('write', [path, content]) },
       mkdir: function (path) { return fsCall('mkdir', [path]) },
       rename: function (from, to) { return fsCall('rename', [from, to]) },
-      trash: function (path) { return fsCall('trash', [path]) }
+      trash: function (path) { return fsCall('trash', [path]) },
+      // overwrite 第三参原样透传（boolean 或 {overwrite}），归一在主进程侧
+      copy: function (src, dst, o) { return fsCall('copy', [src, dst, o]) },
+      move: function (src, dst, o) { return fsCall('move', [src, dst, o]) },
+      find: function (root, q) { return fsCall('find', [root, q]) }
     },
     panel: {
       close: function () { notify('panel.close', []) }

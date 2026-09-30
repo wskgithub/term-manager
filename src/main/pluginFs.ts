@@ -1,10 +1,13 @@
 import { shell } from 'electron'
-import { access, lstat, mkdir, readFile, readdir, readlink, rename, stat, writeFile } from 'fs/promises'
+import { access, cp, lstat, mkdir, readFile, readdir, readlink, rename, rm, stat, writeFile } from 'fs/promises'
 import { dirname, resolve } from 'path'
+import type { Stats } from 'fs'
 import type {
   FsBlobResult,
   FsEntry,
   FsEntryKind,
+  FsFindItem,
+  FsFindResult,
   FsListResult,
   FsStat,
   FsTextResult,
@@ -17,8 +20,8 @@ import type {
 // fs/promises（不阻塞主进程），删除只走回收站（shell.trashItem，可逆），
 // 不提供真删。
 //
-// 权限语义：op→档位映射固定（read: list/stat/readText/readBase64；
-// write: write/mkdir/rename/trash），实授权 = pluginPerms 的已决策 ∩ 当前
+// 权限语义：op→档位映射固定（read: list/stat/readText/readBase64/find；
+// write: write/mkdir/rename/trash/copy/move），实授权 = pluginPerms 的已决策 ∩ 当前
 // manifest 声明（declaredFs），未声明/未决策/被拒一律 error。禁用插件
 // （plugin-state.json）同样拒绝——帧虽已拆除，这里再兜一层。
 
@@ -31,6 +34,9 @@ export type FsOp =
   | 'mkdir'
   | 'rename'
   | 'trash'
+  | 'copy'
+  | 'move'
+  | 'find'
 
 const OP_SCOPE: Record<FsOp, PluginFsScope> = {
   list: 'read',
@@ -40,7 +46,10 @@ const OP_SCOPE: Record<FsOp, PluginFsScope> = {
   write: 'write',
   mkdir: 'write',
   rename: 'write',
-  trash: 'write'
+  trash: 'write',
+  copy: 'write',
+  move: 'write',
+  find: 'read'
 }
 
 // 防御常量：单目录条数 / 文本与二进制读取上限 / 写入上限 / 路径长度
@@ -55,6 +64,14 @@ const SNIFF_BYTES = 8_192
 // 每插件在飞 fs 调用上限：防病态插件把主进程 IO 打满（超出直接拒绝，
 // 不排队——插件侧自行串行）
 const MAX_INFLIGHT_PER_PLUGIN = 8
+// copy/move 的总量防御：单次操作合计字节与条数上限（目录树先 walk 计量，
+// 超限拒绝——不落半个副本）
+const MAX_COPY_BYTES = 2_000_000_000
+const MAX_COPY_ITEMS = 20_000
+// find 的遍历边界：深度 / 走访条目 / 结果数
+const MAX_FIND_DEPTH = 6
+const MAX_FIND_WALK = 50_000
+const MAX_FIND_RESULTS = 200
 
 // registry/perms 的窄依赖（index.ts 注入实例；e2e 可注入桩直测 gate）
 export interface PluginFsDeps {
@@ -252,6 +269,185 @@ async function trashPath(pluginId: string, path: string | null): Promise<FsCallR
   })
 }
 
+/** 目录树总量预检（copy/move 跨盘回退路径共用）：条数与字节数超限即抛，
+ *  复制开始前拒绝，绝不留半个副本；竞态消失的条目按不存在跳过 */
+async function assertTreeBudget(root: string): Promise<void> {
+  const queue = [root]
+  let total = 0
+  let items = 0
+  while (queue.length) {
+    const dir = queue.shift()!
+    const dirents = await readdir(dir, { withFileTypes: true })
+    for (const d of dirents) {
+      items += 1
+      if (items > MAX_COPY_ITEMS) throw new Error('copy too many entries')
+      const p = resolve(dir, d.name)
+      let ls: Stats | null = null
+      try {
+        ls = await lstat(p)
+      } catch {
+        ls = null
+      }
+      if (ls) {
+        total += ls.size
+        if (total > MAX_COPY_BYTES) throw new Error('copy too large')
+        // 只递归真实目录：符号链接按链接本身计量，防环
+        if (ls.isDirectory()) queue.push(p)
+      }
+    }
+  }
+}
+
+/** copy/move 共用的形状防御：源存在、目标父目录存在、非同路径、
+ *  目录源不得把目标含在自身内部（自递归复制） */
+async function assertCopyShape(src: string, dst: string): Promise<Stats> {
+  const st = await lstat(src)
+  if (dst === src) throw new Error('same path')
+  if (st.isDirectory() && dst.startsWith(src + '/')) throw new Error('dest inside source')
+  const parent = await stat(dirname(dst))
+  if (!parent.isDirectory()) throw new Error('target parent is not a directory')
+  return st
+}
+
+/** overwrite 归一：帧桥透传的第三参可能是 boolean 或 {overwrite} */
+function overwriteArg(raw: unknown): boolean {
+  if (raw === true) return true
+  if (typeof raw === 'object' && raw !== null && (raw as { overwrite?: unknown }).overwrite === true) return true
+  return false
+}
+
+/** 目标已存在且未要求覆盖 → 显式拒绝（与 renameGuarded 同一防覆盖立场） */
+async function refuseIfExists(dst: string, overwrite: boolean): Promise<void> {
+  if (overwrite) return
+  try {
+    await access(dst)
+    throw new Error('target exists')
+  } catch (e) {
+    if ((e as { code?: string }).code !== 'ENOENT') throw e
+  }
+}
+
+async function copyGuarded(
+  pluginId: string,
+  src: string | null,
+  dst: string | null,
+  rawOverwrite: unknown
+): Promise<FsCallResult<null>> {
+  if (!src || !dst) return err('bad path')
+  const overwrite = overwriteArg(rawOverwrite)
+  return gated(pluginId, async () => {
+    const st = await assertCopyShape(src, dst)
+    await refuseIfExists(dst, overwrite)
+    if (st.isDirectory()) await assertTreeBudget(src)
+    else if (st.size > MAX_COPY_BYTES) throw new Error('copy too large')
+    await cp(src, dst, { recursive: true, force: overwrite, errorOnExist: !overwrite })
+    return null
+  })
+}
+
+async function moveGuarded(
+  pluginId: string,
+  src: string | null,
+  dst: string | null,
+  rawOverwrite: unknown
+): Promise<FsCallResult<null>> {
+  if (!src || !dst) return err('bad path')
+  const overwrite = overwriteArg(rawOverwrite)
+  return gated(pluginId, async () => {
+    const st = await assertCopyShape(src, dst)
+    await refuseIfExists(dst, overwrite)
+    try {
+      // 同盘：rename 原子完成（POSIX rename 对已存在文件是覆盖语义，上面
+      // 已按需拒绝；目录对已存在目录会 ENOTEMPTY 上抛）
+      await rename(src, dst)
+      return null
+    } catch (e) {
+      if ((e as { code?: string }).code !== 'EXDEV') throw e
+    }
+    // 跨盘：复制后删源。删源只发生在「移动」语义内部（用户明确把文件搬走
+    // 的动作），不构成对外暴露的真删通路——trash 仍是唯一删除 op
+    await assertTreeBudget(src)
+    await cp(src, dst, { recursive: true, force: overwrite, errorOnExist: !overwrite })
+    await rm(src, { recursive: true, force: true })
+    return null
+  })
+}
+
+/** 大小写不敏感子序列命中（与插件帧内 fuzzy 同一语义：空查询在外层已拒） */
+function subseqHit(name: string, q: string): boolean {
+  const n = name.toLowerCase()
+  const t = q.toLowerCase()
+  let j = 0
+  for (let i = 0; i < n.length && j < t.length; i++) {
+    if (n[i] === t[j]) j++
+  }
+  return j === t.length
+}
+
+async function findPaths(
+  pluginId: string,
+  root: string | null,
+  pattern: unknown
+): Promise<FsCallResult<FsFindResult>> {
+  if (!root) return err('bad path')
+  if (typeof pattern !== 'string' || !pattern.length || pattern.length > 200 || pattern.includes('\0')) {
+    return err('bad pattern')
+  }
+  return gated(pluginId, async () => {
+    const st = await stat(root)
+    if (!st.isDirectory()) throw new Error('root is not a directory')
+    const items: FsFindItem[] = []
+    let walked = 0
+    let truncated = false
+    // BFS 逐层走访：只下钻真实目录（符号链接不跟，防环）；命中项 lstat 取
+    // size/mtime，竞态删除按最小信息降级
+    const queue: Array<{ dir: string; rel: string; depth: number }> = [{ dir: root, rel: '', depth: 0 }]
+    while (queue.length && !truncated) {
+      const { dir, rel, depth } = queue.shift()!
+      const dirents = await readdir(dir, { withFileTypes: true })
+      for (const d of dirents) {
+        walked += 1
+        if (walked > MAX_FIND_WALK) {
+          truncated = true
+          break
+        }
+        const childRel = rel ? rel + '/' + d.name : d.name
+        if (subseqHit(d.name, pattern)) {
+          if (items.length >= MAX_FIND_RESULTS) truncated = true
+          else {
+            let size = 0
+            let mtime = 0
+            try {
+              const ls = await lstat(resolve(dir, d.name))
+              size = ls.size
+              mtime = ls.mtimeMs
+            } catch {
+              // 竞态删除：最小信息
+            }
+            items.push({
+              rel: childRel,
+              kind: entryKind(d.isDirectory(), d.isSymbolicLink(), d.isFile()),
+              size,
+              mtime
+            })
+          }
+        }
+        if (d.isDirectory() && depth < MAX_FIND_DEPTH) {
+          queue.push({ dir: resolve(dir, d.name), rel: childRel, depth: depth + 1 })
+        }
+      }
+    }
+    // 浅的在前，同层按路径字典序——越近的结果越可能想要
+    items.sort((a, b) => {
+      const da = a.rel.split('/').length
+      const db = b.rel.split('/').length
+      if (da !== db) return da - db
+      return a.rel.localeCompare(b.rel)
+    })
+    return { root, items, truncated } satisfies FsFindResult
+  })
+}
+
 /**
  * 插件 fs 调用的唯一入口：权限 gate → 参数防御 → 执行。args 形状按 op
  * 不同（list、stat、readText、readBase64、mkdir、trash: [path]；rename:
@@ -292,5 +488,11 @@ export async function pluginFsCall(
       return renameGuarded(pluginId, checkPath(args[0]), checkPath(args[1]))
     case 'trash':
       return trashPath(pluginId, checkPath(args[0]))
+    case 'copy':
+      return copyGuarded(pluginId, checkPath(args[0]), checkPath(args[1]), args[2])
+    case 'move':
+      return moveGuarded(pluginId, checkPath(args[0]), checkPath(args[1]), args[2])
+    case 'find':
+      return findPaths(pluginId, checkPath(args[0]), args[1])
   }
 }
