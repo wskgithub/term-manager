@@ -1,0 +1,14 @@
+{
+  "id": "files",
+  "name": "文件面板",
+  "version": "0.1.0",
+  "description": "yazi 式文件面板：目录浏览、预览、贴路径/cd/新标签、文件操作（随安装包分发的官方插件）",
+  "entry": "main.js",
+  "panel": {
+    "title": "文件",
+    "icon": "icon.svg"
+  },
+  "permissions": {
+    "fs": ["read", "write"]
+  }
+}
