@@ -21,7 +21,8 @@
 11. [调试指南](#调试指南)
 12. [安全模型（安装前必读）](#安全模型安装前必读)
 13. [已知限制与路线图](#已知限制与路线图)
-14. [示例索引](#示例索引)
+14. [内置官方插件](#内置官方插件)
+15. [示例索引](#示例索引)
 
 ## 插件模型一览
 
@@ -96,7 +97,8 @@ EOF
 | `name` | ✅ | string | 非空，超 80 字符截断 | 整插件跳过 |
 | `version` | — | string | 非空，≤32 字符 | 忽略该字段 |
 | `entry` | — | string | 见下方「entry 校验」 | 只丢字段，退化为纯声明式插件 |
-| `permissions` | — | object | 见下方「permissions 校验」 | 坏 origin 逐个丢弃，全坏丢字段 |
+| `panel` | — | object | 见下方「panel 校验」 | 只丢字段，代码帧保持无头形态 |
+| `permissions` | — | object | 见下方「permissions 校验」 | 坏条目逐个丢弃，全坏丢字段 |
 | `profiles` | — | array | 每条按 [profile 字段](#profile-字段参考)，上限 50 条 | 坏条目逐个丢弃 |
 | `commands` | — | array | 每条按[动作词汇](#面板命令与动作词汇)，上限 100 条 | 坏条目逐个丢弃 |
 | （子目录）`themes/` | — | 目录 | `themes/*.json`，每个文件一份主题，上限 50 个 | 坏文件整份丢弃 |
@@ -113,18 +115,44 @@ EOF
 - 以 `.js` 或 `.mjs` 结尾；
 - 文件真实存在且 ≤ 1MB。
 
-**permissions 校验**（v1 词汇只有 `connect`，即网络连接白名单）：
+**panel 校验**（`{ "title": "文件", "icon": "icon.svg" }`——代码插件的可见形态；无
+`entry` 时无意义，字段丢弃）：
+
+- `title` 必填非空，超 40 字符截断——展示在面板 header；
+- `icon` 可选：插件目录内相对路径（字符集与 entry 同规则）、`.svg`/`.png`、真实
+  存在且 ≤ 256KB，经 `tmplug://` 服务渲染在面板标签上；icon 非法只丢 icon，面板保留。
+
+声明了 `panel` 的代码插件，其沙箱 iframe 不再挂 0 尺寸隐藏容器，而是**可见地**挂进
+应用右侧可开合面板（`Ctrl+Shift+G` / 标签栏文件夹按钮 / 面板命令「文件面板」三入口）。
+帧常驻——面板开合纯 CSS 切换，插件 realm 不销毁。键盘随焦点直达帧内；`Esc` 关面板由
+插件自行调 `tm.panel.close()`（应用随后把焦点还给终端）。
+
+**permissions 校验**（词汇：`connect` 网络白名单 + `fs` 文件系统档位）：
 
 ```json
-"permissions": { "connect": ["https://api.github.com", "http://127.0.0.1:8080"] }
+"permissions": {
+  "connect": ["https://api.github.com", "http://127.0.0.1:8080"],
+  "fs": ["read", "write"]
+}
 ```
+
+`connect`：
 
 - 每条 origin 形如 `scheme://host[:port]`（不含路径）：`https://` 任意主机；`http://`
   仅放行 `localhost` / `127.0.0.1`；
 - 每条 ≤200 字符，去重保序，上限 8 条；
-- 只对带 `entry` 的插件有意义（纯声明式插件没有代码，无网络诉求）；
-- 声明后首次加载弹批准框，批准的 origin 进插件帧 CSP 的 `connect-src`；改声明
-  列表会重新弹（旧批准不覆盖新地址）。
+- 批准的 origin 进插件帧 CSP 的 `connect-src`。
+
+`fs`（档位：`read` 涵盖 `fs.list` / `fs.stat` / `fs.readText` / `fs.readBase64`；
+`write` 涵盖 `fs.write` / `fs.mkdir` / `fs.rename` / `fs.trash`）：
+
+- 文件管理器类插件需要全盘寻址（跟随终端 cwd），所以授权粒度是**档位**而非目录白名单；
+  write 档位被永久收敛为可逆操作——删除只走系统回收站，`rename` 拒绝覆盖已存在目标；
+- 声明后首次加载弹批准框（两维权益一起列出）；允许 = 声明全集一次授予，拒绝 =
+  零网络**且**零文件访问；
+- 改声明集合（加 `write`、加 origin……）会重新弹——落盘的决策快照两维都记。
+
+两个维度都只对带 `entry` 的插件有意义（纯声明式插件没有代码，无从调用）。
 
 **校验文化**（沿袭 profiles.json，写插件时按此预期行为）：
 
@@ -269,7 +297,8 @@ plugins/my-tools/
    加载失败。
 4. **运行环境是渲染层，不是 Node**：没有 `require` / `fs` / `process`，也没有 npm 的
    包名解析——`import 'lodash'` 这种裸说明符无法解析。需要第三方库时，用 esbuild 之类
-   打包成单文件再当 entry；需要读本地文件时没有 API（这是刻意的）。
+   打包成单文件再当 entry。本地文件访问以**权限门控的 RPC** 形式提供（`tm.fs.*`，见
+   API 参考）——每次调用都在主进程校验并执行，帧自身永远不碰文件系统。
 5. **持久化**：v1 没有插件专用存储 API。`localStorage` 可用且**天然隔离**——插件帧的
    origin 是 `tmplug://<插件id>/`，与界面、与其他插件都不同源（键名无需再加前缀）；删除
    插件文件夹重装后是全新存储。
@@ -365,9 +394,13 @@ tm.ui.setTheme('dark')      // 'dark' | 'light' | 'system'
 tm.ui.setScheme('my-tools/midnight')  // 只接受当前主题列表里存在的 id（内建/全局/插件包/动态注册）
 tm.ui.toggleSidebar()
 tm.ui.openSettings()
+const colors = await tm.ui.colors()   // 当前方案的 ui 配色令牌（见下）
 ```
 
 `setScheme` 按目标主题的 `type` 自动落到深色端或浅色端的设置；id 不存在时静默忽略。
+`colors()` 返回**当前生效方案的 17 个 ui 键**（`bg`、`surface`、`accent`……与主题文件
+同键名）到当前 CSS 值的映射——面板类插件自绘 UI 的主题适配数据源，`scheme-changed`
+事件后重拉即可跟随切换。
 
 ### 终端：读输出流与写输入
 
@@ -379,13 +412,51 @@ const off = tm.terminals.subscribe(tabId, (data) => {
 
 // 写：向指定标签注入输入（直达 tmux，不经广播扇出）
 tm.terminals.write(tabId, 'make -j4\n')
+
+// 那个标签此刻在哪个目录？活动 pane 的当前工作目录
+const cwd = await tm.terminals.cwd(tabId)   // '/home/me/project' | undefined
 ```
 
 `write` 的约束（不满足时**静默无效**）：`tabId` 必须是 `tabs.list()` 里存在的标签；
-单次数据 ≤ 16384 字符；空串无效。
+单次数据 ≤ 16384 字符；空串无效。`cwd` 对不存在的标签或后端未就绪时 resolve
+`undefined`——按尽力而为对待（文件面板的「跟随终端」靠它）。
 
 > ⚠️ `write` 能向终端注入任意 shell 命令——这是 v1 的能力边界现状，见
 > [安全模型](#安全模型安装前必读)。请在插件 README 里向你的用户声明你会写什么。
+
+### 文件：权限门控的文件系统访问
+
+经 `permissions.fs` 声明（见 manifest 参考）。所有调用都到主进程执行——档位检查、
+路径防御、大小上限全部在主进程收口，帧自身不碰文件系统。方法在拒绝/出错时**抛异常**
+（帧桥把主进程的 `{ok:false,error}` 归一成异常——`try/catch` 是唯一要写的模式）：
+
+```ts
+const { entries, truncated } = await tm.fs.list('/home/me/project')
+// entries: { name, kind: 'dir'|'file'|'symlink'|'other', size, mtime }[]（原始 stat
+// 数据，排序是插件自己的事）；单目录上限 20000 条（截断时 truncated=true）
+const st = await tm.fs.stat('/path/to/file')       // 符号链接附 target
+const text = await tm.fs.readText('/path/to/file') // { text, size, truncated }：≤2MB；
+//                                                   行数上限由插件自己控制；前 8KB 含
+//                                                   NUL 判二进制拒绝
+const blob = await tm.fs.readBase64('/img.png')    // { data, size, truncated }：≤8MB（图片预览）
+await tm.fs.write('/path/new.txt', '内容')          // ≤1MB；父目录必须已存在
+await tm.fs.mkdir('/path/new-dir')                 // 递归
+await tm.fs.rename('/from', '/to')                 // 目标已存在即拒绝
+await tm.fs.trash('/path')                         // 唯一的删除通路——系统回收站
+```
+
+防御（全部在主进程 `src/main/pluginFs.ts` 收口）：路径必须绝对、无 NUL、≤4096 字符；
+单插件在飞并发 ≤8（病态插件打不满主进程 IO——调用请自行串行）。未授权插件的
+write 档操作与读同样失败——gate 是对称的。
+
+### 面板：可见宿主
+
+```ts
+tm.panel.close()   // 请求应用收起面板并把焦点还给终端
+```
+
+只对声明了 `panel` 的插件有意义（否则为空操作）。这是「Esc 关面板」约定的帧内侧
+一半：应用不拦截你帧内的按键。
 
 ### 状态栏：底部展示位
 
@@ -416,6 +487,12 @@ tm.statusbar.setItem('clock', null)   // 删除该项
 | 事件监听器（`on`，全部事件合计） | 64 个 | — |
 | 终端数据订阅（`subscribe`，全部标签合计） | 32 个 | — |
 | `terminals.write` 单次 | ≤ 16384 字符 | 目标标签须存在 |
+| `fs.list` 单目录 | ≤ 20000 条 | 截断时 `truncated: true` |
+| `fs.readText` | ≤ 2MB | 二进制（前 8KB 含 NUL）拒绝 |
+| `fs.readBase64` | ≤ 8MB | 截断负载有标记 |
+| `fs.write` 内容 | ≤ 1MB | 父目录必须已存在 |
+| `fs.*` 单插件在飞 | 8 个 | 超出直接拒绝，不排队 |
+| 面板 icon 文件 | ≤ 256KB | `.svg` / `.png` |
 | entry 文件 | ≤ 1MB | `.js` / `.mjs` |
 
 字符集规则集中处：
@@ -469,17 +546,46 @@ Tier 2 隔离宿主信任模型，四句话：
 3. **写终端 = 可注入 shell 命令**：`terminals.write` 能静默向终端注入输入，而 shell 自身
    有网络能力。批准网络权限与允许写终端是叠加的两份信任——只安装你信任的代码插件；作为
    插件作者，请在你的 README 里如实声明你声明了哪些网络地址、往终端写了什么。
-4. **权限决策是你的**：批准框允许/拒绝二选一（Esc=拒绝）；拒绝不废插件（代码照跑、无
-   网络）；决策持久化在 `userData/plugin-permissions.json`，可手工编辑（授权不能超出声明
-   范围，塞了未声明的 origin 会被静默剔除）。
+4. **文件访问按档位门控、纵深防御**：`permissions.fs` 在主进程 gate 住 `tm.fs.*` RPC——
+   即使渲染层被攻破也绕不过（档位检查、路径校验、大小上限全部收口在
+   `src/main/pluginFs.ts`）。write 档位被刻意收敛为可逆操作：删除只进系统回收站、
+   rename 拒绝覆盖。粒度按档位是设计选择——文件管理器必须跟着终端走，按目录白名单
+   只会制造虚假安全感。
+5. **权限决策是你的**：批准框允许/拒绝二选一（Esc=拒绝）；拒绝不废插件（代码照跑、
+   无网络无文件）；决策持久化在 `userData/plugin-permissions.json`，可手工编辑（授权
+   不能超出声明范围，塞了未声明的条目会被静默剔除）。
 
 ## 已知限制与路线图
 
 - 面板一次最多显示 60 条匹配命令（大量标签时可能挤出，收窄搜索词可解）——既有交互行为；
-- 管理 UI 覆盖启用/禁用与网络权限重批，但没有卸载按钮（删除文件夹仍是卸载语义——渲染层
-  刻意不做文件删除），也没有逐 origin 的部分授权（批准框对声明列表保持全有全无）；
+- 管理 UI 覆盖启用/禁用与权限重批，但没有卸载按钮（删除文件夹仍是卸载语义——渲染层
+  刻意不做文件删除），也没有逐 origin / 逐档位的部分授权（批准框对声明集合保持全有全无）；
 - 无插件专用存储 API（帧内 localStorage 随插件 origin 隔离，够 v1 用）；
-- 权限词汇目前只有网络 connect；本地文件读、系统通知等词汇在路线图上按需扩展。
+- 面板宿主一次显示一个面板插件（装多个时用 header 切换器换）——可停靠/多面板并存是
+  路线图项；
+- fs API 不含文件监听（面板插件按需重列或跟随 `tab-activated`）——`fs.watch` 词汇按需扩展。
+
+## 内置官方插件
+
+安装包在用户目录之外还带一个**只读的内置插件目录**——同一套扫描管线、同一套能力面、
+零特殊对待：
+
+| | 路径 |
+| --- | --- |
+| 用户目录（可写，首次运行自动建） | `~/.config/term-manager/plugins/` |
+| 内置目录（只读，随安装包） | `<安装前缀>/resources/plugins/`——构建时由仓库 `plugins-builtin/` 拷入（dev 直跑读仓库） |
+
+语义：
+
+- 用户目录**先扫**；内置插件 id 若同时存在用户副本，内置副本整体跳过——**往用户目录
+  放同 id 插件即官方的覆盖/钉版通道**（内置目录只读、永不被改写）；
+- 内置插件在设置页带「官方」徽章——纯展示；能力面与禁用开关和用户插件完全一致
+  （禁用文件面板插件照常生效并持久化）；
+- 增加官方内置插件 = 往 `plugins-builtin/` 加一个文件夹（零代码改动）；目录经
+  electron-builder `extraResources` 一条配置映射进 deb/rpm/AppImage。
+
+当前内置：[`files`](#示例索引)——文件面板（yazi 式文件管理：浏览/预览/过滤、贴路径/
+cd/新标签的终端联动、新建/改名/回收站删除）。
 
 ## 示例索引
 
@@ -487,4 +593,5 @@ Tier 2 隔离宿主信任模型，四句话：
 | --- | --- |
 | [`docs/examples/declarative-plugin/`](examples/declarative-plugin/) | 声明式插件：profile + 面板命令（launch/open-settings）+ 主题包，零代码 |
 | [`docs/examples/code-plugin/`](examples/code-plugin/) | 代码级插件：命令 / 动态主题 / 事件 / 状态栏（含可点击项）全 API 分组演示 |
+| [`plugins-builtin/files/`](../plugins-builtin/files/) | 官方内置插件：一个完整的面板插件——可见宿主 + `fs` 读写 + 终端联动 + 主题适配，自带键位表与虚拟滚动列表 |
 | 主 README「声明式插件」「代码级插件」节 | 功能概览与安全模型 |

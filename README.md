@@ -395,6 +395,35 @@ write, and the read direction (the `?` query) is never answered — your clipboa
 flows out to a program. A settings toggle (Terminal page, on by default) disables the
 whole pathway.
 
+## Files panel (bundled official plugin)
+
+A yazi-style file panel lives on the right side of the window — open it with
+`Ctrl+Shift+G`, the tab-bar folder button, or the palette entry. It ships as the first
+**bundled official plugin** (in `plugins-builtin/files/`, installed read-only under
+`resources/plugins/`): same plugin system as community plugins, same permission gates,
+disableable from Settings → Plugins like anything else. Dropping a folder with the same
+id into the user plugins directory replaces it entirely.
+
+On first use it asks for its declared permissions — file-system `read` + `write` (the
+write scope is converged on reversible operations: deletion only goes to the system
+trash, rename refuses to overwrite). Then:
+
+- **Browse**: virtual-scrolling list (huge directories stay smooth), directories first,
+  vim keys (`j/k` move, `Enter`/`l` enter, `h`/`Backspace` up, `gg`/`G`/`Home`/`End`,
+  `r` refresh, `.` toggles dotfiles);
+- **Filter**: just type — fuzzy subsequence matching with highlighted hits (`Esc`
+  clears);
+- **Preview**: text (truncated), images, directory summaries, binary detection;
+- **Terminal integration**: `y` yanks the selected path as a quoted argument into the
+  active terminal, `c` sends `cd` to it, `t` opens a new tab in that directory; an
+  optional "follow terminal" mode re-navigates on tab switches;
+- **File operations**: `a` create (trailing `/` = directory), `F2` rename, `x` delete
+  (trash, with a confirm step).
+
+The panel's plugin-system foundations — a visible panel host for `panel` plugins, the
+`fs` permission vocabulary and RPC, `terminals.cwd` and `ui.colors` — are general plugin
+capabilities; see the [plugin guide](docs/plugins.md) for the full reference.
+
 ## Drag-and-drop file paths
 
 Drop a file (or a multi-selection) from the file manager onto a terminal and its
@@ -879,3 +908,9 @@ npx electron out/main/index.js --e2e-webgl-fallback --e2e-quit --no-sandbox
 - powerline/Nerd glyphs depend on font coverage: the default font stack prefers Nerd Fonts,
   and you can pick manually in settings; when the selected font lacks a glyph Chromium
   falls back per glyph, though a non-Nerd font may still show placeholder boxes.
+
+## License
+
+Released under the [MIT License](LICENSE) — Copyright (c) 2026 wskgithub. The bundled
+official plugins under `plugins-builtin/` are part of this repository and covered by the
+same license; community plugins keep their own licenses.

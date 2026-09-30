@@ -23,7 +23,8 @@ README are feature overviews; this document is the full reference.
 11. [Debugging guide](#debugging-guide)
 12. [Security model (read before installing)](#security-model-read-before-installing)
 13. [Known limitations and roadmap](#known-limitations-and-roadmap)
-14. [Examples index](#examples-index)
+14. [Bundled official plugins](#bundled-official-plugins)
+15. [Examples index](#examples-index)
 
 ## Plugin model at a glance
 
@@ -107,7 +108,8 @@ Four semantics specific to code plugins:
 | `name` | ✅ | string | non-empty, truncated at 80 chars | whole plugin skipped |
 | `version` | — | string | non-empty, ≤32 chars | field ignored |
 | `entry` | — | string | see “entry validation” below | field dropped; plugin degrades to purely declarative |
-| `permissions` | — | object | see “permissions validation” below | bad origins dropped individually; all-bad drops the field |
+| `panel` | — | object | see “panel validation” below | field dropped; the code frame stays headless |
+| `permissions` | — | object | see “permissions validation” below | bad entries dropped individually; all-bad drops the field |
 | `profiles` | — | array | each per [profile fields](#profile-field-reference), max 50 | bad entries dropped individually |
 | `commands` | — | array | each per the [action vocabulary](#palette-commands-and-the-action-vocabulary), max 100 | bad entries dropped individually |
 | (subdir) `themes/` | — | dir | `themes/*.json`, one theme per file, max 50 | bad files dropped whole |
@@ -125,20 +127,52 @@ name when distributing):
 - ends with `.js` or `.mjs`;
 - the file exists and is ≤ 1MB.
 
-**permissions validation** (the v1 vocabulary has only `connect`, a network-allow list):
+**panel validation** (`{ "title": "Files", "icon": "icon.svg" }` — the visible form of a
+code plugin; meaningless without `entry`, in which case the field is dropped):
+
+- `title` required, non-empty, truncated at 40 chars — shown in the panel header;
+- `icon` optional: a relative path under the plugin folder (same charset rule as `entry`),
+  `.svg` or `.png`, existing and ≤ 256KB; served via `tmplug://` and rendered in the
+  panel tab. A bad icon is dropped individually, the panel itself survives.
+
+A `panel` plugin's sandbox iframe is mounted **visible** inside the app's collapsible
+right-side panel (opened with `Ctrl+Shift+G`, the tab-bar folder button, or the palette
+entry "Files panel") instead of the headless hidden container. The frame stays resident —
+toggling the panel is pure CSS, the plugin realm survives open/close. Keyboards go to the
+focused frame; `Esc`-to-close is the plugin's own call to `tm.panel.close()` (the app then
+returns focus to the terminal).
+
+**permissions validation** (vocabulary: `connect` network allow-list + `fs` file-system
+scopes):
 
 ```json
-"permissions": { "connect": ["https://api.github.com", "http://127.0.0.1:8080"] }
+"permissions": {
+  "connect": ["https://api.github.com", "http://127.0.0.1:8080"],
+  "fs": ["read", "write"]
+}
 ```
+
+`connect`:
 
 - each origin looks like `scheme://host[:port]` (no path): `https://` any host; `http://`
   only `localhost` / `127.0.0.1`;
 - ≤200 chars each, deduplicated in order, max 8 entries;
-- meaningful only for plugins with an `entry` (purely declarative plugins have no code
-  and no network needs);
-- first load after declaring shows an approval dialog; approved origins enter the plugin
-  frame CSP's `connect-src`. Changing the declared list re-prompts (old approvals never
-  cover new addresses).
+- approved origins enter the plugin frame CSP's `connect-src`.
+
+`fs` (scopes: `read` covers `fs.list` / `fs.stat` / `fs.readText` / `fs.readBase64`;
+`write` covers `fs.write` / `fs.mkdir` / `fs.rename` / `fs.trash`):
+
+- file-manager-style plugins need full-disk addressing (they follow the terminal's cwd),
+  so the granularity is the **scope**, not a directory allow-list; the write scope is
+  permanently converged on reversible operations — deletion only goes to the system
+  trash, `rename` refuses to overwrite an existing target;
+- first load after declaring shows the approval dialog (both dimensions listed); allow =
+  the whole declared set at once, deny = zero network **and** zero file access;
+- changing the declared set (adding `write`, adding an origin, …) re-prompts — the stored
+  decision snapshots both dimensions.
+
+Both dimensions are meaningful only for plugins with an `entry` (purely declarative
+plugins have no code to call anything).
 
 **Validation culture** (inherited from profiles.json — expect these behaviors while
 developing):
@@ -296,8 +330,9 @@ Runtime model essentials:
    `.svg` — referencing other types (e.g. `.txt`) returns 403 and fails the module load.
 4. **The runtime is the renderer, not Node**: no `require` / `fs` / `process`, and no npm
    package-name resolution — a bare `import 'lodash'` cannot resolve. Bundle third-party
-   libraries (e.g. with esbuild) into a single entry file; there is intentionally no API
-   for reading local files.
+   libraries (e.g. with esbuild) into a single entry file. Local file access exists as a
+   **permission-gated RPC** (`tm.fs.*`, see the API reference) — every call is validated
+   and executed in the main process, never by the frame itself.
 5. **Persistence**: v1 has no plugin storage API. `localStorage` works and is
    **naturally isolated** — the plugin frame's origin is `tmplug://<pluginId>/`, distinct
    from the app and from every other plugin (no key prefixing needed); deleting and
@@ -401,10 +436,14 @@ tm.ui.setTheme('dark')      // 'dark' | 'light' | 'system'
 tm.ui.setScheme('my-tools/midnight')  // only ids present in the current theme list (builtin/global/packs/dynamic)
 tm.ui.toggleSidebar()
 tm.ui.openSettings()
+const colors = await tm.ui.colors()   // current scheme's ui color tokens (see below)
 ```
 
 `setScheme` lands on the dark or light settings side per the theme's `type`; unknown ids
-are silently ignored.
+are silently ignored. `colors()` resolves the **17 ui keys of the active scheme**
+(`bg`, `surface`, `accent`, … — the same keys theme files use) to their current CSS
+values — the data source for panel plugins to theme their own UI; re-pull it on the
+`scheme-changed` event.
 
 ### Terminals: reading output and writing input
 
@@ -417,14 +456,56 @@ const off = tm.terminals.subscribe(tabId, (data) => {
 
 // Write: inject input into a tab (straight to tmux, not the broadcast fan-out)
 tm.terminals.write(tabId, 'make -j4\n')
+
+// Where is that tab right now? The active pane's current working directory
+const cwd = await tm.terminals.cwd(tabId)   // '/home/me/project' | undefined
 ```
 
 `write` constraints (violations are **silently no-op**): `tabId` must exist in
-`tabs.list()`; payload ≤ 16384 chars; empty strings are ignored.
+`tabs.list()`; payload ≤ 16384 chars; empty strings are ignored. `cwd` resolves
+`undefined` for unknown tabs or when the backend can't answer (tmux not ready) — treat it
+as best-effort (it powers the Files panel's "follow terminal" feature).
 
 > ⚠️ `write` can inject arbitrary shell commands into terminals — that is the v1
 > capability surface, see [Security model](#security-model-read-before-installing).
 > Declare what you write in your plugin's README.
+
+### Files: permission-gated filesystem access
+
+Declared via `permissions.fs` (see the manifest reference). All calls travel to the main
+process — the scope check, path defense and size caps all happen there; the frame never
+touches the filesystem itself. Every method **throws** on denial/error (the bridge
+normalizes the main-process `{ok:false,error}` into exceptions — `try/catch` is the one
+pattern you need).
+
+```ts
+const { entries, truncated } = await tm.fs.list('/home/me/project')
+// entries: { name, kind: 'dir'|'file'|'symlink'|'other', size, mtime }[] (raw stat data,
+// sorting is the plugin's business); capped at 20000 entries per directory (truncated=true)
+const st = await tm.fs.stat('/path/to/file')       // + symlink target when applicable
+const text = await tm.fs.readText('/path/to/file') // { text, size, truncated }: ≤2MB, ≤500
+//                                                   lines is your concern; a NUL byte in the
+//                                                   first 8KB rejects as binary
+const blob = await tm.fs.readBase64('/img.png')    // { data, size, truncated }: ≤8MB (image previews)
+await tm.fs.write('/path/new.txt', 'content')      // ≤1MB; the parent directory must exist
+await tm.fs.mkdir('/path/new-dir')                 // recursive
+await tm.fs.rename('/from', '/to')                 // refuses when the target exists
+await tm.fs.trash('/path')                         // the only deletion path — system trash
+```
+
+Guards (all enforced main-side, in `src/main/pluginFs.ts`): paths must be absolute,
+NUL-free and ≤4096 chars; per-plugin in-flight concurrency ≤8 (a pathological plugin
+cannot flood the process — serialize your own calls). `write`-scope operations on an
+ungranted plugin fail the same as reads — the gate is symmetric.
+
+### Panel: the visible host
+
+```ts
+tm.panel.close()   // ask the app to collapse the panel and return focus to the terminal
+```
+
+Only meaningful for plugins declaring `panel` (otherwise a no-op). This is the frame-side
+half of the `Esc`-to-close convention: the app doesn't intercept keys inside your frame.
 
 ### Status bar: the bottom strip
 
@@ -459,6 +540,12 @@ Per-plugin caps against pathological plugins (over-cap registrations silently re
 | event listeners (`on`, across all events) | 64 | — |
 | terminal data subscriptions (`subscribe`, across all tabs) | 32 | — |
 | `terminals.write` per call | ≤ 16384 chars | target tab must exist |
+| `fs.list` per directory | ≤ 20000 entries | `truncated: true` when cut |
+| `fs.readText` | ≤ 2MB | binary (NUL in first 8KB) rejected |
+| `fs.readBase64` | ≤ 8MB | truncated payload flagged |
+| `fs.write` content | ≤ 1MB | parent directory must exist |
+| `fs.*` in flight per plugin | 8 | excess calls rejected, not queued |
+| panel icon file | ≤ 256KB | `.svg` / `.png` |
 | entry file | ≤ 1MB | `.js` / `.mjs` |
 
 Character-set rules in one place:
@@ -520,23 +607,59 @@ The Tier 2 isolated-host trust model, in four sentences:
    and allowing terminal writes are two stacking grants of trust — only install code
    plugins you trust; as an author, state honestly in your README which origins you
    declare and what you write to terminals.
-4. **Permission decisions are yours**: the approval dialog is a binary allow/deny
-   (Esc = deny); denying does not disable the plugin (code runs, network does not).
-   Decisions persist in `userData/plugin-permissions.json` and may be hand-edited
-   (grants never exceed the declared list — undeclared origins are silently stripped).
+4. **Filesystem access is scope-gated and defense-in-depthed**: `permissions.fs` gates
+   the `tm.fs.*` RPC at the main process — even a compromised renderer cannot bypass it
+   (the scope check, path validation and size caps all live in
+   `src/main/pluginFs.ts`). The `write` scope is deliberately converged on reversible
+   operations: deletion goes to the system trash only, `rename` refuses to overwrite.
+   Scope granularity is by design — file-manager plugins must follow the terminal
+   anywhere, so per-directory allow-lists would only create a false sense of control.
+5. **Permission decisions are yours**: the approval dialog is a binary allow/deny
+   (Esc = deny); denying does not disable the plugin (code runs, network and files
+   don't). Decisions persist in `userData/plugin-permissions.json` and may be hand-edited
+   (grants never exceed the declared list — undeclared entries are silently stripped).
 
 ## Known limitations and roadmap
 
 - The palette shows at most 60 matching commands (may crowd out with many tabs — narrow
   the query) — existing interaction behavior;
-- the management UI covers enable/disable and network-permission re-asking, but offers
+- the management UI covers enable/disable and permission re-asking, but offers
   no uninstall button (deleting the folder remains the uninstall semantic — the renderer
-  deliberately does no filesystem deletion) and no per-origin partial grants (the
-  approval dialog stays all-or-nothing over the declared list);
+  deliberately does no filesystem deletion) and no per-origin / per-scope partial grants
+  (the approval dialog stays all-or-nothing over the declared set);
 - no plugin storage API (in-frame localStorage is isolated per plugin origin — enough
   for v1);
-- the permission vocabulary currently covers network `connect` only; local file reads,
-  system notifications etc. will be added on demand.
+- the panel host shows one panel plugin at a time (a header switcher toggles between
+  them when several are installed) — dockable/multiple simultaneous panels are roadmap;
+- file watching is not part of the fs API (panel plugins re-list on demand or on
+  `tab-activated`) — a `fs.watch` vocabulary will be added on demand.
+
+## Bundled official plugins
+
+The installers ship a read-only **built-in plugin directory** alongside the user
+directory — same scanning pipeline, same capabilities, no special casing:
+
+| | Path |
+| --- | --- |
+| user directory (writable, created on first run) | `~/.config/term-manager/plugins/` |
+| built-in directory (read-only, from the package) | `<install>/resources/plugins/` — populated from the repository's `plugins-builtin/` at build time (dev runs read the repository directly) |
+
+Semantics:
+
+- the user directory is scanned **first**; a built-in plugin whose id also exists as a
+  user plugin is skipped entirely — **dropping a same-id folder into the user directory
+  is the official way to override or pin a bundled plugin** (the built-in copy is
+  read-only and never modified);
+- built-in plugins carry a "官方/bundled" badge in the settings page — display only;
+  their capability surface and the disable toggle behave exactly like user plugins
+  (disabling the Files panel plugin works and persists);
+- bundling more official plugins = adding a folder under `plugins-builtin/` (no code
+  change needed); the directory maps into deb/rpm/AppImage via one electron-builder
+  `extraResources` entry.
+
+Currently bundled: [`files`](#examples-index) — the Files panel (yazi-style file
+manager: browse/preview/filter, yank-path/cd/new-tab terminal integration, create /
+rename / trash file operations).
 
 ## Examples index
 
@@ -544,4 +667,5 @@ The Tier 2 isolated-host trust model, in four sentences:
 | --- | --- |
 | [`docs/examples/declarative-plugin/`](examples/declarative-plugin/) | declarative plugin: profiles + palette commands (launch/open-settings) + a theme pack, zero code |
 | [`docs/examples/code-plugin/`](examples/code-plugin/) | code-level plugin: commands / dynamic theme / events / status bar (incl. clickable) across every API group |
+| [`plugins-builtin/files/`](../plugins-builtin/files/) | bundled official plugin: a full panel plugin — visible host + `fs` read/write + terminal integration + theming, with its own keyboard map and virtual-scrolling list |
 | main README “Declarative plugins” / “Code-level plugins” sections | feature overview and security model |

@@ -7,6 +7,25 @@ All notable changes to Term Manager are documented in this file.
 
 ### English
 
+- **Files panel (bundled official plugin)**: a yazi-style file panel on the right side
+  (Ctrl+Shift+G / tab-bar folder button / palette). Shipped as the first bundled official
+  plugin — same plugin system, same permission gates, disableable like any plugin, and a
+  same-id folder in the user plugins directory replaces it. Features: virtual-scrolling
+  browse with vim keys and dotfile toggle, type-to-filter fuzzy matching, previews
+  (text/images/directories/binary detection), terminal integration (yank quoted path,
+  cd, new-tab-here, optional follow-terminal) and reversible file operations (create,
+  rename, trash-only delete with confirmation). Under the hood the plugin system gained
+  three general capabilities: a visible panel host for `panel` plugins (the sandboxed
+  iframe mounts into a resizable right-side panel instead of the headless container,
+  CSS-only open/close keeps the plugin realm alive), a `fs` permission vocabulary with a
+  main-process-gated RPC (list/stat/readText/readBase64/write/mkdir/rename/trash;
+  scope-based grants, absolute-path/size/concurrency defenses, deletion goes to the
+  system trash only), and `terminals.cwd` + `ui.colors` APIs. Covered by the new
+  `--e2e-files` suite (15 assertions: builtin loading, permission dialog + persistence,
+  panel toggling, frame-internal navigation/filter/preview via WebFrameMain, real-pane
+  yank/cd/new-tab, create/rename/trash verified on disk, gate denial/guard/disabled
+  paths).
+
 - **UI polish pass**: three related refinements. (1) The command palette
   (Ctrl+Shift+P) no longer appears to slide in from the right: its centering used
   `left:50% + translateX(-50%)`, but the pop-in keyframes take over `transform`
@@ -96,6 +115,19 @@ All notable changes to Term Manager are documented in this file.
   chain.
 
 ### 中文
+
+- **文件面板（官方内置插件）**：窗口右侧的 yazi 式文件面板（Ctrl+Shift+G /
+  标签栏文件夹按钮 / 命令面板三入口）。以第一个官方内置插件交付——与社区插件同一
+  套系统与权限门控、可同样禁用，用户插件目录放同 id 文件夹即整体替换。功能：虚拟
+  滚动浏览（vim 键位、隐藏文件切换）、直接打字模糊过滤、预览（文本/图片/目录/二进
+  制识别）、终端联动（贴引用路径、cd、此处开新标签、可选跟随终端）与可逆文件操作
+  （新建、改名、仅回收站的删除带确认）。底层插件系统新增三项通用能力：`panel` 插件
+  的可见面板宿主（沙箱帧挂进可拖宽的右侧面板而非无头容器，开合纯 CSS 保 realm 不
+  销毁）、`fs` 权限词汇与主进程门控 RPC（list/stat/readText/readBase64/write/mkdir/
+  rename/trash；按档位授权、绝对路径/大小/并发防御、删除只走系统回收站）、
+  `terminals.cwd` 与 `ui.colors` API。新增 `--e2e-files` 套件 15 断言（内置加载、权限
+  弹窗与落盘、面板开合、经 WebFrameMain 的帧内导航/过滤/预览、真实 pane 的贴路径/
+  cd/新标签、新建/改名/删除落盘核验、gate 未授权/防御/禁用路径）。
 
 - **UI 打磨**：三处关联优化。其一，命令面板（Ctrl+Shift+P）不再「从右侧飞到
   中间」：此前居中用 `left:50% + translateX(-50%)`，而 pop-in 动画的 keyframes
