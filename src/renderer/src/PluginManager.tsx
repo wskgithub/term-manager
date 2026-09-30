@@ -53,13 +53,18 @@ export function PluginManager({ infos, onChanged }: Props) {
           </div>
         )}
         {infos.map((p) => {
-          const perm = p.entry && p.permissions?.connect?.length ? p.permDecision : undefined
+          // 权限展示：connect 与 fs 任一有声明即展示（决策状态一起看）
+          const hasConnect = !!(p.entry && p.permissions?.connect?.length)
+          const hasFs = !!(p.entry && p.permissions?.fs?.length)
+          const perm = hasConnect || hasFs ? p.permDecision : undefined
           return (
             <div key={p.id} className="plugin-card" data-plugin={p.id}>
               <div className="plugin-card-head">
                 <span className="plugin-name">{p.name}</span>
                 {p.version && <span className="plugin-version">v{p.version}</span>}
                 <span className="plugin-badge">{p.entry ? '代码级' : '声明式'}</span>
+                {p.panel && <span className="plugin-badge">面板</span>}
+                {p.builtin && <span className="plugin-badge builtin">官方</span>}
                 {p.disabled && <span className="plugin-badge off">已禁用</span>}
                 <label className="settings-checkbox plugin-enable" title={p.disabled ? '启用' : '禁用'}>
                   <input
@@ -76,32 +81,48 @@ export function PluginManager({ infos, onChanged }: Props) {
                 {p.disabled
                   ? ' · 贡献已全部移除（代码帧与声明式 profile/命令/主题）'
                   : ` · ${p.profiles.length} 个 profile · ${p.commands.length} 条命令 · ${p.themes.length} 个主题`}
+                {p.builtin ? ' · 来自安装包，可在用户插件目录放同 id 插件覆盖' : ''}
               </div>
               {perm && (
                 <div className="plugin-perm">
                   <div className="plugin-perm-title">
-                    网络权限（{perm.hosts.length} 项声明）
+                    权限（{perm.hosts.length + perm.fs.length} 项声明）
                     {perm.denied ? ' · 已拒绝' : !perm.decided ? ' · 未决策' : ''}
                   </div>
                   <div className="plugin-perm-list">
-                    {perm.hosts.map((h) => (
-                      <div key={h} className="plugin-perm-item">
-                        <span className={'plugin-perm-state' + (perm.granted.includes(h) ? ' ok' : '')}>
-                          {perm.granted.includes(h) ? '✓' : '·'}
-                        </span>
-                        <code>{h}</code>
-                        <span className="plugin-perm-label">
-                          {perm.granted.includes(h) ? '已授权' : '未授权'}
-                        </span>
-                      </div>
-                    ))}
+                    {hasFs &&
+                      perm.fs.map((s) => (
+                        <div key={`fs-${s}`} className="plugin-perm-item">
+                          <span
+                            className={'plugin-perm-state' + (perm.fsGranted.includes(s) ? ' ok' : '')}
+                          >
+                            {perm.fsGranted.includes(s) ? '✓' : '·'}
+                          </span>
+                          <code>fs:{s}</code>
+                          <span className="plugin-perm-label">
+                            {perm.fsGranted.includes(s) ? '已授权' : '未授权'}
+                          </span>
+                        </div>
+                      ))}
+                    {hasConnect &&
+                      perm.hosts.map((h) => (
+                        <div key={h} className="plugin-perm-item">
+                          <span className={'plugin-perm-state' + (perm.granted.includes(h) ? ' ok' : '')}>
+                            {perm.granted.includes(h) ? '✓' : '·'}
+                          </span>
+                          <code>{h}</code>
+                          <span className="plugin-perm-label">
+                            {perm.granted.includes(h) ? '已授权' : '未授权'}
+                          </span>
+                        </div>
+                      ))}
                   </div>
                   <div className="plugin-actions">
                     <button className="plugin-btn" data-key="plugin-reset-perm" onClick={() => resetPerm(p.id)}>
-                      重新询问网络权限
+                      重新询问权限
                     </button>
                     <span className="settings-hint">
-                      清除当前决策并重新弹批准框；拒绝后插件保持零网络
+                      清除当前决策并重新弹批准框；拒绝后插件保持零网络、零文件访问
                     </span>
                   </div>
                 </div>

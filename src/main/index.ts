@@ -14,7 +14,8 @@ import { ThemeRegistry } from './themes'
 import { PluginRegistry, validEntryPath } from './plugins'
 import { PluginPermStore } from './pluginPerms'
 import { PluginStateStore } from './pluginState'
-import { BRIDGE_BODY } from './tmplugBridge'
+import { pluginFsCall, type PluginFsDeps } from './pluginFs'
+import { BRIDGE_BODY, BRIDGE_E2E_EXTRA } from './tmplugBridge'
 import { TmuxBackend, sweepStaleServers, type TermInfo } from './tmux'
 import type { OpenDirRequest, SessionTab, TabGroup } from '../shared/types'
 
@@ -27,6 +28,13 @@ const pluginPerms = new PluginPermStore()
 // 管理 UI 的禁用态存储（list() 的贡献过滤收口在这里）
 const pluginState = new PluginStateStore()
 const plugins = new PluginRegistry(pluginPerms, pluginState)
+// fs gate 的依赖面：插件活跃性 = 存在于当前扫描结果且未被禁用（getDir 以
+// 扫描结果为准，isDisabled 是管理 UI 的持久禁用态）
+const fsDeps: PluginFsDeps = {
+  pluginActive: (id) => !!plugins.getDir(id) && !pluginState.isDisabled(id),
+  declaredFs: (id) => plugins.declaredFs(id),
+  effectiveFs: (id, declared) => pluginPerms.effectiveFs(id, declared)
+}
 // hub：主进程内分发终端事件（基准测试监听），同时转发给渲染进程
 const hub = new EventEmitter()
 hub.setMaxListeners(200)
@@ -111,11 +119,14 @@ function servePluginHostPage(u: URL, dir: string, id: string): Response {
   })
 }
 
-/** 帧桥 tmplug://<id>/__tmplug_bridge__.js：插件元信息内嵌 + 桥实现（见 tmplugBridge.ts） */
+/** 帧桥 tmplug://<id>/__tmplug_bridge__.js：插件元信息内嵌 + 桥实现（见 tmplugBridge.ts）。
+ *  e2e 构建额外附加快照应答器（BRIDGE_E2E_EXTRA）——发布构建（TERM_MGR_E2E=0）
+ *  常量折叠后引用脱落，treeshake:'smallest' 连定义一起剔除，零 e2e 痕迹 */
 function servePluginBridge(id: string): Response {
   const meta = plugins.getMeta(id)
   if (!meta) return new Response('unknown plugin', { status: 404 })
-  const js = 'window.__TMPLUG_META__ = ' + JSON.stringify({ id, name: meta.name, version: meta.version }) + ';\n' + BRIDGE_BODY
+  let js = 'window.__TMPLUG_META__ = ' + JSON.stringify({ id, name: meta.name, version: meta.version }) + ';\n' + BRIDGE_BODY
+  if (__E2E__) js += BRIDGE_E2E_EXTRA
   return new Response(js, {
     headers: { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache' }
   })
@@ -396,20 +407,29 @@ function registerIpc(): void {
     return plugins.list()
   })
 
-  // Tier 2 权限批准落盘：origins=null 表示拒绝。授权列表夹在当前声明范围内
-  //（渲染层只回传弹窗里展示的声明项，但 IPC 是信任边界，这里再夹一次）
-  ipcMain.handle('plugins:grant-perm', (_e, id: unknown, origins: unknown) => {
-    if (typeof id !== 'string') return
+  // Tier 2 权限批准落盘：allow=false 表示拒绝（connect/fs 两维全空）；允许 =
+  // 当前声明全集一次授予（弹窗二选一语义）。IPC 是信任边界，声明以主进程
+  // 注册表为准（渲染层不回传声明列表，改 manifest 与弹窗展示间的竞态在这里消解）
+  ipcMain.handle('plugins:grant-perm', (_e, id: unknown, allow: unknown) => {
+    if (typeof id !== 'string' || typeof allow !== 'boolean') return
     const declared = plugins.declaredConnect(id)
-    if (!declared.length) return
-    if (origins === null) {
-      pluginPerms.decide(id, declared, null)
-      return
-    }
-    if (!Array.isArray(origins)) return
-    const list = origins.filter((o): o is string => typeof o === 'string' && declared.includes(o))
-    if (!list.length) return
-    pluginPerms.decide(id, declared, list)
+    const declaredFs = plugins.declaredFs(id)
+    if (!declared.length && !declaredFs.length) return
+    pluginPerms.decide(id, declared, declaredFs, allow)
+  })
+
+  // 插件 fs 通道（Tier 2 fs 权限）：渲染层只透传「插件 id + 操作名 + 参数」，
+  // 权限 gate 与路径/大小防御全部在 pluginFs（主进程侧收口，见其文件头）。
+  // 返回 {ok,value}|{ok,error}，永不 reject——帧桥把 error 串原样带给插件
+  ipcMain.handle('plugins:fs-call', (_e, pluginId: unknown, op: unknown, args: unknown) =>
+    pluginFsCall(fsDeps, pluginId, op, args)
+  )
+
+  // 标签活动 pane 的当前工作目录（插件 terminals.cwd 的数据源）：tmux
+  // display-message 查询，pane 不存在/后端未就绪返回 undefined
+  ipcMain.handle('term:cwd', (_e, id: unknown) => {
+    if (typeof id !== 'string') return undefined
+    return backend.paneCwdOf(id)
   })
 
   // 管理 UI：禁用开关（plugin-state.json 持久化，禁用即贡献清空+代码帧拆除）
@@ -3133,14 +3153,14 @@ async function runPluginsSequence(win: BrowserWindow): Promise<void> {
 
   // 1) 注册表集合：坏 JSON 与重复 id 整插件丢弃；e2e-tools 的坏引用命令被丢弃、
   //    好命令保留；profile id 已重写为「插件:局部」并探测 available。
-  //    顺序按目录名排序：e2e-bad 在 e2e-tools 前
+  //    顺序：用户目录按目录名排序（e2e-bad 在 e2e-tools 前）+ 内置目录（files）
   const plugins = await js<PluginListEntry[]>('window.api.listPlugins()')
   const ids = plugins.map((p) => p.id)
   const tools = plugins.find((p) => p.id === 'e2e-tools')
   const bad = plugins.find((p) => p.id === 'e2e-bad')
   check(
     'plugins-listed',
-    ids.join(',') === 'e2e-bad,e2e-tools' &&
+    ids.join(',') === 'e2e-bad,e2e-tools,files' &&
       tools?.profiles.length === 1 &&
       tools.profiles[0]?.id === 'e2e-tools:hello' &&
       tools.profiles[0]?.available === true &&
@@ -3531,9 +3551,11 @@ async function runCodePluginsSequence(win: BrowserWindow): Promise<void> {
       .map((i) => i.querySelector('code')?.textContent ?? '')
   }))`)) as Array<{ id: string; type: string; unchecked: boolean; granted: string[] }>
   const listed =
-    cards.length === 5 &&
+    cards.length === 6 &&
     cards.find((c) => c.id === 'e2e-codegood')?.type === '代码级' &&
     cards.find((c) => c.id === 'e2e-plain')?.type === '声明式' &&
+    // 内置官方插件也在卡片列表（代码级徽章）
+    cards.find((c) => c.id === 'files')?.type === '代码级' &&
     (cards.find((c) => c.id === 'e2e-codenet')?.granted ?? []).includes(`http://127.0.0.1:${okPort}`) &&
     (cards.find((c) => c.id === 'e2e-codenet2')?.granted ?? []).length === 0
   check('mgmt-listed', listed, JSON.stringify(cards))
@@ -3648,6 +3670,266 @@ async function runCodePluginsSequence(win: BrowserWindow): Promise<void> {
   badSrv?.close()
   const allOk = !results.some((r) => r.startsWith('FAIL:'))
   console.log('E2E_CODE_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  if (argvHas('--e2e-quit')) {
+    await backend.dispose()
+    app.exit(allOk ? 0 : 1)
+  }
+}
+
+// ── 官方文件面板插件回归（--e2e-files，冷启动带 --open-dir=<fixture>）──
+// 覆盖面：内置插件分发加载（builtin/panel/fs 声明）→ fs 权限弹窗（含 fs 文案）
+// → 允许落盘 + 帧挂载 → 面板开合 → 帧内浏览/导航/过滤/预览（WebFrameMain 直
+// 执行 JS 断言，键位合成走帧内 dispatchEvent）→ 终端联动（贴路径/cd/新标签
+// 落真实 pane）→ 文件操作（新建/改名/回收站删除，主进程侧核盘）→ fs gate
+// 的权限与路径防御（未授权拒/坏 op/坏路径/超限）→ 禁用态 gate 拒绝。
+// fixture 目录树内容确定：a-dir/（含 inner.txt）、z-dir/、.hidden、a.txt、
+// b.txt、bin.dat（含 NUL）、img.png（最小合法 PNG）、大目录不在此覆盖
+async function runFilesSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const outDir = argvFlag('--e2e-out') ?? join(app.getPath('userData'), 'e2e')
+  mkdirSync(outDir, { recursive: true })
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_FILES ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+  const waitUntil = async (fn: () => Promise<boolean>, ms: number, step = 200): Promise<boolean> => {
+    const t0 = Date.now()
+    while (Date.now() - t0 < ms) {
+      if (await fn()) return true
+      await delay(step)
+    }
+    return await fn()
+  }
+  // 帧内执行 JS（executeJavaScript 只进主框架，tmplug 子帧经 WebFrameMain 定位）
+  const frameFor = (pid: string) =>
+    win.webContents.mainFrame.frames.find((f) => f.url.startsWith(`tmplug://${pid}/`))
+  const fjs = async <T,>(pid: string, expr: string): Promise<T | null> => {
+    const f = frameFor(pid)
+    if (!f) return null
+    return (await f.executeJavaScript(expr, true)) as T
+  }
+  // 帧内合成一次 keydown（聚焦 INPUT 时直达输入框，Enter/Escape 走其处理器）
+  const key = async (k: string): Promise<void> => {
+    await fjs(
+      'files',
+      `(function(){var t=document.activeElement&&document.activeElement.tagName==='INPUT'?document.activeElement:document;t.dispatchEvent(new KeyboardEvent('keydown',{key:${JSON.stringify(k)},bubbles:true,cancelable:true}));return 1})()`
+    )
+    await delay(120)
+  }
+  // 帧内向聚焦 INPUT 设值并触发 input（过滤/新建/改名的文本注入）
+  const type = async (text: string): Promise<void> => {
+    await fjs(
+      'files',
+      `(function(){var el=document.activeElement;if(el&&el.tagName==='INPUT'){el.value=${JSON.stringify(text)};el.dispatchEvent(new Event('input',{bubbles:true}))}return 1})()`
+    )
+    await delay(120)
+  }
+  const snapOf = () => fjs<Record<string, unknown>>('files', 'window.__e2ePlugin ? window.__e2ePlugin() : null')
+
+  const FIX = FILES_E2E_FIXTURE
+
+  // 1) 注册表：内置目录的 files 被加载，声明与展示位齐全
+  plugins.refresh()
+  const list0 = plugins.list()
+  const filesInfo = list0.find((p) => p.id === 'files')
+  check(
+    'builtin-loaded',
+    !!filesInfo &&
+      filesInfo.builtin === true &&
+      filesInfo.panel?.title === '文件' &&
+      filesInfo.permissions?.fs?.includes('read') === true &&
+      filesInfo.permissions?.fs?.includes('write') === true &&
+      filesInfo.permDecision?.decided === false,
+    JSON.stringify({ found: !!filesInfo })
+  )
+
+  // 2) fs gate（未授权态）：声明了但用户未批准——读/写全拒
+  const deniedList = await pluginFsCall(fsDeps, 'files', 'list', [FIX])
+  const deniedWrite = await pluginFsCall(fsDeps, 'files', 'write', [join(FIX, 'x.txt'), 'x'])
+  const badOp = await pluginFsCall(fsDeps, 'files', 'nope', [FIX])
+  check(
+    'fs-gate-denied',
+    deniedList.ok === false &&
+      String(deniedList.error).includes('not granted') &&
+      deniedWrite.ok === false &&
+      badOp.ok === false && String(badOp.error).includes('unknown op'),
+    JSON.stringify({ deniedList, deniedWrite, badOp })
+  )
+
+  // 3) 权限弹窗：files 声明 fs → 首次加载弹批准框（文案含文件系统权益行），
+  //    批准前帧不挂（未决策插件不进面板/隐藏容器）
+  const promptShown = await waitUntil(async () => (await js<boolean>("!!document.querySelector('.perm-card')")) === true, 8000, 200)
+  const promptText = await js<string>("document.querySelector('.perm-card')?.textContent ?? ''")
+  const domNoFrame = await js<{ frames: number }>('window.__e2ePanelDom()')
+  await js("document.querySelector('[data-key=perm-allow]')?.click()")
+  const frameMounted = await waitUntil(async () => (await js<{ frames: number }>('window.__e2ePanelDom()')).frames === 1, 8000, 200)
+  check(
+    'perm-prompt-allow',
+    promptShown &&
+      promptText.includes('文件系统') &&
+      domNoFrame.frames === 0 &&
+      frameMounted,
+    JSON.stringify({ promptShown, promptText: promptText.slice(0, 80), domNoFrame, frameMounted })
+  )
+
+  // 4) 决策落盘：plugin-permissions.json 的声明快照含 fs 双档（改声明会重弹）
+  const permFile = JSON.parse(readFileSync(join(FILES_E2E_UD, 'plugin-permissions.json'), 'utf-8')) as {
+    grants?: Record<string, { declaredFs?: string[]; fs?: string[] }>
+  }
+  const g = permFile.grants?.['files']
+  check(
+    'perm-persisted',
+    !!g && g.declaredFs?.includes('read') === true && g.declaredFs?.includes('write') === true && g.fs?.length === 2,
+    JSON.stringify({ g })
+  )
+
+  // 5) 面板开合：开关动作后 section 进 open 态；关闭即收（帧常驻不销毁）
+  await js('window.__e2ePanelToggle()')
+  const opened = await js<{ exists: boolean; open: boolean; frames: number }>('window.__e2ePanelDom()')
+  await js('window.__e2ePanelToggle()')
+  const closed = await js<{ open: boolean; frames: number }>('window.__e2ePanelDom()')
+  await js('window.__e2ePanelToggle()')
+  check(
+    'panel-toggle',
+    opened.exists && opened.open && opened.frames === 1 && !closed.open && closed.frames === 1,
+    JSON.stringify({ opened, closed })
+  )
+
+  // 6) 初始目录 = 活动终端 cwd（--open-dir 启动 → fixture）；导航与返回
+  await waitUntil(async () => (await snapOf())?.cwd === FIX, 8000, 200)
+  const s0 = await snapOf()
+  check('initial-cwd', s0?.cwd === FIX && Number(s0?.count) === 6, JSON.stringify(s0))
+  // 目录优先字母序：a-dir, z-dir, a.txt, b.txt, bin.dat, img.png（.hidden 默认隐藏）
+  const sel0 = String(s0?.sel)
+  await key('j')
+  const s1 = await snapOf()
+  await key('j')
+  const s2 = await snapOf()
+  check('nav-keys', sel0 === 'a-dir' && s1?.sel === 'z-dir' && s2?.sel === 'a.txt', JSON.stringify({ sel0, s1: s1?.sel, s2: s2?.sel }))
+
+  // 进入/返回：Enter 进 a-dir（cwd 变化），h 返回且选中回 a-dir（select 机制）
+  await key('Home')
+  await key('Enter')
+  const sIn = await snapOf()
+  await key('h')
+  const sBack = await snapOf()
+  check('nav-enter-back', sIn?.cwd === join(FIX, 'a-dir') && sBack?.cwd === FIX && sBack?.sel === 'a-dir', JSON.stringify({ sIn: sIn?.cwd, sBack }))
+
+  // 7) 过滤：/ 进入过滤模式（直接打字进模式但合成键不产字符，文本经 type 注
+  //    入），子序列匹配收敛到唯一项；Esc 清除回到全量
+  await key('/')
+  await type('bin')
+  const sF = await snapOf()
+  await key('Escape')
+  const sF0 = await snapOf()
+  check(
+    'filter-typo',
+    sF?.filter === 'bin' && sF?.sel === 'bin.dat' && Number(sF?.count) === 1 && sF0?.filter === '' && Number(sF0?.count) === 6,
+    JSON.stringify({ sF, sF0: sF0?.count })
+  )
+
+  // 8) 预览：目录（子项概览）/ 文本 / 二进制 / 图片，选中即换（防抖后）
+  const pv = async (j: number): Promise<string | null> => {
+    await key('Home')
+    for (let i = 0; i < j; i++) await key('j')
+    await delay(400)
+    return String((await snapOf())?.preview)
+  }
+  const pvDir = await pv(0)
+  const pvText = await pv(2)
+  const pvBin = await pv(4)
+  const pvImg = await pv(5)
+  check('preview-kinds', pvDir === 'dir' && pvText === 'text' && pvBin === 'binary' && pvImg === 'image', JSON.stringify({ pvDir, pvText, pvBin, pvImg }))
+
+  // 9) 终端联动（真实 pane 回显）：c 发 cd（先做——带 \r 独占一条命令行）→
+  //    y 贴路径（拼接在执行后的新提示符上，与 c 不互相干扰）→ t 开新标签。
+  //    回显经 tmux 往返有时序抖动，轮询断言
+  const ids0 = await js<string[]>('window.__e2eIds()')
+  await key('Home')
+  await key('c') // 选中 a-dir → cd（独立命令行）
+  const cdEcho = await waitUntil(
+    async () => await js<boolean>('window.__e2ePaneHas(0, "cd ") && window.__e2ePaneHas(0, "a-dir")'),
+    5000,
+    200
+  )
+  await pv(2) // 选中 a.txt
+  await key('y')
+  const yankEcho = await waitUntil(
+    async () => await js<boolean>('window.__e2ePaneHas(0, "e2e-files-fixture") && window.__e2ePaneHas(0, "a.txt")'),
+    5000,
+    200
+  )
+  await key('t')
+  const tabOpened = await waitUntil(async () => (await js<string[]>('window.__e2eIds()')).length === ids0.length + 1, 8000, 300)
+  check('terminal-actions', yankEcho && cdEcho && tabOpened, JSON.stringify({ yankEcho, cdEcho, tabOpened, ids0: ids0.length }))
+
+  // 10) 文件操作：新建（a + 输入 + Enter）→ 改名（F2）→ 删除（x + y 确认），
+  //     全部主进程侧核盘（写路径真实落盘、删除走回收站）。
+  //     写守卫：面板 cwd 必须仍在 fixture——前面任何断言回归把导航带偏时，
+  //     这里直接判失败并跳过写按键，绝不向真实文件系统落一个字节
+  const beforeOps = await snapOf()
+  if (beforeOps?.cwd !== FIX) {
+    check('file-ops', false, `cwd 走失（${String(beforeOps?.cwd)}），写操作被守卫拦截`)
+  } else {
+    await key('Home')
+    await key('a')
+    await type('newfile.txt')
+    await key('Enter')
+    const created = await waitUntil(() => Promise.resolve(existsSync(join(FIX, 'newfile.txt'))), 5000, 200)
+    await key('F2')
+    await type('renamed.txt')
+    await key('Enter')
+    const renamed = await waitUntil(
+      async () => !existsSync(join(FIX, 'newfile.txt')) && existsSync(join(FIX, 'renamed.txt')),
+      5000,
+      200
+    )
+    await key('x')
+    const confirmShown = await snapOf()
+    await key('y')
+    const trashed = await waitUntil(async () => !existsSync(join(FIX, 'renamed.txt')), 5000, 200)
+    check(
+      'file-ops',
+      created && renamed && !!confirmShown?.confirm && trashed,
+      JSON.stringify({ created, renamed, confirm: confirmShown?.confirm, trashed })
+    )
+  }
+
+  // 11) 隐藏文件开关：. 进列表（count +1）
+  const c0 = Number((await snapOf())?.count)
+  await key('.')
+  const c1 = Number((await snapOf())?.count)
+  check('hidden-toggle', c0 === 6 && c1 === 7, JSON.stringify({ c0, c1 }))
+
+  // 12) fs gate（已授权态）的路径防御：相对路径/超限写入拒绝，正常读放行
+  const relPath = await pluginFsCall(fsDeps, 'files', 'list', ['tmp/rel'])
+  const okList = await pluginFsCall(fsDeps, 'files', 'list', [FIX])
+  const tooLarge = await pluginFsCall(fsDeps, 'files', 'write', [join(FIX, 'big.txt'), 'x'.repeat(1_000_001)])
+  const okMkdir = await pluginFsCall(fsDeps, 'files', 'mkdir', [join(FIX, 'a-dir', 'made-by-gate')])
+  const tooLargeErr = tooLarge.ok === false ? tooLarge.error : String(tooLarge.value)
+  check(
+    'fs-gate-guarded',
+    relPath.ok === false &&
+      okList.ok === true &&
+      tooLarge.ok === false && tooLargeErr.includes('too large') &&
+      okMkdir.ok === true && existsSync(join(FIX, 'a-dir', 'made-by-gate')),
+    JSON.stringify({ relPath: relPath.ok, okList: okList.ok, tooLargeErr })
+  )
+
+  // 13) 禁用态：plugin-state.json 置禁用后 gate 拒绝（帧拆除由渲染层常规链路
+  //     处理，这里收口权限面——禁用插件无任何文件访问）
+  pluginState.setDisabled('files', true)
+  const disabledCall = await pluginFsCall(fsDeps, 'files', 'list', [FIX])
+  pluginState.setDisabled('files', false)
+  check('fs-gate-disabled', disabledCall.ok === false && String(disabledCall.error).includes('not active'), JSON.stringify(disabledCall))
+
+  // 收尾快照与退出
+  const img = await win.webContents.capturePage()
+  writeFileSync(join(outDir, 'files-panel.png'), img.toPNG())
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_FILES_RESULT ' + JSON.stringify({ ok: allOk, results }))
   if (argvHas('--e2e-quit')) {
     await backend.dispose()
     app.exit(allOk ? 0 : 1)
@@ -4357,6 +4639,7 @@ const codePluginsE2E = __E2E__ ? argvHas('--e2e-code-plugins') : false
 const agentsE2E = __E2E__ ? argvHas('--e2e-agents') : false
 const imeE2E = __E2E__ ? argvHas('--e2e-ime') : false
 const dropE2E = __E2E__ ? argvHas('--e2e-drop') : false
+const filesE2E = __E2E__ ? argvHas('--e2e-files') : false
 const webglE2E = __E2E__ ? argvHas('--e2e-webgl') || argvHas('--e2e-webgl-fallback') : false
 const isolatedRun =
   argvHas('--smoke') ||
@@ -4374,6 +4657,7 @@ const isolatedRun =
   agentsE2E ||
   imeE2E ||
   dropE2E ||
+  filesE2E ||
   webglE2E ||
   sessionE2E !== undefined ||
   keepE2E !== undefined
@@ -4427,6 +4711,34 @@ if (profileRefreshE2E) {
   )
   process.env.PATH = `${PROF_BIN}:${process.env.PATH ?? ''}`
   app.setPath('userData', PROF_UD)
+}
+
+// --e2e-files 的自备环境：隔离 userData（权限决策从零开始）+ 内容确定的
+// fixture 目录树（导航/过滤/预览/文件操作的断言基准）。最小合法 PNG 的
+// base64（1x1 透明像素）避免引入图像库依赖
+const FILES_E2E_UD = '/tmp/e2e-files-ud'
+const FILES_E2E_FIXTURE = '/tmp/e2e-files-fixture'
+const MINIMAL_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+  'base64'
+)
+
+// fixture 落盘（须在 whenReady 的 plugins.load()/pluginPerms.load() 之前）。
+// 套件命令行须带 --open-dir=/tmp/e2e-files-fixture：首个标签落在 fixture，
+// 面板初始目录即它
+if (filesE2E) {
+  rmSync(FILES_E2E_UD, { recursive: true, force: true })
+  rmSync(FILES_E2E_FIXTURE, { recursive: true, force: true })
+  app.setPath('userData', FILES_E2E_UD)
+  mkdirSync(join(FILES_E2E_FIXTURE, 'a-dir'), { recursive: true })
+  mkdirSync(join(FILES_E2E_FIXTURE, 'z-dir'), { recursive: true })
+  writeFileSync(join(FILES_E2E_FIXTURE, 'a-dir', 'inner.txt'), 'inner content\n')
+  writeFileSync(join(FILES_E2E_FIXTURE, '.hidden'), 'dot\n')
+  writeFileSync(join(FILES_E2E_FIXTURE, 'a.txt'), 'alpha file\nwith two lines\n')
+  writeFileSync(join(FILES_E2E_FIXTURE, 'b.txt'), 'beta\n')
+  // 前 16 字节即含 NUL：宿主 readText 的二进制嗅探拒绝（binary 预览路径）
+  writeFileSync(join(FILES_E2E_FIXTURE, 'bin.dat'), Buffer.from([0x7f, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 1, 2, 3]))
+  writeFileSync(join(FILES_E2E_FIXTURE, 'img.png'), MINIMAL_PNG)
 }
 
 // --e2e-agents 的自备环境，须在 whenReady 的 settingsStore.load() 与首次探测
@@ -4764,6 +5076,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
           agentsE2E ||
           imeE2E ||
           dropE2E ||
+          filesE2E ||
           webglE2E ||
           keepE2E) &&
         mainWindow
@@ -4798,6 +5111,7 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
               else if (agentsE2E) await runAgentsSequence(win)
               else if (imeE2E) await runImeSequence(win)
               else if (dropE2E) await runDropSequence(win)
+              else if (filesE2E) await runFilesSequence(win)
               else if (webglE2E) await runWebglSequence(win)
               else if (keepE2E === 'seed') await runKeepSeedSequence(win)
               else if (keepE2E === 'open') await runKeepOpenSequence(win)

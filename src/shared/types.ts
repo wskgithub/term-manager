@@ -110,6 +110,14 @@ export interface PluginInfo {
   // 创建 tmplug:// 沙箱 iframe（隔离宿主），entry 经查询参数传给合成宿主页。
   // 缺省 = 纯声明式插件（L2）
   entry?: string
+  // 面板声明（manifest panel 字段，已校验）：带 entry 的插件可把自己的沙箱帧
+  // 挂进应用右侧的可开合面板（缺省挂 0 尺寸隐藏容器——面板是帧的唯一可见
+  // 形态，帧本体仍常驻 DOM，开合走 CSS 防 realm 重载）
+  panel?: PluginPanelDef
+  // 来自安装包内置目录（resources/plugins，仓库 plugins-builtin/ 同源）：
+  // 仅展示语义（设置页「官方」徽章），能力面与用户插件完全一致；用户在
+  // userData/plugins 放同 id 插件可整体覆盖内置副本
+  builtin?: boolean
   // manifest 声明的权限（已校验）：主进程据此合成逐插件 CSP，渲染层据此弹批准框
   permissions?: PluginPermissions
   // 权限决策状态（仅带 entry 且声明了 connect 的插件附带）：decided=false 时
@@ -128,19 +136,39 @@ export interface PluginInfo {
 // manifest 声明的权限换放行（用户批准后合成页的 connect-src 才含该 origin）。
 // 脚本样板（在插件 entry 模块里）：const tm = termManager.init('my-plugin')
 
-// manifest 可声明的权限词汇：封闭集合，当前只有网络连接
+// manifest 可声明的权限词汇：封闭集合——网络连接与本地文件系统
 export interface PluginPermissions {
   /** fetch/XHR/WebSocket 可达的 origin 白名单（https 任意主机；http 仅 localhost） */
   connect?: string[]
+  /** 本地文件系统访问档位：read（列目录/读内容）与 write（写/建/改名/入回收站） */
+  fs?: PluginFsScope[]
+}
+
+// fs 权限档位：read 涵盖 list/stat/readText/readBase64，write 涵盖
+// write/mkdir/rename/trash。文件管理器类插件需要全盘寻址（跟随终端 cwd），
+// 授权粒度是档位而非目录白名单——删除只走回收站（可逆）是对 write 档位的
+// 固定收敛，不提供真删
+export type PluginFsScope = 'read' | 'write'
+
+// manifest 的面板声明（已校验）
+export interface PluginPanelDef {
+  /** 面板标题（面板 header 展示，≤40 字符） */
+  title: string
+  /** 标题图标：相对插件目录的 .svg/.png（≤256KB），经 tmplug:// 静态服务 */
+  icon?: string
 }
 
 // 权限决策状态：hosts 是当前 manifest 声明（已校验）的列表（弹窗「允许」的
 // 授权全集）；granted 是实授权（已授权 ∩ 当前声明，合成 CSP 的口径）；decided
 // 表示已存在针对该列表的决策（拒绝也算）。声明列表变更后 decided 回落 false，
-// 重新弹框。denied=true 表示用户明确拒绝过（granted 恒空）
+// 重新弹框。denied=true 表示用户明确拒绝过（granted 恒空）。fs 与 connect 同
+// 一套语义：允许 = 声明全集一次授予（弹窗二选一，无逐项勾选），fsGranted
+// 是 fs 侧的实授权（fs gate 的口径）
 export interface PluginPermDecision {
   hosts: string[]
   granted: string[]
+  fs: PluginFsScope[]
+  fsGranted: PluginFsScope[]
   decided: boolean
   denied?: boolean
 }
@@ -193,6 +221,63 @@ export interface TmStatusbarEntry {
   clickable?: boolean
 }
 
+// ── 插件 fs API 的结果形状（主进程 pluginFs.ts 产出、帧内消费）──
+// 全部字段主进程侧清洗防御后下发：路径绝对、大小/条数上限截断并标记。
+
+export type FsEntryKind = 'dir' | 'file' | 'symlink' | 'other'
+
+export interface FsEntry {
+  name: string
+  kind: FsEntryKind
+  /** 字节数（目录为 0；symlink 为链接本身大小） */
+  size: number
+  /** 修改时间（epoch ms） */
+  mtime: number
+}
+
+export interface FsListResult {
+  path: string
+  entries: FsEntry[]
+  /** 单目录条数上限（20000）截断时为 true——大目录应提示用户改用过滤 */
+  truncated: boolean
+}
+
+export interface FsStat {
+  path: string
+  kind: FsEntryKind
+  size: number
+  mtime: number
+  /** symlink 的指向（readlink 原文，不解析） */
+  target?: string
+}
+
+export interface FsTextResult {
+  text: string
+  size: number
+  truncated: boolean
+}
+
+export interface FsBlobResult {
+  /** base64（无 data: 前缀，帧内自行拼 MIME） */
+  data: string
+  size: number
+  truncated: boolean
+}
+
+/** fs 通道的 IPC 形状（永不 reject，错误在 ok:false 里） */
+export type FsCallShape = { ok: true; value: unknown } | { ok: false; error: string }
+
+/** HostSnapshot.panels 条目：面板 header 切换器的展示数据 */
+export interface TmPanelEntry {
+  pluginId: string
+  /** 插件名（fallback 展示） */
+  name: string
+  /** manifest panel.title */
+  title: string
+  /** manifest panel.icon（渲染为 tmplug://<id>/<icon>） */
+  icon?: string
+}
+
 // termManager.init(pluginId) 返回的命名空间化 API：全部注册物自动归属该插件，
 // 卸载（插件目录被删）时一并摘除。Tier 2 隔离宿主下 API 经 postMessage RPC
 // 落地，带返回值的方法（registerCommand/registerTheme/tabs.list/tabs.active）
@@ -217,12 +302,39 @@ export interface TmScopedApi {
     setScheme(id: string): void
     toggleSidebar(): void
     openSettings(): void
+    /** 当前配色方案的关键 CSS 变量色值（17 个 ui 键 → 颜色串）：面板类插件
+     *  自绘 UI 的主题适配数据源，scheme-changed 事件后重拉 */
+    colors(): Promise<Partial<Record<string, string>>>
   }
   terminals: {
     /** 订阅某标签的实时输出流（不含历史回放）；返回取消函数 */
     subscribe(id: string, cb: (data: string) => void): () => void
-    /** 向指定标签注入输入（直达 tmux，不走广播扇出） */
+    /** 向指定标签注入输入（直达 tmux，不经广播扇出） */
     write(id: string, data: string): void
+    /** 标签活动 pane 的当前工作目录（tmux pane_current_path）；标签不存在
+     *  或后端查询失败 resolve undefined（文件面板「跟随终端」的数据源） */
+    cwd(id: string): Promise<string | undefined>
+  }
+  fs: {
+    /** 列目录（目录优先排序在插件侧做，这里只给原始 stat 数据） */
+    list(path: string): Promise<FsListResult>
+    stat(path: string): Promise<FsStat>
+    /** 读文本（≤2MB 截断；前 8KB 含 NUL 判二进制拒绝） */
+    readText(path: string): Promise<FsTextResult>
+    /** 读二进制为 base64（≤8MB 截断；图片预览用） */
+    readBase64(path: string): Promise<FsBlobResult>
+    /** 覆盖/新建文件（内容 ≤1MB；父目录必须已存在） */
+    write(path: string, content: string): Promise<void>
+    /** 建目录（递归） */
+    mkdir(path: string): Promise<void>
+    /** 改名/移动（目标已存在即拒绝，防覆盖） */
+    rename(from: string, to: string): Promise<void>
+    /** 移入系统回收站（唯一的删除通路，不提供真删） */
+    trash(path: string): Promise<void>
+  }
+  panel: {
+    /** 请求宿主收起面板并归还终端焦点（帧内 Esc 语义；非面板插件调用为空操作） */
+    close(): void
   }
   statusbar: {
     /** item 传 null 删除该项 */

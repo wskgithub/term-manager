@@ -32,20 +32,23 @@ import {
   resolveDark,
   subscribeScheme,
 } from './theme'
-import { BUILTIN_THEMES } from '../../shared/themes'
+import { BUILTIN_THEMES, THEME_UI_VARS } from '../../shared/themes'
 import { setupE2E } from './e2e'
 import { PluginPermissionModal } from './PluginPermissionModal'
 import {
   clickStatusItem,
   dispatchTermData,
   emitTmEvent,
+  focusPanelFrame,
   initPluginHost,
   loadCodePlugins,
   onHostChange,
   permissionDecided,
+  setActivePanel,
   type HostSnapshot,
   type PluginPermPrompt,
 } from './pluginHost'
+import { PluginPanel } from './PluginPanel'
 
 // agent 子菜单条目的首字母圆标（monogram）：不引入品牌资产，取显示名首字符
 function agentMono(name: string): string {
@@ -103,7 +106,9 @@ export default function App() {
   const decidePerm = (allow: boolean) => {
     const p = permPrompts[0]
     if (!p) return
-    void api.grantPluginPermission(p.id, allow ? p.hosts : null).then(() => {
+    // 允许 = 主进程侧当前声明全集（connect origins + fs 档位一起授予）；
+    // 拒绝 = 两维全空。声明以注册表为准，渲染层不回传列表
+    void api.grantPluginPermission(p.id, allow).then(() => {
       permissionDecided(p.id)
       setPermPrompts((q) => q.slice(1))
       refreshProfiles()
@@ -138,9 +143,16 @@ export default function App() {
   const lastQuery = useRef('')
   const searchOpenRef = useRef(false)
   searchOpenRef.current = searchOpen
-  // 代码级插件（L3）的注册物快照：面板命令/动态主题/状态栏项。pluginHost 单
-  // 订阅推送，插件脚本异步注册时经 onHostChange 到达这里
-  const [hostSnap, setHostSnap] = useState<HostSnapshot>({ commands: [], themes: [], statusbar: [] })
+  // 代码级插件（L3）的注册物快照：面板命令/动态主题/状态栏项/面板清单。
+  // pluginHost 单订阅推送，插件脚本异步注册时经 onHostChange 到达这里
+  const [hostSnap, setHostSnap] = useState<HostSnapshot>({ commands: [], themes: [], statusbar: [], panels: [] })
+  // 插件面板（panel 型代码插件的可见宿主）：开关与激活项是纯运行时态（同
+  // paletteOpen，不持久化）；body 容器 ref 交给 pluginHost 命令式挂帧
+  const [pluginPanelOpen, setPluginPanelOpen] = useState(false)
+  const [activePanel, setActivePanel_] = useState<string | null>(null)
+  const pluginPanelBodyRef = useRef<HTMLDivElement>(null)
+  const pluginPanelOpenRef = useRef(false)
+  pluginPanelOpenRef.current = pluginPanelOpen
   // 用户手动重命名后，shell 上报的标题不再覆盖
   const renamed = useRef(new Set<string>())
   // 单点分发：所有终端实例注册在这里，一个 onData 订阅服务全部标签
@@ -299,7 +311,25 @@ export default function App() {
       getSettings: () => settingsRef.current,
       applySettings,
       openSettings: () => setSettingsOpen(true),
-      writeInput: (id, data) => api.write(id, data)
+      writeInput: (id, data) => api.write(id, data),
+      pluginFsCall: (id, op, args) => api.pluginFsCall(id, op, args),
+      termCwd: (id) => api.termCwd(id),
+      closePluginPanel: () => {
+        setPluginPanelOpen(false)
+        focusActiveTerm()
+      },
+      // 帧内主题适配数据源：当前方案的 ui 键 CSS 变量（ThemeUiVar 键名与
+      // :root 变量名一一对应），scheme-changed 事件后插件重拉
+      getUiColors: () => {
+        const cs = getComputedStyle(document.documentElement)
+        const out: Record<string, string> = {}
+        for (const key of THEME_UI_VARS) {
+          const v = cs.getPropertyValue(`--${key}`).trim()
+          if (v) out[key] = v
+        }
+        return out
+      },
+      getPanelBodyEl: () => pluginPanelBodyRef.current
     })
     onHostChange(setHostSnap)
     // 先订阅外部目录请求（Nautilus 右键 / CLI），再做 ready 握手取走排队项。
@@ -795,6 +825,36 @@ export default function App() {
     applySettings({ sidebarVisible: !settingsRef.current.sidebarVisible })
   }
 
+  // 插件面板开关（Ctrl+Shift+G / palette / 标签栏按钮三入口）：打开时把焦点
+  // 交给面板帧（键鼠直达插件 UI），关闭归还活跃终端。无面板插件时打开只是
+  // 空壳（header 关闭钮可退）——面板插件的加载走 plugins:list 常规链路
+  const togglePluginPanel = () => {
+    const next = !pluginPanelOpenRef.current
+    setPluginPanelOpen(next)
+    if (next) {
+      const target = hostSnap.panels.find((p) => p.pluginId === activePanel)?.pluginId ?? hostSnap.panels[0]?.pluginId
+      if (target) selectPluginPanel(target)
+    } else {
+      focusActiveTerm()
+    }
+  }
+  // 切换可见面板帧（多面板插件共用一个 body 区）：pluginHost 侧同步显隐，
+  // 渲染层 state 驱动 header 高亮，焦点随切换进帧
+  const selectPluginPanel = (pluginId: string) => {
+    setActivePanel_(pluginId)
+    setActivePanel(pluginId)
+    focusPanelFrame(pluginId)
+  }
+
+  // 面板清单变化（面板插件装/卸/禁用）时校正激活态：当前激活面板不在列表
+  // 中则回落第一个（pluginHost 侧已顺延帧显隐，这里同步渲染层 state）
+  useEffect(() => {
+    if (hostSnap.panels.length && !hostSnap.panels.some((p) => p.pluginId === activePanel)) {
+      setActivePanel_(hostSnap.panels[0]!.pluginId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hostSnap.panels])
+
   // 侧栏树拖拽落点执行（不变量仍由本组件单点维护）：
   // 组头落点 = 入组（固定标签永不入组、同组无意义，静默忽略）；标签行落点 =
   // 同父（固定态与分组都相同）重排；分组标签落到未分组行 = 出组后插到目标旁
@@ -1029,6 +1089,12 @@ export default function App() {
         // 才被认领），window 层一条通路即可覆盖终端聚焦/失焦两种情况
         e.preventDefault()
         toggleSidebar()
+      } else if (e.ctrlKey && e.shiftKey && k === 'g') {
+        // 插件面板开关：Ctrl+Shift+G 与 B/P/F 同族，不被 xterm 键位表认领
+        //（Ctrl+G 的 BEL 认领不带 Shift），window 层单通路覆盖终端聚焦/失焦。
+        // 焦点在面板帧内时按不到这里（键直达帧，插件自行 Esc 走 panel.close）
+        e.preventDefault()
+        togglePluginPanel()
       } else if (e.ctrlKey && e.shiftKey && k === 'p') {
         // 命令面板开关：与 Ctrl+Shift+B 同族，不被 xterm 键位表认领，window 层
         // 单通路覆盖终端聚焦/失焦（面板开着时焦点在输入框，再按即关闭）
@@ -1076,7 +1142,17 @@ export default function App() {
         getRenamed: () => [...renamed.current],
         getExited: () => [...exitedRef.current],
         getBroadcast: () => [...broadcastRef.current],
-        getSidebarVisible: () => settingsRef.current.sidebarVisible
+        getSidebarVisible: () => settingsRef.current.sidebarVisible,
+        togglePluginPanel,
+        pluginPanelDom: () => {
+          const sec = document.querySelector('.plugin-panel')
+          const body = document.querySelector('.plugin-panel-body')
+          return {
+            exists: !!sec,
+            open: !!sec?.classList.contains('open'),
+            frames: body ? body.querySelectorAll('iframe').length : 0
+          }
+        }
       })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1145,6 +1221,7 @@ export default function App() {
             onOpenSettings={() => setSettingsOpen(true)}
             onRefreshProfiles={refreshProfiles}
             onToggleSidebar={toggleSidebar}
+            onTogglePluginPanel={togglePluginPanel}
             onTogglePin={togglePin}
             onGroupNew={addToNewGroup}
             onGroupMove={moveToGroup}
@@ -1245,6 +1322,20 @@ export default function App() {
           </footer>
         )}
       </div>
+      {/* 插件面板（panel 型代码插件的可见宿主）：常驻渲染（只要还有面板帧），
+          开合走 CSS——卸载会连带销毁 iframe realm。body 的子节点由 pluginHost
+          命令式管理（面板帧），React 不碰 */}
+      <PluginPanel
+        open={pluginPanelOpen}
+        panels={hostSnap.panels}
+        activePanelId={activePanel}
+        bodyRef={pluginPanelBodyRef}
+        onSelect={selectPluginPanel}
+        onClose={() => {
+          setPluginPanelOpen(false)
+          focusActiveTerm()
+        }}
+      />
       {/* Tier 2 权限批准弹窗：最顶层（面板/菜单/设置页之上），Esc/Enter 快捷决策。
           key 按插件 id 强制重建——弹窗内的防双击 ref 不跨插件复用 */}
       {permPrompts.length > 0 && permPrompts[0] && (
@@ -1337,6 +1428,7 @@ export default function App() {
               removeFromGroup,
               toggleGroupBroadcast,
               toggleSidebar,
+              togglePluginPanel,
               openSettings: () => setSettingsOpen(true),
               setTheme: (theme) => applySettings({ theme }),
               quitAll: () => api.quitAll(),

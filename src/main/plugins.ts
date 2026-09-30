@@ -4,7 +4,9 @@ import { join } from 'path'
 import type {
   PluginAction,
   PluginCommandDef,
+  PluginFsScope,
   PluginInfo,
+  PluginPanelDef,
   PluginPermDecision,
   Profile,
   ThemeDef
@@ -23,6 +25,10 @@ export type { PluginInfo } from '../shared/types'
 // 内容（launch 动作 = 用户亲手在面板触发）。文件夹在即生效、删除即停用，
 // 无启用状态持久化（管理界面属后续阶段）。
 //
+// 扫描目录两级：用户目录 userData/plugins（先扫，先到先得）+ 内置目录
+// （安装包 resources/plugins，仓库 plugins-builtin/ 同源；dev 直读仓库）。
+// 同 id 时用户副本整体覆盖内置——官方插件可被本地替换/降级，内置目录只读。
+//
 // 只读不落盘（同 ThemeRegistry）：plugins:list 每次调用重扫。
 
 const LOCAL_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
@@ -34,6 +40,10 @@ const SCHEME_REF_RE = /^[A-Za-z0-9/_-]{1,80}$/
 // 存在性与大小在 loadPlugin 里核（不合法只丢字段，声明式贡献保留）
 const ENTRY_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/
 const MAX_ENTRY_BYTES = 1_000_000
+// 面板图标（manifest panel.icon）：与入口同款字符集白名单 + 图像扩展名 +
+// 存在性 + 大小上限，在 validPanelDef 里核
+const PANEL_ICON_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/
+const MAX_PANEL_ICON_BYTES = 262_144
 // 防病态 manifest：单插件贡献条目上限
 const MAX_PROFILES = 50
 const MAX_COMMANDS = 100
@@ -66,6 +76,47 @@ interface LoadedPlugin extends PluginInfo {
   localProfileIds: Set<string>
   // 插件目录绝对路径：tmplug:// 协议解析的唯一权威（重复 id 先到先得）
   dir: string
+  // fs 声明的内存形态（loadPlugin 已校验；permissions.fs 字段只有 entry 插件
+  // 才有意义——纯声明式插件没有代码，无从发起 fs 调用）
+  declaredFs: PluginFsScope[]
+}
+
+/**
+ * manifest panel 字段的完整校验：title 非空且 ≤40 字符；icon（可选）相对
+ * 路径白名单 + .svg/.png + 真实存在 + ≤256KB（经 tmplug:// 静态服务，与
+ * entry 同一条收紧口径）。面板是 entry 插件的可见形态，无 entry 时字段丢弃
+ */
+function validPanelDef(dir: string, raw: unknown, source: string): PluginPanelDef | undefined {
+  if (typeof raw !== 'object' || raw === null) {
+    console.error(`[plugins] ${source}: panel 必须是对象，字段丢弃`)
+    return undefined
+  }
+  const r = raw as Record<string, unknown>
+  if (typeof r.title !== 'string' || !r.title.trim()) {
+    console.error(`[plugins] ${source}: panel.title 必填，字段丢弃`)
+    return undefined
+  }
+  const def: PluginPanelDef = { title: r.title.trim().slice(0, 40) }
+  const icon = r.icon
+  if (icon !== undefined) {
+    // 直接 if 保持 string 收窄（布尔中间变量会让 TS 丢失 narrowing）
+    if (typeof icon !== 'string' || !PANEL_ICON_RE.test(icon) || icon.split('/').includes('..')) {
+      console.error(`[plugins] ${source}: panel.icon 非法，丢弃`)
+      return def
+    }
+    try {
+      const st = statSync(join(dir, icon))
+      if (!st.isFile() || st.size > MAX_PANEL_ICON_BYTES || !/\.(svg|png)$/.test(icon)) {
+        console.error(`[plugins] ${source}: panel.icon 缺失/超限/非图像，丢弃`)
+        return def
+      }
+    } catch {
+      console.error(`[plugins] ${source}: panel.icon 读取失败，丢弃`)
+      return def
+    }
+    def.icon = icon
+  }
+  return def
 }
 
 function validCommand(
@@ -219,7 +270,8 @@ function loadPlugin(dir: string, dirName: string): LoadedPlugin | null {
     commands,
     themes,
     localProfileIds,
-    dir
+    dir,
+    declaredFs: []
   }
   if (typeof r.version === 'string' && r.version.trim()) info.version = r.version.slice(0, 32)
 
@@ -233,9 +285,16 @@ function loadPlugin(dir: string, dirName: string): LoadedPlugin | null {
     }
   }
 
-  // permissions：Tier 2 权限词汇（当前只有 connect 的 origin 白名单）。
-  // 逐条校验，坏 origin 丢弃（去重保序）；全坏或形状不对则整字段丢弃——
-  // 不合法的权限声明不至于废掉整个插件，只是没有网络放行
+  // panel：面板声明（帧的可见形态）。只对 entry 插件有意义——无代码的声明式
+  // 插件没有帧可挂面板，字段丢弃（与 permissions 的 entry 门槛同理）
+  if (r.panel !== undefined && info.entry) {
+    const panel = validPanelDef(dir, r.panel, source)
+    if (panel) info.panel = panel
+  }
+
+  // permissions：Tier 2 权限词汇（connect 的 origin 白名单 + fs 档位）。
+  // 逐条校验，坏条目丢弃（去重保序）；全坏或形状不对则整字段丢弃——
+  // 不合法的权限声明不至于废掉整个插件，只是没有对应放行
   if (r.permissions !== undefined) {
     const p = r.permissions
     if (typeof p !== 'object' || p === null || Array.isArray(p)) {
@@ -257,6 +316,23 @@ function loadPlugin(dir: string, dirName: string): LoadedPlugin | null {
         }
         if (connect.length) info.permissions = { connect }
       }
+      const rawFs = (p as Record<string, unknown>).fs
+      if (rawFs === undefined) {
+        // 无 fs 诉求合法
+      } else if (!Array.isArray(rawFs)) {
+        console.error(`[plugins] ${source}: permissions.fs 必须是数组，字段丢弃`)
+      } else {
+        const fs: PluginFsScope[] = []
+        for (const s of rawFs) {
+          if ((s === 'read' || s === 'write') && !fs.includes(s)) fs.push(s)
+        }
+        // fs 只对 entry 插件有意义（无帧即无调用方），但声明仍记入 declaredFs：
+        // 权限决策快照对上才会 decided，纯声明式插件的这份声明永远空转
+        if (fs.length) {
+          info.declaredFs = fs
+          if (info.entry) info.permissions = { ...info.permissions, fs }
+        }
+      }
     }
   }
   return info
@@ -264,6 +340,7 @@ function loadPlugin(dir: string, dirName: string): LoadedPlugin | null {
 
 export class PluginRegistry {
   private dir = ''
+  private builtinDir = ''
   private plugins: LoadedPlugin[] = []
   // 权限决策存储（Tier 2）：list() 附带决策状态给渲染层弹批准框用。可选注入
   // 保持构造简单（测试/无决策场景传 undefined 即一切按未决策处理）
@@ -277,32 +354,48 @@ export class PluginRegistry {
     this.dir = join(app.getPath('userData'), 'plugins')
     // 建目录只为可发现性
     mkdirSync(this.dir, { recursive: true })
+    // 内置目录只读不建：打包后 = resources/plugins（electron-builder
+    // extraResources 从仓库 plugins-builtin/ 拷入，与 asar 无关）；dev 直读
+    // 仓库根。dev 路径按 __dirname 上溯（out/main → 仓库根）——getAppPath
+    // 在直跑 out/main/index.js 时返回 out/main 而非仓库根，不可依赖
+    this.builtinDir = app.isPackaged
+      ? join(process.resourcesPath, 'plugins')
+      : join(__dirname, '..', '..', 'plugins-builtin')
     this.refresh()
   }
 
-  /** 重扫目录（plugins:list 每次调用触发）；重复 id 后者弃（按目录名排序取先） */
+  /** 重扫两个目录（plugins:list 每次调用触发）。用户目录先扫（目录名排序
+   *  先到先得），内置目录跳过已见 id——用户副本整体覆盖内置插件，官方插件
+   *  可被本地替换 */
   refresh(): void {
     const found: LoadedPlugin[] = []
     const seen = new Set<string>()
-    let entries: Array<{ name: string; isDirectory: boolean }> = []
-    try {
-      entries = readdirSync(this.dir, { withFileTypes: true })
-        .filter((e) => e.isDirectory())
-        .map((e) => ({ name: e.name, isDirectory: true }))
-        .sort((a, b) => (a.name < b.name ? -1 : 1))
-    } catch {
-      this.plugins = []
-      return
-    }
-    for (const e of entries) {
-      const plugin = loadPlugin(join(this.dir, e.name), e.name)
-      if (!plugin) continue
-      if (seen.has(plugin.id)) {
-        console.error(`[plugins] plugins/${e.name}: 重复插件 id '${plugin.id}'，skipped`)
+    for (const root of [this.dir, this.builtinDir]) {
+      let entries: Array<{ name: string; isDirectory: boolean }> = []
+      try {
+        entries = readdirSync(root, { withFileTypes: true })
+          .filter((e) => e.isDirectory())
+          .map((e) => ({ name: e.name, isDirectory: true }))
+          .sort((a, b) => (a.name < b.name ? -1 : 1))
+      } catch {
+        // 内置目录缺失是常态（开发环境未带）；用户目录 load() 已建，异常静默
         continue
       }
-      seen.add(plugin.id)
-      found.push(plugin)
+      for (const e of entries) {
+        const plugin = loadPlugin(join(root, e.name), e.name)
+        if (!plugin) continue
+        if (seen.has(plugin.id)) {
+          if (root === this.dir) {
+            console.error(`[plugins] plugins/${e.name}: 重复插件 id '${plugin.id}'，skipped`)
+          } else {
+            console.error(`[plugins] builtin/${e.name}: 插件 id '${plugin.id}' 已被用户插件覆盖，skipped`)
+          }
+          continue
+        }
+        seen.add(plugin.id)
+        plugin.builtin = root === this.builtinDir
+        found.push(plugin)
+      }
     }
     this.plugins = found
   }
@@ -320,17 +413,24 @@ export class PluginRegistry {
         commands: disabled ? [] : p.commands,
         themes: disabled ? [] : p.themes,
         entry: p.entry,
+        ...(p.builtin ? { builtin: true } : {}),
+        ...(p.panel ? { panel: { ...p.panel } } : {}),
         ...(disabled ? { disabled: true } : {})
       }
       const declared = p.entry && p.permissions?.connect?.length ? p.permissions.connect : []
-      if (p.entry && p.permissions?.connect?.length) {
-        info.permissions = { connect: declared }
-        // 决策状态只对带 entry 的插件附带：纯声明式插件没有代码，网络声明无意义；
+      const declaredFs = p.entry && p.declaredFs.length ? p.declaredFs : []
+      if (p.entry && (declared.length || declaredFs.length)) {
+        info.permissions = {}
+        if (declared.length) info.permissions.connect = declared
+        if (declaredFs.length) info.permissions.fs = [...declaredFs]
+        // 决策状态只对带 entry 的插件附带：纯声明式插件没有代码，权限声明无意义；
         // granted 是实授权（∩ 当前声明），denied 是显式拒绝——设置页据此展示
-        const decided = this.perms?.isDecided(p.id, declared) ?? false
+        const decided = this.perms?.isDecided(p.id, declared, declaredFs) ?? false
         const perm: PluginPermDecision = {
           hosts: declared,
           granted: decided ? this.perms!.effectiveConnect(p.id, declared) : [],
+          fs: [...declaredFs],
+          fsGranted: decided ? this.perms!.effectiveFs(p.id, declaredFs) : [],
           decided
         }
         const d = this.perms?.get(p.id)
@@ -372,5 +472,11 @@ export class PluginRegistry {
   declaredConnect(id: string): string[] {
     const p = this.plugins.find((x) => x.id === id)
     return p?.entry && p.permissions?.connect?.length ? p.permissions.connect : []
+  }
+
+  /** fs gate 用：entry 插件声明的 fs 档位（无 entry/未声明为空） */
+  declaredFs(id: string): PluginFsScope[] {
+    const p = this.plugins.find((x) => x.id === id)
+    return p?.entry && p.declaredFs.length ? [...p.declaredFs] : []
   }
 }

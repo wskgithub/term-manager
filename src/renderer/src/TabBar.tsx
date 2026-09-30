@@ -1,5 +1,5 @@
 import { useRef, useState, type CSSProperties } from 'react'
-import { BroadcastIcon, ChevronIcon, ContextMenu, PinIcon, SidebarIcon } from './ContextMenu'
+import { BroadcastIcon, ChevronIcon, ContextMenu, FolderIcon, PinIcon, SidebarIcon } from './ContextMenu'
 import { NewTabMenu } from './NewTabMenu'
 import { buildGroupMenuItems, buildTabMenuItems } from './menus'
 import { buildSegs } from './segs'
@@ -30,6 +30,8 @@ interface Props {
   onRefreshProfiles: () => void
   // 打开分组侧栏（侧栏开启时隐藏标签栏，按钮承担切回入口）
   onToggleSidebar: () => void
+  // 打开插件面板（文件面板等 panel 型插件的可见宿主）
+  onTogglePluginPanel: () => void
   // ── 固定/分组 ──
   onTogglePin: (id: string) => void
   // 归入新组，返回新组对象（组头随即进入重命名编辑态）
@@ -67,6 +69,7 @@ export function TabBar(props: Props) {
     onOpenSettings,
     onRefreshProfiles,
     onToggleSidebar,
+    onTogglePluginPanel,
     onTogglePin,
     onGroupNew,
     onGroupMove,
@@ -298,6 +301,18 @@ export function TabBar(props: Props) {
         onOpenSettings={onOpenSettings}
         onOpenMenu={onRefreshProfiles}
       />
+
+      {/* 插件面板入口（文件面板）：同 side-toggle 的不夺焦约定（点击后键盘
+          焦点保持终端，面板打开时才把焦点交给面板帧） */}
+      <button
+        className="side-toggle panel-toggle"
+        data-key="toggle-files-panel"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={onTogglePluginPanel}
+        title="文件面板 (Ctrl+Shift+G)"
+      >
+        <FolderIcon />
+      </button>
 
       {tabMenu && tabMenuTab && (
         <ContextMenu

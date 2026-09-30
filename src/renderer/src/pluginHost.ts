@@ -15,10 +15,13 @@
 
 import type {
   AppSettings,
+  FsCallShape,
+  PluginFsScope,
   PluginInfo,
   TermInfo,
   ThemeDef,
   ThemeOption,
+  TmPanelEntry,
   TmPluginEventName,
   TmRuntimeCommandDef,
   TmStatusItem,
@@ -38,6 +41,16 @@ export interface PluginHostDeps {
   openSettings(): void
   /** 终端写入（直达 tmux，不经广播扇出） */
   writeInput(id: string, data: string): void
+  /** 插件 fs 通道（preload → 主进程 pluginFs gate），形状永不 reject */
+  pluginFsCall(pluginId: string, op: string, args: unknown[]): Promise<FsCallShape>
+  /** 标签活动 pane 的当前工作目录（主进程 tmux 查询） */
+  termCwd(id: string): Promise<string | undefined>
+  /** 面板关闭请求（panel.close RPC）：收起面板并归还终端焦点 */
+  closePluginPanel(pluginId: string): void
+  /** 当前配色方案的 ui 键色值（getComputedStyle :root 变量），帧内主题适配 */
+  getUiColors(): Record<string, string>
+  /** 面板 body 容器（App 常驻渲染的 div；面板帧命令式挂进去，React 不碰其子节点） */
+  getPanelBodyEl(): HTMLDivElement | null
 }
 
 // 注册表变化的渲染快照（App 持 state，onHostChange 单订阅者）
@@ -45,6 +58,8 @@ export interface HostSnapshot {
   commands: PaletteCommand[]
   themes: ThemeDef[]
   statusbar: TmStatusbarEntry[]
+  /** 已挂面板帧的插件（面板 header 切换器数据源） */
+  panels: TmPanelEntry[]
 }
 
 // 权限批准请求（App 渲染弹窗队列）
@@ -52,6 +67,7 @@ export interface PluginPermPrompt {
   id: string
   name: string
   hosts: string[]
+  fs: PluginFsScope[]
 }
 
 // 防病态插件：单插件注册物上限（与主进程 manifest caps 同文化）
@@ -97,6 +113,8 @@ interface FrameEntry {
   /** 帧的 origin（`tmplug://<id>`），回执与推送的 targetOrigin */
   origin: string
   impls: Record<string, (...args: unknown[]) => unknown>
+  /** 面板型插件：帧挂在 App 的面板 body 容器里（可见 UI），其余挂隐藏容器 */
+  panel?: boolean
 }
 
 let deps: PluginHostDeps | null = null
@@ -108,7 +126,13 @@ const pluginMeta = new Map<string, { name: string; version?: string }>()
 const frames = new Map<string, FrameEntry>()
 // 等待权限决策的插件（id → 建 frame 所需信息）：决策落盘后由
 // permissionDecided() 补挂；插件消失则一并清掉
-const pendingFrames = new Map<string, { entry: string; version: string }>()
+const pendingFrames = new Map<
+  string,
+  { entry: string; version: string; panel?: { title: string; icon?: string } }
+>()
+// 当前激活的面板插件 id（多面板插件时 body 内只显示一个；首挂面板默认激活，
+// 移除后顺延到剩余面板，无面板则清空）
+let activePanelId: string | null = null
 
 interface CmdEntry {
   pluginId: string
@@ -143,6 +167,10 @@ interface DataSub {
   cb: (data: string) => void
 }
 const dataReg = new Map<string, DataSub[]>() // key = 标签 id
+
+// manifest 的 panel 声明缓存（id → title/icon）：面板 header 的展示数据源，
+// loadCodePlugins 消费 plugins:list 时写入，帧拆除时一并清
+const panelDefs = new Map<string, { title: string; icon?: string }>()
 
 function countOwned<T extends { pluginId: string }>(m: Iterable<T>, pid: string): number {
   let n = 0
@@ -204,12 +232,30 @@ function buildStatusEntries(): TmStatusbarEntry[] {
   return out
 }
 
+function buildPanelEntries(): TmPanelEntry[] {
+  const out: TmPanelEntry[] = []
+  for (const f of frames.values()) {
+    if (!f.panel) continue
+    const meta = pluginMeta.get(f.id)
+    // panel 的展示字段来自 manifest（loadCodePlugins 消费时存进 meta 扩展位）
+    const p = panelDefs.get(f.id)
+    out.push({
+      pluginId: f.id,
+      name: meta?.name ?? f.id,
+      title: p?.title ?? meta?.name ?? f.id,
+      icon: p?.icon
+    })
+  }
+  return out
+}
+
 function notify(): void {
   if (!changeCb) return
   changeCb({
     commands: buildCommandSnapshot(),
     themes: themeReg.size ? [...themeReg.values()].map((e) => e.def) : [],
-    statusbar: buildStatusEntries()
+    statusbar: buildStatusEntries(),
+    panels: buildPanelEntries()
   })
 }
 
@@ -344,6 +390,23 @@ function buildImpls(id: string): Record<string, (...args: unknown[]) => unknown>
       if (!deps.getTabs().some((t) => t.id === termId)) return
       deps.writeInput(termId, data)
     },
+    'terminals.cwd': (termId) => {
+      if (!deps || typeof termId !== 'string') return Promise.resolve(undefined)
+      if (!deps.getTabs().some((t) => t.id === termId)) return Promise.resolve(undefined)
+      return deps.termCwd(termId)
+    },
+    'ui.colors': () => (deps ? deps.getUiColors() : {}),
+    'panel.close': () => deps?.closePluginPanel(id),
+    // fs 通道：宿主只透传（op/路径/大小/权限防御全在主进程 pluginFs 收口）；
+    // write 第二参为内容、rename 第二参为目标，其余单路径参数
+    'fs.list': (path) => fsPassthrough(id, 'list', [path]),
+    'fs.stat': (path) => fsPassthrough(id, 'stat', [path]),
+    'fs.readText': (path) => fsPassthrough(id, 'readText', [path]),
+    'fs.readBase64': (path) => fsPassthrough(id, 'readBase64', [path]),
+    'fs.write': (path, content) => fsPassthrough(id, 'write', [path, content]),
+    'fs.mkdir': (path) => fsPassthrough(id, 'mkdir', [path]),
+    'fs.rename': (from, to) => fsPassthrough(id, 'rename', [from, to]),
+    'fs.trash': (path) => fsPassthrough(id, 'trash', [path]),
     'statusbar.setItem': (itemId, wire) => {
       if (typeof itemId !== 'string' || !LOCAL_ID_RE.test(itemId)) return
       const key = `${id}:${itemId}`
@@ -371,6 +434,16 @@ function countOwnedEventSubs(pid: string): number {
   let n = 0
   for (const list of eventReg.values()) n += countOwned(list, pid)
   return n
+}
+
+/** fs 通道透传（buildImpls 的局部 helper）：宿主无本地校验——防御全在主进程 */
+function fsPassthrough(
+  pluginId: string,
+  op: string,
+  args: unknown[]
+): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
+  if (!deps) return Promise.resolve({ ok: false, error: 'host not ready' })
+  return deps.pluginFsCall(pluginId, op, args)
 }
 
 function countOwnedDataSubs(pid: string): number {
@@ -441,19 +514,38 @@ function ensureContainer(): void {
   document.body.appendChild(container)
 }
 
-function createFrame(id: string, entry: string, version: string): void {
+function createFrame(id: string, entry: string, version: string, panel?: { title: string; icon?: string }): void {
   if (frames.has(id)) return
+  const body = panel ? deps?.getPanelBodyEl() ?? null : null
+  if (panel) panelDefs.set(id, { title: panel.title, icon: panel.icon })
   ensureContainer()
   const frame = document.createElement('iframe')
   // allow-same-origin：tmplug://<id> 是每插件独立 origin（与应用页面跨源），
   // 放行只为让插件拿到自己 origin 的存储与规范的 event.origin；沙箱逃逸
   // 风险面在"帧与嵌入者同源"场景，这里构造上就不成立
   frame.setAttribute('sandbox', 'allow-scripts allow-same-origin')
-  frame.setAttribute('aria-hidden', 'true')
   frame.setAttribute('title', `plugin:${id}`)
+  if (panel) frame.className = 'plugin-panel-frame'
+  else frame.setAttribute('aria-hidden', 'true')
   frame.src = `tmplug://${id}/__tmplug_host__?entry=${encodeURIComponent(entry)}`
-  container!.appendChild(frame)
-  frames.set(id, { id, version, frame, origin: `tmplug://${id}`, impls: buildImpls(id) })
+  // 面板帧挂 App 的面板 body 容器（可见 UI；容器由 React 常驻渲染，本模块
+  // 只命令式管理其子节点）；面板容器缺失的边缘时序降级挂隐藏容器——帧照常
+  // 执行（命令/状态栏仍可用），下次 plugins:list 重扫时回到面板
+  if (panel && body) body.appendChild(frame)
+  else container!.appendChild(frame)
+  frames.set(id, {
+    id,
+    version,
+    frame,
+    origin: `tmplug://${id}`,
+    impls: buildImpls(id),
+    panel: panel ? true : undefined
+  })
+  if (panel) {
+    if (activePanelId) frame.style.display = 'none'
+    else setActivePanel(id)
+    notify()
+  }
 }
 
 function removeFrame(id: string): void {
@@ -461,6 +553,31 @@ function removeFrame(id: string): void {
   if (!f) return
   frames.delete(id)
   f.frame.remove()
+  panelDefs.delete(id)
+  // 激活面板被移除：顺延到剩余面板（保持「body 内恒有一个可见面板帧」），
+  // 无剩余面板则清空激活态
+  if (f.panel && activePanelId === id) {
+    const next = [...frames.values()].find((x) => x.panel)
+    if (next) setActivePanel(next.id)
+    else activePanelId = null
+    notify()
+  }
+}
+
+/** 切换可见面板（多面板插件共用一个 body 区，一次只显示一个）；同时是
+ *  App 面板 header 高亮的数据同步点（App 持同名 state 并调此处） */
+export function setActivePanel(pluginId: string): void {
+  activePanelId = pluginId
+  for (const f of frames.values()) {
+    if (!f.panel) continue
+    f.frame.style.display = f.id === pluginId ? '' : 'none'
+  }
+}
+
+/** 把键盘焦点交给面板帧（面板打开/切入时调用；iframe.focus 让按键直达插件 UI） */
+export function focusPanelFrame(pluginId: string): void {
+  const f = frames.get(pluginId)
+  if (f?.panel) f.frame.focus()
 }
 
 /**
@@ -497,8 +614,8 @@ export function loadCodePlugins(infos: PluginInfo[]): PluginPermPrompt[] {
       }
       pluginMeta.set(info.id, { name: info.name, version: info.version })
       if (!pendingFrames.has(info.id)) {
-        pendingFrames.set(info.id, { entry: info.entry, version })
-        prompts.push({ id: info.id, name: info.name, hosts: info.permDecision.hosts })
+        pendingFrames.set(info.id, { entry: info.entry, version, panel: info.panel })
+        prompts.push({ id: info.id, name: info.name, hosts: info.permDecision.hosts, fs: info.permDecision.fs })
       }
       continue
     }
@@ -511,7 +628,7 @@ export function loadCodePlugins(infos: PluginInfo[]): PluginPermPrompt[] {
       removeFrame(info.id)
       teardown(info.id)
     }
-    createFrame(info.id, info.entry, version)
+    createFrame(info.id, info.entry, version, info.panel)
   }
   for (const id of [...frames.keys(), ...pendingFrames.keys()]) {
     if (present.has(id)) continue
@@ -529,11 +646,12 @@ export function permissionDecided(id: string): void {
   const p = pendingFrames.get(id)
   pendingFrames.delete(id)
   if (!p || !pluginMeta.has(id)) return
-  createFrame(id, p.entry, p.version)
+  createFrame(id, p.entry, p.version, p.panel)
 }
 
 function teardown(pid: string): void {
   pluginMeta.delete(pid)
+  panelDefs.delete(pid)
   for (const [k, v] of [...cmdReg]) if (v.pluginId === pid) cmdReg.delete(k)
   for (const [k, v] of [...themeReg]) if (v.pluginId === pid) themeReg.delete(k)
   for (const [k, v] of [...statusReg]) if (v.pluginId === pid) statusReg.delete(k)

@@ -28,6 +28,7 @@ export interface PaletteHandlers {
   removeFromGroup: (id: string) => void
   toggleGroupBroadcast: (groupId: string) => void
   toggleSidebar: () => void
+  togglePluginPanel: () => void
   openSettings: () => void
   setTheme: (theme: AppSettings['theme']) => void
   quitAll: () => void
@@ -188,6 +189,13 @@ export function buildCommands(ctx: PaletteCtx): PaletteCommand[] {
       hint: 'Ctrl+Shift+B',
       keywords: 'sidebar',
       action: h.toggleSidebar
+    },
+    {
+      key: 'files-panel',
+      label: '文件面板（官方插件）',
+      hint: 'Ctrl+Shift+G',
+      keywords: 'files explorer yazi panel',
+      action: h.togglePluginPanel
     },
     { key: 'settings', label: '打开设置', hint: 'Ctrl+,', keywords: 'settings', action: h.openSettings },
     ...(['dark', 'light', 'system'] as const).map((th) => ({

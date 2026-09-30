@@ -71,8 +71,16 @@ export interface Api {
   listFonts(): Promise<string[]>
   listThemes(): Promise<ThemeDef[]>
   listPlugins(): Promise<PluginInfo[]>
-  // Tier 2 权限批准落盘（origins=null 表示拒绝）
-  grantPluginPermission(id: string, origins: string[] | null): Promise<void>
+  // Tier 2 权限批准落盘（allow=false 表示拒绝；允许 = 主进程侧声明全集）
+  grantPluginPermission(id: string, allow: boolean): Promise<void>
+  // 插件 fs 通道（透传给主进程 pluginFs gate）：{ok,value}|{ok,error} 永不 reject
+  pluginFsCall(
+    pluginId: string,
+    op: string,
+    args: unknown[]
+  ): Promise<{ ok: true; value: unknown } | { ok: false; error: string }>
+  // 标签活动 pane 的当前工作目录（插件 terminals.cwd 的数据源）
+  termCwd(id: string): Promise<string | undefined>
   // 管理 UI：禁用开关（禁用 = 贡献清空 + 代码帧拆除，plugin-state.json 持久化）
   setPluginEnabled(id: string, enabled: boolean): Promise<void>
   // 管理 UI：清除权限决策（「重新询问」），下次扫描重新弹批准框

@@ -1628,7 +1628,7 @@ body,
   background: var(--surface-hover);
 }
 
-/* ── 代码级插件（Tier 2）：隔离 iframe 容器与权限批准弹窗 ── */
+/* ── 代码级插件（Tier 2）：隔离 iframe 容器、面板宿主与权限批准弹窗 ── */
 
 /* 0 尺寸零视觉足迹（不用 display:none：避开定时器节流的边缘行为差异） */
 .plugin-frames {
@@ -1641,6 +1641,149 @@ body,
   visibility: hidden;
   pointer-events: none;
 }
+
+/* ── 插件面板（panel 型代码插件的可见宿主）──
+   常驻 .app 行向第三列（侧栏 | 主体 | 面板），开合只切宽度（组件 inline
+   style 控制，避免 transition 期间终端 fit 连续 resize 抖动）。body 的子
+   节点（面板 iframe）由 pluginHost 命令式管理 */
+.plugin-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  width: 0;
+  overflow: hidden;
+  background: var(--bg-deep);
+  border-left: 1px solid var(--hairline);
+}
+
+.plugin-panel-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 5;
+  background: transparent;
+  touch-action: none;
+}
+
+.plugin-panel-handle:hover,
+.plugin-panel-handle:active {
+  /* 拖宽把手悬停/拖拽中的可感知反馈：accent 细条 */
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.plugin-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  height: var(--bar-h);
+  padding: 0 4px 0 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.plugin-panel-tabs {
+  display: flex;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.plugin-panel-tab {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 150px;
+  padding: 3px 8px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 12px;
+  opacity: 0.6;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.plugin-panel-tab img {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
+.plugin-panel-tab span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plugin-panel-tab:hover {
+  opacity: 0.9;
+  background: var(--hover-wash);
+}
+
+.plugin-panel-tab.active {
+  opacity: 1;
+  background: var(--surface);
+}
+
+.plugin-panel-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  opacity: 0.55;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.plugin-panel-close:hover {
+  opacity: 1;
+  background: var(--hover-wash);
+}
+
+.plugin-panel-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+/* 面板 iframe：撑满 body；帧内 UI 自带主题适配（ui.colors），底色对齐应用深底
+   防加载瞬间的白闪 */
+.plugin-panel-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background: var(--bg-deep);
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] .plugin-panel-frame {
+  color-scheme: light;
+}
+
+/* 标签栏右端的面板入口（复用 side-toggle 的基础形态，改左缘间距——它在
+   NewTabMenu 之后，与左缘入口互为镜像） */
+.side-toggle.panel-toggle {
+  margin-right: 0;
+  margin-left: 4px;
+  border-radius: 6px;
+}
+
 
 /* 权限批准弹窗：全屏遮罩 + 居中卡片，压在面板(110)/菜单(100)/设置页(20)之上 */
 .perm-overlay {
@@ -1799,6 +1942,12 @@ body,
 .plugin-badge.off {
   border-color: color-mix(in srgb, var(--warn) 40%, var(--hairline));
   color: var(--warn);
+}
+
+/* 「官方」徽章：安装包内置插件（仅展示语义，能力面与用户插件一致） */
+.plugin-badge.builtin {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--hairline));
+  color: var(--accent);
 }
 
 .plugin-enable {

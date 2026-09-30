@@ -23,10 +23,21 @@ const api = {
   listFonts: (): Promise<string[]> => ipcRenderer.invoke('settings:fonts'),
   listThemes: (): Promise<ThemeDef[]> => ipcRenderer.invoke('themes:list'),
   listPlugins: (): Promise<PluginInfo[]> => ipcRenderer.invoke('plugins:list'),
-  // Tier 2 权限批准：origins = 授权的 origin 列表（须 ⊆ manifest 声明），
-  // null = 拒绝。落盘后由渲染层重挂插件 iframe（新合成页的 CSP 才含授权）
-  grantPluginPermission: (id: string, origins: string[] | null): Promise<void> =>
-    ipcRenderer.invoke('plugins:grant-perm', id, origins),
+  // Tier 2 权限批准：allow=false 拒绝（connect/fs 两维全空）；允许 = 主进程侧
+  // 当前声明全集一次授予（声明以注册表为准，渲染层不回传列表）。落盘后由
+  // 渲染层重挂插件 iframe（新合成页的 CSP 才含授权）
+  grantPluginPermission: (id: string, allow: boolean): Promise<void> =>
+    ipcRenderer.invoke('plugins:grant-perm', id, allow),
+  // 插件 fs 通道：渲染层只透传「插件 id + 操作名 + 参数」，权限 gate 与防御
+  // 全在主进程 pluginFs（见其文件头）。返回 {ok,value}|{ok,error}，永不 reject
+  pluginFsCall: (
+    pluginId: string,
+    op: string,
+    args: unknown[]
+  ): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> =>
+    ipcRenderer.invoke('plugins:fs-call', pluginId, op, args),
+  // 标签活动 pane 的当前工作目录（插件 terminals.cwd 的数据源）
+  termCwd: (id: string): Promise<string | undefined> => ipcRenderer.invoke('term:cwd', id),
   // 管理 UI：禁用开关（禁用 = 贡献清空 + 代码帧拆除，plugin-state.json 持久化）
   setPluginEnabled: (id: string, enabled: boolean): Promise<void> =>
     ipcRenderer.invoke('plugins:set-enabled', id, enabled),

@@ -24,6 +24,10 @@ interface E2ECtx {
   getBroadcast: () => string[]
   // 分组侧栏回归（--e2e-sidebar 断言用）：设置开关实时值
   getSidebarVisible: () => boolean
+  // 插件面板（--e2e-files 断言用）：开关动作 + 面板 DOM 快照（帧内状态由主进程
+  // 经 WebFrameMain 直接执行 JS 断言，不经渲染层）
+  togglePluginPanel(): void
+  pluginPanelDom(): { exists: boolean; open: boolean; frames: number }
 }
 
 /**
@@ -486,6 +490,12 @@ export function setupE2E(ctx: E2ECtx): void {
 
   // 单引号引用纯函数直断（--e2e-drop 的转义基准）
   w.__e2eQuotePath = (p: string) => quotePath(p)
+
+  // ── 插件面板回归（--e2e-files）──
+  // 开关动作与面板 DOM 快照（常驻 section 的 class 与 body 内帧数）；帧内状态
+  // 与键位驱动由主进程经 WebFrameMain 直接执行 JS（跨源 iframe 的唯一通路）
+  w.__e2ePanelToggle = () => ctx.togglePluginPanel()
+  w.__e2ePanelDom = () => ctx.pluginPanelDom()
 
 
   // ── 真实输入回归探针（--e2e-input，主进程用 sendInputEvent 派可信事件驱动）──

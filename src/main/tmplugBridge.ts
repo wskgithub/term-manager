@@ -92,6 +92,14 @@ export const BRIDGE_BODY = `
     if (t.terminal) o.terminal = t.terminal
     return o
   }
+  // fs 通道的结果统一化：主进程的 {ok:false,error} 转异常（插件侧只 try/catch，
+  // 不必再判 ok 字段）；{ok:true,value} 只留 value
+  function fsCall(op, args) {
+    return call('fs.' + op, args).then(function (r) {
+      if (r && r.ok === false) throw new Error(r.error || 'fs call failed')
+      return r && r.ok ? r.value : undefined
+    })
+  }
 
   var api = {
     version: '1',
@@ -132,7 +140,8 @@ export const BRIDGE_BODY = `
       setTheme: function (mode) { notify('ui.setTheme', [mode]) },
       setScheme: function (id) { notify('ui.setScheme', [id]) },
       toggleSidebar: function () { notify('ui.toggleSidebar', []) },
-      openSettings: function () { notify('ui.openSettings', []) }
+      openSettings: function () { notify('ui.openSettings', []) },
+      colors: function () { return call('ui.colors', []) }
     },
     terminals: {
       subscribe: function (termId, cb) {
@@ -148,7 +157,21 @@ export const BRIDGE_BODY = `
           if (cur && cur.delete(token)) notify('unsub', [token])
         }
       },
-      write: function (termId, data) { notify('terminals.write', [termId, data]) }
+      write: function (termId, data) { notify('terminals.write', [termId, data]) },
+      cwd: function (termId) { return call('terminals.cwd', [termId]) }
+    },
+    fs: {
+      list: function (path) { return fsCall('list', [path]) },
+      stat: function (path) { return fsCall('stat', [path]) },
+      readText: function (path) { return fsCall('readText', [path]) },
+      readBase64: function (path) { return fsCall('readBase64', [path]) },
+      write: function (path, content) { return fsCall('write', [path, content]) },
+      mkdir: function (path) { return fsCall('mkdir', [path]) },
+      rename: function (from, to) { return fsCall('rename', [from, to]) },
+      trash: function (path) { return fsCall('trash', [path]) }
+    },
+    panel: {
+      close: function () { notify('panel.close', []) }
     },
     statusbar: {
       setItem: function (itemId, item) {
@@ -170,7 +193,7 @@ export const BRIDGE_BODY = `
     }
   }
 
-  window.termManager = {
+    window.termManager = {
     version: '1',
     init: function (id) {
       if (typeof id !== 'string' || id !== META.id) {
@@ -181,4 +204,11 @@ export const BRIDGE_BODY = `
     }
   }
 })()
+`
+
+// e2e 标记（仅 __E2E__ 构建由 servePluginBridge 附加，发布构建零痕迹）：
+// 帧内脚本据它挂 window.__e2ePlugin 快照钩子。跨源 iframe 的状态/键位断言
+// 走主进程 WebFrameMain.frames 直接在帧内执行 JS（--e2e-code-plugins 序列的
+// 既有做法），不经 postMessage 协议
+export const BRIDGE_E2E_EXTRA = `;window.__TMPLUG_E2E__ = 1
 `

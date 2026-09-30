@@ -35,6 +35,12 @@
     "files": [
       "out/**"
     ],
+    "extraResources": [
+      {
+        "from": "plugins-builtin",
+        "to": "plugins"
+      }
+    ],
     "linux": {
       "target": [
         "deb",
