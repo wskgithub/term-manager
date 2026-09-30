@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { api, type AgentEntry, type AppSettings, type PluginInfo, type Profile, type ThemeDef } from './api'
 import { PluginManager } from './PluginManager'
 import { resolveFontStack } from './fonts'
+import { BotIcon, PackageIcon, PaletteIcon, TerminalIcon } from './ContextMenu'
 
 const FONT_SIZE_MIN = 8
 const FONT_SIZE_MAX = 48
@@ -18,13 +19,101 @@ const AGENT_ARGV_MAX = 8
 const AGENT_ARG_MAX = 200
 
 const NAV_ITEMS = [
-  { key: 'appearance', label: '外观' },
-  { key: 'terminal', label: '终端' },
-  { key: 'agents', label: 'AI Agent' },
-  { key: 'plugins', label: '插件' }
+  { key: 'appearance', label: '外观', icon: PaletteIcon },
+  { key: 'terminal', label: '终端', icon: TerminalIcon },
+  { key: 'agents', label: 'AI Agent', icon: BotIcon },
+  { key: 'plugins', label: '插件', icon: PackageIcon }
 ] as const
 
 export type SectionKey = (typeof NAV_ITEMS)[number]['key']
+
+// ── 设置页版式积木：分组卡片 / 两栏设置行 / 补充说明行。行布局（名称/说明列 +
+// 控件列）与说明行的两栏对齐由 index.css 的同名栅格类钉死，这里只管装内容 ──
+
+/** 分组卡片：一节一面板卡，标题带 accent 短竖条 */
+function Group({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="settings-group">
+      <div className="settings-group-title">{title}</div>
+      {children}
+    </section>
+  )
+}
+
+/** 设置行：左列名称 + 可选说明，右列控件 */
+function Row({
+  name,
+  desc,
+  className,
+  dataKey,
+  children
+}: {
+  name: ReactNode
+  desc?: string
+  className?: string
+  /** e2e 定位锚点（agent 行等），透传到行根元素 */
+  dataKey?: string
+  children?: ReactNode
+}) {
+  return (
+    <div className={'settings-row' + (className ? ' ' + className : '')} data-key={dataKey}>
+      <div className="settings-info">
+        <div className="settings-name">{name}</div>
+        {desc && <div className="settings-desc">{desc}</div>}
+      </div>
+      <div className="settings-ctrl">{children}</div>
+    </div>
+  )
+}
+
+/** 滑块开关行：原生 checkbox 承载语义/键盘/e2e 契约（data-setting + click），视觉为 switch */
+function ToggleRow({
+  name,
+  desc,
+  className,
+  dataKey,
+  input,
+  trailing
+}: {
+  name: ReactNode
+  desc?: string
+  className?: string
+  dataKey?: string
+  input: ReactNode
+  /** 排在开关之后的行内内容（agent 行的检测状态文字等） */
+  trailing?: ReactNode
+}) {
+  return (
+    <Row name={name} desc={desc} className={className} dataKey={dataKey}>
+      <label className="settings-checkbox">
+        {input}
+        <span className="switch" aria-hidden="true" />
+        {trailing}
+      </label>
+    </Row>
+  )
+}
+
+/** 补充说明行：与控件列对齐的小字 */
+function Note({ children }: { children: ReactNode }) {
+  return (
+    <div className="settings-note">
+      <span>{children}</span>
+    </div>
+  )
+}
+
+/** 开关 input 工厂：data-setting 是 e2e 的驱动锚点，不可省 */
+function toggleInput(settingKey: string, checked: boolean, onChange: (v: boolean) => void) {
+  return (
+    <input
+      type="checkbox"
+      data-setting={settingKey}
+      checked={checked}
+      onChange={(e) => onChange(e.target.checked)}
+    />
+  )
+}
 
 interface Props {
   settings: AppSettings
@@ -199,338 +288,289 @@ export function SettingsPage({
               data-key={`nav-${item.key}`}
               onClick={() => setSection(item.key)}
             >
+              <span className="nav-icon" aria-hidden="true">
+                {item.icon}
+              </span>
               {item.label}
             </div>
           ))}
         </nav>
         {section === 'appearance' && (
           <div className="settings-panel">
-            <div className="settings-section">外观</div>
-            <div className="settings-row">
-              <label className="settings-label">主题</label>
-              <select
-                className="settings-select"
-                value={settings.theme}
-                onChange={(e) => onChange({ theme: e.target.value as AppSettings['theme'] })}
-              >
-                <option value="dark">深色</option>
-                <option value="light">浅色</option>
-                <option value="system">跟随系统</option>
-              </select>
-              <span className="settings-hint">跟随系统时随系统深色模式自动切换</span>
-            </div>
-            {/* 两行配色选择必须排在「主题」select 之后：e2e 的 __e2eTheme 取
-                面板里第一个 .settings-select，DOM 顺序即契约 */}
-            <div className="settings-row">
-              <label className="settings-label">深色配色</label>
-              <select
-                className="settings-select"
-                data-setting="darkTheme"
-                value={settings.darkTheme}
-                onChange={(e) => onChange({ darkTheme: e.target.value })}
-              >
-                {schemeOptions('dark', settings.darkTheme).map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-              <span className="settings-hint">深色模式（含系统深）时生效，自定义主题放 ~/.config/term-manager/themes/</span>
-            </div>
-            <div className="settings-row">
-              <label className="settings-label">浅色配色</label>
-              <select
-                className="settings-select"
-                data-setting="lightTheme"
-                value={settings.lightTheme}
-                onChange={(e) => onChange({ lightTheme: e.target.value })}
-              >
-                {schemeOptions('light', settings.lightTheme).map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-              <span className="settings-hint">浅色模式（含系统浅）时生效，方案未声明的字段继承内建</span>
-            </div>
-            <div className="settings-row">
-              <label className="settings-label">字体</label>
-              <select
-                className="settings-select"
-                value={settings.fontFamily}
-                onChange={(e) => onChange({ fontFamily: e.target.value })}
-              >
-                <option value="">自动（Nerd Font 优先）</option>
-                {fontOptions.map((f) => (
-                  <option key={f} value={f}>
-                    {f}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="settings-row">
-              <label className="settings-label">字号</label>
-              <div className="stepper">
-                <button
-                  onClick={() => stepSize(-1)}
-                  disabled={settings.fontSize <= FONT_SIZE_MIN}
-                  title="减小"
-                >
-                  −
-                </button>
-                <input
-                  type="number"
-                  min={FONT_SIZE_MIN}
-                  max={FONT_SIZE_MAX}
-                  value={sizeDraft}
-                  onChange={(e) => setSizeDraft(e.target.value)}
-                  onBlur={commitSize}
-                  onKeyDown={(e) => {
-                    // Enter 直接提交（不经 blur→onBlur 链——提交语义不应依赖
-                    // input 持有焦点）；随后 blur 维持「Enter 后离开输入框」的
-                    // 原有手感，onBlur 幂等重复提交无害
-                    if (e.key === 'Enter') {
-                      commitSize()
-                      ;(e.target as HTMLInputElement).blur()
-                    }
-                  }}
+            <div className="settings-content">
+              <Group title="外观">
+                <Row name="主题" desc="跟随系统时随系统深色模式自动切换">
+                  {/* 两行配色选择必须排在「主题」select 之后：e2e 的 __e2eTheme 取
+                      面板里第一个 .settings-select，DOM 顺序即契约 */}
+                  <select
+                    className="settings-select"
+                    value={settings.theme}
+                    onChange={(e) => onChange({ theme: e.target.value as AppSettings['theme'] })}
+                  >
+                    <option value="dark">深色</option>
+                    <option value="light">浅色</option>
+                    <option value="system">跟随系统</option>
+                  </select>
+                </Row>
+                <Row name="深色配色" desc="深色模式（含系统深）时生效，自定义主题放 ~/.config/term-manager/themes/">
+                  <select
+                    className="settings-select"
+                    data-setting="darkTheme"
+                    value={settings.darkTheme}
+                    onChange={(e) => onChange({ darkTheme: e.target.value })}
+                  >
+                    {schemeOptions('dark', settings.darkTheme).map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </Row>
+                <Row name="浅色配色" desc="浅色模式（含系统浅）时生效，方案未声明的字段继承内建">
+                  <select
+                    className="settings-select"
+                    data-setting="lightTheme"
+                    value={settings.lightTheme}
+                    onChange={(e) => onChange({ lightTheme: e.target.value })}
+                  >
+                    {schemeOptions('light', settings.lightTheme).map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </Row>
+                <Row name="字体">
+                  <select
+                    className="settings-select"
+                    value={settings.fontFamily}
+                    onChange={(e) => onChange({ fontFamily: e.target.value })}
+                  >
+                    <option value="">自动（Nerd Font 优先）</option>
+                    {fontOptions.map((f) => (
+                      <option key={f} value={f}>
+                        {f}
+                      </option>
+                    ))}
+                  </select>
+                </Row>
+                <Row name="字号" desc={`像素（${FONT_SIZE_MIN}–${FONT_SIZE_MAX}）`}>
+                  <div className="stepper">
+                    <button
+                      onClick={() => stepSize(-1)}
+                      disabled={settings.fontSize <= FONT_SIZE_MIN}
+                      title="减小"
+                    >
+                      −
+                    </button>
+                    <input
+                      type="number"
+                      min={FONT_SIZE_MIN}
+                      max={FONT_SIZE_MAX}
+                      value={sizeDraft}
+                      onChange={(e) => setSizeDraft(e.target.value)}
+                      onBlur={commitSize}
+                      onKeyDown={(e) => {
+                        // Enter 直接提交（不经 blur→onBlur 链——提交语义不应依赖
+                        // input 持有焦点）；随后 blur 维持「Enter 后离开输入框」的
+                        // 原有手感，onBlur 幂等重复提交无害
+                        if (e.key === 'Enter') {
+                          commitSize()
+                          ;(e.target as HTMLInputElement).blur()
+                        }
+                      }}
+                    />
+                    <button
+                      onClick={() => stepSize(1)}
+                      disabled={settings.fontSize >= FONT_SIZE_MAX}
+                      title="增大"
+                    >
+                      +
+                    </button>
+                  </div>
+                </Row>
+                <Row name="预览" className="preview-row">
+                  <div
+                    className="preview"
+                    style={{
+                      fontFamily: resolveFontStack(settings.fontFamily),
+                      fontSize: settings.fontSize
+                    }}
+                  >
+                    <div>{PREVIEW_TEXT}</div>
+                    <div>{PREVIEW_GLYPHS}</div>
+                  </div>
+                </Row>
+              </Group>
+              <Group title="布局">
+                <ToggleRow
+                  name="分组侧栏"
+                  desc="左侧显示「组 → 标签」树形面板并隐藏顶部标签栏，适合大量标签时导航与管理"
+                  input={toggleInput('sidebarVisible', settings.sidebarVisible, (v) =>
+                    onChange({ sidebarVisible: v })
+                  )}
                 />
-                <button
-                  onClick={() => stepSize(1)}
-                  disabled={settings.fontSize >= FONT_SIZE_MAX}
-                  title="增大"
-                >
-                  +
-                </button>
-              </div>
-              <span className="settings-hint">
-                像素（{FONT_SIZE_MIN}–{FONT_SIZE_MAX}）
-              </span>
-            </div>
-            <div className="settings-row preview-row">
-              <label className="settings-label">预览</label>
-              <div
-                className="preview"
-                style={{
-                  fontFamily: resolveFontStack(settings.fontFamily),
-                  fontSize: settings.fontSize
-                }}
-              >
-                <div>{PREVIEW_TEXT}</div>
-                <div>{PREVIEW_GLYPHS}</div>
-              </div>
-            </div>
-            <div className="settings-section">布局</div>
-            <div className="settings-row">
-              <label className="settings-label">分组侧栏</label>
-              <label className="settings-checkbox">
-                <input
-                  type="checkbox"
-                  data-setting="sidebarVisible"
-                  checked={settings.sidebarVisible}
-                  onChange={(e) => onChange({ sidebarVisible: e.target.checked })}
-                />
-                <span>左侧显示「组 → 标签」树形面板并隐藏顶部标签栏，适合大量标签时导航与管理</span>
-              </label>
-            </div>
-            <div className="settings-row">
-              <span className="settings-hint">
-                随时可用 Ctrl+Shift+B 或标签栏左缘按钮切换，开关状态跨重启保留
-              </span>
+                <Note>随时可用 Ctrl+Shift+B 或标签栏左缘按钮切换，开关状态跨重启保留</Note>
+              </Group>
             </div>
           </div>
         )}
         {section === 'terminal' && (
           <div className="settings-panel">
-            <div className="settings-section">默认终端</div>
-            <div className="settings-row">
-              <label className="settings-label">默认终端</label>
-              <select
-                className="settings-select"
-                value={settings.defaultProfileId}
-                onChange={(e) => onChange({ defaultProfileId: e.target.value })}
-              >
-                <option value="">未设置</option>
-                {profileOptions.map((p) => (
-                  <option key={p.id} value={p.id} disabled={p.available === false}>
-                    {p.name}
-                    {p.available === false ? '（未安装）' : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="settings-row">
-              <span className="settings-hint">
-                设置后点击 + 直接以此新建标签页，+ 旁的箭头仍可选择其他 shell；未设置时 + 打开菜单
-              </span>
-            </div>
-            <div className="settings-section">组内广播</div>
-            <div className="settings-row">
-              <label className="settings-label">广播输入到全组</label>
-              <label className="settings-checkbox">
-                <input
-                  type="checkbox"
-                  data-setting="groupBroadcast"
-                  checked={settings.groupBroadcast}
-                  onChange={(e) => onChange({ groupBroadcast: e.target.checked })}
+            <div className="settings-content">
+              <Group title="默认终端">
+                <Row name="默认终端">
+                  <select
+                    className="settings-select"
+                    value={settings.defaultProfileId}
+                    onChange={(e) => onChange({ defaultProfileId: e.target.value })}
+                  >
+                    <option value="">未设置</option>
+                    {profileOptions.map((p) => (
+                      <option key={p.id} value={p.id} disabled={p.available === false}>
+                        {p.name}
+                        {p.available === false ? '（未安装）' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </Row>
+                <Note>设置后点击 + 直接以此新建标签页，+ 旁的箭头仍可选择其他 shell；未设置时 + 打开菜单</Note>
+              </Group>
+              <Group title="组内广播">
+                <ToggleRow
+                  name="广播输入到全组"
+                  desc="开启后组头出现广播开关：广播中的组，任一标签的键盘输入（含粘贴）会同时发往组内全部终端"
+                  input={toggleInput('groupBroadcast', settings.groupBroadcast, (v) =>
+                    onChange({ groupBroadcast: v })
+                  )}
                 />
-                <span>开启后组头出现广播开关：广播中的组，任一标签的键盘输入（含粘贴）会同时发往组内全部终端</span>
-              </label>
-            </div>
-            <div className="settings-row">
-              <span className="settings-hint">
-                广播态不跨退出保留（重启即复位）。多终端同步输入密码或删除类命令前请先确认键盘落点
-              </span>
-            </div>
-            <div className="settings-section">渲染</div>
-            <div className="settings-row">
-              <label className="settings-label">GPU 渲染（WebGL）</label>
-              <label className="settings-checkbox">
-                <input
-                  type="checkbox"
-                  data-setting="gpuRendering"
-                  checked={settings.gpuRendering}
-                  onChange={(e) => onChange({ gpuRendering: e.target.checked })}
+                <Note>广播态不跨退出保留（重启即复位）。多终端同步输入密码或删除类命令前请先确认键盘落点</Note>
+              </Group>
+              <Group title="渲染">
+                <ToggleRow
+                  name="GPU 渲染（WebGL）"
+                  desc="终端用 WebGL 加速绘制，滚动与高频输出的流畅度更好；即时生效，无需重开标签"
+                  input={toggleInput('gpuRendering', settings.gpuRendering, (v) =>
+                    onChange({ gpuRendering: v })
+                  )}
                 />
-                <span>终端用 WebGL 加速绘制，滚动与高频输出的流畅度更好；即时生效，无需重开标签</span>
-              </label>
-            </div>
-            <div className="settings-row">
-              <span className="settings-hint">
-                不可用（驱动不支持/被禁用）或运行中图形上下文丢失时自动回退常规 DOM 渲染，功能不受影响；关闭则一律 DOM 渲染
-              </span>
-            </div>
-            <div className="settings-section">剪贴板</div>
-            <div className="settings-row">
-              <label className="settings-label">终端程序写剪贴板（OSC 52）</label>
-              <label className="settings-checkbox">
-                <input
-                  type="checkbox"
-                  data-setting="osc52Copy"
-                  checked={settings.osc52Copy}
-                  onChange={(e) => onChange({ osc52Copy: e.target.checked })}
+                <Note>
+                  不可用（驱动不支持/被禁用）或运行中图形上下文丢失时自动回退常规 DOM 渲染，功能不受影响；关闭则一律
+                  DOM 渲染
+                </Note>
+              </Group>
+              <Group title="剪贴板">
+                <ToggleRow
+                  name="终端程序写剪贴板（OSC 52）"
+                  desc="允许终端内程序（含 ssh 远端经转发到达的序列）把文本写入系统剪贴板——ssh 远程复制的主通路；即时生效"
+                  input={toggleInput('osc52Copy', settings.osc52Copy, (v) => onChange({ osc52Copy: v }))}
                 />
-                <span>允许终端内程序（含 ssh 远端经转发到达的序列）把文本写入系统剪贴板——ssh 远程复制的主通路；即时生效</span>
-              </label>
-            </div>
-            <div className="settings-row">
-              <span className="settings-hint">
-                单次上限 1MB；读取剪贴板（OSC 52 查询）一律不响应，剪贴板内容不外流
-              </span>
-            </div>
-            <div className="settings-section">会话</div>
-            <div className="settings-row">
-              <label className="settings-label">退出时保留会话</label>
-              <label className="settings-checkbox">
-                <input
-                  type="checkbox"
-                  data-setting="keepSessionOnExit"
-                  checked={settings.keepSessionOnExit}
-                  onChange={(e) => onChange({ keepSessionOnExit: e.target.checked })}
+                <Note>单次上限 1MB；读取剪贴板（OSC 52 查询）一律不响应，剪贴板内容不外流</Note>
+              </Group>
+              <Group title="会话">
+                <ToggleRow
+                  name="退出时保留会话"
+                  desc="关闭窗口后终端与正在运行的任务继续存活，下次启动自动恢复标签、固定/分组与屏幕内容"
+                  input={toggleInput('keepSessionOnExit', settings.keepSessionOnExit, (v) =>
+                    onChange({ keepSessionOnExit: v })
+                  )}
                 />
-                <span>关闭窗口后终端与正在运行的任务继续存活，下次启动自动恢复标签、固定/分组与屏幕内容</span>
-              </label>
-            </div>
-            <div className="settings-row">
-              <span className="settings-hint">
-                关闭后可用 Ctrl+Shift+Q 一次性终结全部会话再退出
-              </span>
+                <Note>关闭后可用 Ctrl+Shift+Q 一次性终结全部会话再退出</Note>
+              </Group>
             </div>
           </div>
         )}
         {section === 'agents' && (
           <div className="settings-panel">
-            <div className="settings-section">已识别的 AI Agent</div>
-            {agentsList
-              .filter((a) => a.builtIn)
-              .map((a) => (
-                <div className="settings-row agent-row" data-key={`agent-${a.id}`} key={a.id}>
-                  <label className="settings-label">{a.name}</label>
-                  <label className="settings-checkbox">
-                    <input
-                      type="checkbox"
-                      data-setting={`agent-visible-${a.id}`}
-                      checked={!settings.hiddenAgents.includes(a.id)}
-                      onChange={(e) =>
+            <div className="settings-content">
+              <Group title="已识别的 AI Agent">
+                {agentsList
+                  .filter((a) => a.builtIn)
+                  .map((a) => (
+                    <ToggleRow
+                      key={a.id}
+                      className="agent-row"
+                      dataKey={`agent-${a.id}`}
+                      name={a.name}
+                      input={toggleInput(`agent-visible-${a.id}`, !settings.hiddenAgents.includes(a.id), (v) =>
                         onChange({
-                          hiddenAgents: e.target.checked
+                          hiddenAgents: v
                             ? settings.hiddenAgents.filter((x) => x !== a.id)
                             : [...settings.hiddenAgents, a.id]
                         })
+                      )}
+                      trailing={
+                        <span className="agent-status" title={a.resolvedPath ?? undefined}>
+                          {a.available
+                            ? `已检测到${a.resolvedPath ? ' · ' + a.resolvedPath : ''}`
+                            : a.usedHint
+                              ? '检测到使用痕迹但未找到命令'
+                              : '未检测到'}
+                        </span>
                       }
                     />
-                    <span className="agent-status" title={a.resolvedPath ?? undefined}>
-                      {a.available
-                        ? `已检测到${a.resolvedPath ? ' · ' + a.resolvedPath : ''}`
-                        : a.usedHint
-                          ? '检测到使用痕迹但未找到命令'
-                          : '未检测到'}
-                    </span>
-                  </label>
+                  ))}
+                <Note>打开右键菜单时自动重新检测（无需重启）；关闭开关 = 从「启动 AI Agent」子菜单隐藏</Note>
+              </Group>
+              <Group title="自定义 Agent">
+                {customDrafts.map((d, i) => (
+                  <div className="agent-custom-row" data-id={d.id} key={d.id}>
+                    <input
+                      className="agent-name-input"
+                      placeholder="名称"
+                      value={d.name}
+                      onChange={(e) =>
+                        setCustomDrafts((ds) => ds.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))
+                      }
+                      onBlur={commitCustom}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          commitCustom()
+                          ;(e.target as HTMLInputElement).blur()
+                        }
+                      }}
+                    />
+                    <input
+                      className="agent-cmd-input"
+                      placeholder="命令及参数，空格分隔"
+                      value={d.cmd}
+                      onChange={(e) =>
+                        setCustomDrafts((ds) => ds.map((x, j) => (j === i ? { ...x, cmd: e.target.value } : x)))
+                      }
+                      onBlur={commitCustom}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          commitCustom()
+                          ;(e.target as HTMLInputElement).blur()
+                        }
+                      }}
+                    />
+                    <button className="agent-btn danger" title="删除" onClick={() => removeCustom(i)}>
+                      删除
+                    </button>
+                  </div>
+                ))}
+                <div className="agent-add-row">
+                  <button
+                    className="agent-btn agent-add"
+                    onClick={() => setCustomDrafts((ds) => [...ds, { id: newCustomId(), name: '', cmd: '' }])}
+                  >
+                    ＋ 添加自定义 Agent
+                  </button>
                 </div>
-              ))}
-            <div className="settings-row">
-              <span className="settings-hint">
-                打开右键菜单时自动重新检测（无需重启）；取消勾选 = 从「启动 AI Agent」子菜单隐藏
-              </span>
-            </div>
-            <div className="settings-section">自定义 Agent</div>
-            {customDrafts.map((d, i) => (
-              <div className="agent-custom-row" data-id={d.id} key={d.id}>
-                <input
-                  className="agent-name-input"
-                  placeholder="名称"
-                  value={d.name}
-                  onChange={(e) =>
-                    setCustomDrafts((ds) => ds.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))
-                  }
-                  onBlur={commitCustom}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      commitCustom()
-                      ;(e.target as HTMLInputElement).blur()
-                    }
-                  }}
-                />
-                <input
-                  className="agent-cmd-input"
-                  placeholder="命令及参数，空格分隔"
-                  value={d.cmd}
-                  onChange={(e) =>
-                    setCustomDrafts((ds) => ds.map((x, j) => (j === i ? { ...x, cmd: e.target.value } : x)))
-                  }
-                  onBlur={commitCustom}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      commitCustom()
-                      ;(e.target as HTMLInputElement).blur()
-                    }
-                  }}
-                />
-                <button className="agent-btn danger" title="删除" onClick={() => removeCustom(i)}>
-                  删除
-                </button>
-              </div>
-            ))}
-            <div className="settings-row">
-              <button
-                className="agent-btn agent-add"
-                onClick={() => setCustomDrafts((ds) => [...ds, { id: newCustomId(), name: '', cmd: '' }])}
-              >
-                ＋ 添加自定义 Agent
-              </button>
-            </div>
-            <div className="settings-row">
-              <span className="settings-hint">
-                名称与命令在失焦或 Enter 时保存；命令字符集限于字母数字与 _ . / = , : @ % + -
-                （禁引号与元字符）。自定义条目同时出现在应用内右键子菜单与系统文件管理器右键的 AI Agent 子菜单
-              </span>
+                <Note>
+                  名称与命令在失焦或 Enter 时保存；命令字符集限于字母数字与 _ . / = , : @ % + -
+                  （禁引号与元字符）。自定义条目同时出现在应用内右键子菜单与系统文件管理器右键的 AI Agent 子菜单
+                </Note>
+              </Group>
             </div>
           </div>
         )}
         {section === 'plugins' && (
           <div className="settings-panel">
-            <PluginManager infos={pluginInfos} onChanged={onPluginsChanged} />
+            <div className="settings-content">
+              <PluginManager infos={pluginInfos} onChanged={onPluginsChanged} />
+            </div>
           </div>
         )}
       </div>

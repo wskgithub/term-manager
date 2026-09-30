@@ -395,6 +395,17 @@ write, and the read direction (the `?` query) is never answered — your clipboa
 flows out to a program. A settings toggle (Terminal page, on by default) disables the
 whole pathway.
 
+## Drag-and-drop file paths
+
+Drop a file (or a multi-selection) from the file manager onto a terminal and its
+absolute path is inserted at the cursor as a quoted argument — the same convenience as
+GNOME Terminal. Each path is single-quoted POSIX-style (`'/home/user/my file.txt'`; an
+embedded `'` becomes `'\''`), so spaces, glob characters and command substitution stay
+literal; multiple files are joined with spaces. The insert goes through the terminal's
+paste path: under bracketed-paste mode it lands on the command line as plain text
+without executing, and a broadcast group receives it like any other input. Only file
+drops are claimed — the tab/sidebar drag-and-drop reorder is unaffected.
+
 ## Split panes
 
 `Ctrl+Shift+D` splits the active pane side by side, `Ctrl+Shift+E` stacks it (iTerm

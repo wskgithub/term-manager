@@ -1049,6 +1049,215 @@ async function runInputSequence(win: BrowserWindow): Promise<void> {
   }
 }
 
+// ── IME 提交回归（--e2e-ime）：中文标点/词组经 xterm 原样到达 shell ──
+// 修复背景：xterm 5.5 在 keydown 即把 ev.key 发给 PTY 并 preventDefault，对
+// Linux IME 提交是双重破坏——fcitx 无预编辑标点（句号/逗号/顿号）的事件形态
+// 是 keydown(原键 '.') + keypress('。')，词组整词提交是 keydown(Process/229) +
+// input(insertText)，keydown 抢发 ASCII 原键还把这两条通路掐断，实测中文标点
+// 全部变成英文。修复：TermView 的 customKeyEventHandler 让无修饰可打印键离开
+// keydown 通道（字符统一经 keypress / 229 差量发送）。本套件用 CDP debugger
+// 合成与真实 IME 同形的事件流（无 GUI 输入法依赖，无头 CI 可跑）：
+// 标点形态 keyDown(原键)+char(中文)、词组形态 keyDown(Process)+insertText、
+// 并断言英文 keyDown+char 不再双发（xterm keydown 抢发与 char 的 keypress
+// 各发一份，同根源被让位一并消除）
+async function runImeSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string): Promise<T> =>
+    JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_IME ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+
+  await js('window.__e2eStart(1)')
+  await waitUntil(
+    async () => await json<boolean>('window.__e2e && window.__e2e.done && window.__e2e.created >= 1'),
+    60000
+  )
+  // 打字目标：__e2eStart 新建标签（terms 顺序 idx 1，裸启动标签为 0）
+  const paneHas = (sub: string) => json<boolean>(`window.__e2ePaneHas(1, ${JSON.stringify(sub)})`)
+
+  // 新建标签自动聚焦终端；CDP 注入走 webContents 焦点元素，先锚定
+  const s0 = await json<{ focused: number; ae: string }>('window.__e2eInputState()')
+  check(
+    'ime-focus',
+    s0.focused === 1 && s0.ae.includes('xterm-helper-textarea'),
+    JSON.stringify(s0)
+  )
+
+  // CDP debugger 与真实键盘/IME 同形（sendInputEvent 对无 vkCode 键派发的
+  // DOM 事件 key/code 全空，方向键套件同款结论，这里统一走 debugger）
+  const dbg = win.webContents.debugger
+  try {
+    dbg.attach('1.3')
+  } catch {
+    // 已附着
+  }
+  const key = (params: Record<string, unknown>) => dbg.sendCommand('Input.dispatchKeyEvent', params)
+
+  // 1) 中文标点（B 形态）：keyDown 携带原键（fcitx 转换前的 ASCII），char
+  //    携带转换后的全角字符。修复前 keydown 抢发 '.'，shell 行出现 ASCII
+  const punctKeys = [
+    { ascii: '.', code: 'Period', vk: 190, cjk: '。' },
+    { ascii: ',', code: 'Comma', vk: 188, cjk: '，' },
+    { ascii: '\\', code: 'Backslash', vk: 220, cjk: '、' }
+  ]
+  for (const k of punctKeys) {
+    await key({ type: 'keyDown', key: k.ascii, code: k.code, windowsVirtualKeyCode: k.vk })
+    await key({ type: 'char', text: k.cjk })
+    await key({ type: 'keyUp', key: k.ascii, code: k.code, windowsVirtualKeyCode: k.vk })
+  }
+  await delay(400)
+  check('ime-punct', await waitUntil(() => paneHas('。，、'), 6000), '中文标点应原样到达 shell')
+  check(
+    'ime-punct-no-ascii',
+    !(await waitUntil(() => paneHas('.\\\\,'), 600)),
+    '原键 ASCII 序列不应进 shell'
+  )
+
+  // 2) IME 文本提交通路：insertText 直接注入（xterm _inputEvent 路径，无
+  //    keydown 前缀时接受）。真实 fcitx 的词组形态是 keydown(Process/229)+
+  //    input(insertText)，由 CompositionHelper 的 value 差量发送——依赖其
+  //    内部 setTimeout(0) 与紧凑事件流的相对时序，CDP 命令的 IPC 间隔无法
+  //    稳定复现（真实 IME 下已多轮实测 '世界' 完整到达），此处回归提交通路
+  //    本身可达
+  await dbg.sendCommand('Input.insertText', { text: '世界' })
+  await delay(400)
+  check('ime-word', await waitUntil(() => paneHas('世界'), 6000), 'IME 文本提交应到达 shell')
+
+  // 3) Enter（命名键不让位）提交命令行，回显行进入 scrollback
+  await key({ type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+  await key({ type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+  await delay(300)
+
+  // 4) 英文 keyDown+char：单份到达。修复前 xterm keydown 与 char 的 keypress
+  //    各发一份（'qz..' 双发成 'qqzz..'）；前缀 qz 保证双发形态不与原文重叠
+  const em = 'qz' + randomUUID().slice(0, 5)
+  for (const ch of em) {
+    const vk = ch.toUpperCase().charCodeAt(0)
+    await key({ type: 'keyDown', key: ch, code: `Key${ch.toUpperCase()}`, windowsVirtualKeyCode: vk })
+    await key({ type: 'char', text: ch })
+    await key({ type: 'keyUp', key: ch, code: `Key${ch.toUpperCase()}`, windowsVirtualKeyCode: vk })
+  }
+  await delay(400)
+  check('ime-ascii', await waitUntil(() => paneHas(em), 6000), '英文应到达 shell')
+  check('ime-ascii-single', !(await waitUntil(() => paneHas('qqzz'), 600)), '英文不应双发')
+
+  // 5) Ctrl+U（zsh 行编辑清行）验证 ctrl 组合不让位：仍走 xterm keydown 原
+  //    路径发送 0x15。Ctrl+C 不适用——无自定义菜单时 Electron 默认菜单的
+  //    copy accelerator 在 browser 层消费该组合，DOM 事件到不了 textarea
+  //    （与让位修复无关的既有环境行为，真实按键同为 [Control] 后无 c）
+  await delay(200)
+  const um = 'zx' + randomUUID().slice(0, 4)
+  for (const ch of um) {
+    await key({ type: 'char', text: ch })
+    await delay(30)
+  }
+  await delay(300)
+  await pressKey(win, 'u', ['ctrl'])
+  await delay(300)
+  for (const ch of 'ok') {
+    await key({ type: 'char', text: ch })
+    await delay(30)
+  }
+  await delay(300)
+  check(
+    'ime-ctrl-u',
+    (await waitUntil(() => paneHas('ok'), 4000)) && !(await waitUntil(() => paneHas(`${um}ok`), 600)),
+    `ctrl+u 应清行（um=${um}）`
+  )
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_IME_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  if (argvHas('--e2e-quit')) {
+    await backend.dispose()
+    app.exit(allOk ? 0 : 1)
+  }
+}
+
+// ── 文件拖入终端回归（--e2e-drop）：dragover/drop → webUtils 路径解析 →
+// 单引号转义 → term.paste 注入 ──
+// 真实 OS 级拖拽无法合成（XTest 只到 dragover、CDP 无 drop 手势，历次实测
+// 结论），套件经 __e2eDropFiles 派发携带合成 File 的 DragEvent，路径解析
+// 结果按序预置注入（dropPaths.setDropPathOverride）：合成 File 无真实拖拽
+// 元数据，webUtils.getPathForFile 只能返回空串，注入覆盖的仅是「File→路径」
+// 这一段桥接（preload 通道），drop 事件处理、转义、paste 注入、广播路由
+// 全是真实链路。另覆盖非文件拖拽（纯文本 dataTransfer）安全忽略与注入后
+// 焦点归位
+async function runDropSequence(win: BrowserWindow): Promise<void> {
+  const js = <T,>(expr: string): Promise<T> =>
+    win.webContents.executeJavaScript(expr, true) as Promise<T>
+  const json = async <T,>(expr: string): Promise<T> =>
+    JSON.parse(await js<string>(`JSON.stringify(${expr})`))
+  const results: string[] = []
+  const check = (name: string, ok: boolean, extra = ''): void => {
+    results.push(ok ? name : `FAIL:${name}`)
+    console.log(`E2E_DROP ${name} ${ok ? 'ok' : 'FAIL'}${extra ? ' ' + extra : ''}`)
+  }
+  const q = (p: string) => `'${p.replaceAll("'", "'\\''")}'`
+
+  // 0) preload 桥真实可达：合成 File（无拖拽元数据）经 webUtils 解析为空串
+  //    ——真实构建的 app 里直调暴露的 pathForFiles，确认桥已暴露、可调，
+  //    且「空路径即丢弃」的过滤前提成立
+  const bridged = await json<string[]>(
+    'window.api.pathForFiles([new File(["x"], "a.txt")])'
+  )
+  check(
+    'drop-bridge',
+    Array.isArray(bridged) && bridged.length === 1 && bridged[0] === '',
+    JSON.stringify(bridged)
+  )
+
+  // 1) 引用纯函数基准：空格字面化、内嵌单引号按 POSIX '\'' 转义
+  const q1 = await js<string>(`window.__e2eQuotePath(${JSON.stringify('/tmp/a b.txt')})`)
+  check('drop-quote-basic', q1 === q('/tmp/a b.txt'), q1)
+  const q2 = await js<string>(`window.__e2eQuotePath(${JSON.stringify("/tmp/it's.txt")})`)
+  check('drop-quote-escape', q2 === q("/tmp/it's.txt"), q2)
+
+  // 2) 全链：拖两个路径（带空格 + 带单引号）进新建标签，命令行出现转义串
+  await js('window.__e2eStart(1)')
+  await waitUntil(
+    async () => await json<boolean>('window.__e2e && window.__e2e.done && window.__e2e.created >= 1'),
+    60000
+  )
+  const uid = randomUUID().slice(0, 6)
+  const p1 = `/tmp/e2e-drop-${uid}/a b.txt`
+  const p2 = `/tmp/e2e-drop-${uid}/it's.txt`
+  const expected = `${q(p1)} ${q(p2)}`
+  check('drop-dispatch', (await js<boolean>(`window.__e2eDropFiles(1, ${JSON.stringify([p1, p2])})`)) === true)
+  check(
+    'drop-multi',
+    await waitUntil(
+      () => json<boolean>(`window.__e2ePaneHas(1, ${JSON.stringify(expected)})`),
+      6000
+    ),
+    `期望命令行出现 ${expected}`
+  )
+
+  // 3) 非文件拖拽（dataTransfer 仅 text/plain）不注入
+  const txt = `DROPTEXT${uid}`
+  await js(`window.__e2eDropFiles(1, ${JSON.stringify([txt])}, true)`)
+  await delay(500)
+  check(
+    'drop-nonfile-ignored',
+    !(await json<boolean>(`window.__e2ePaneHas(1, ${JSON.stringify(txt)})`)),
+    '纯文本拖拽不应注入终端'
+  )
+
+  // 4) 注入后焦点归位目标终端
+  const st = await json<{ focused: number }>('window.__e2eInputState()')
+  check('drop-focus', st.focused === 1, JSON.stringify(st))
+
+  const allOk = !results.some((r) => r.startsWith('FAIL:'))
+  console.log('E2E_DROP_RESULT ' + JSON.stringify({ ok: allOk, results }))
+  if (argvHas('--e2e-quit')) {
+    await backend.dispose()
+    app.exit(allOk ? 0 : 1)
+  }
+}
+
 // ── 终端查找回归（--e2e-search）：Ctrl+Shift+F 真实快捷键通路（sendInputEvent
 // 可信事件）开合与再聚焦、匹配计数与 Enter/Shift+Enter 跳转、匹配点埋进
 // scrollback 的滚动定位、大小写/正则开关、无匹配文案、Esc 关闭归还焦点（打字
@@ -4146,6 +4355,8 @@ const themesE2E = __E2E__ ? argvHas('--e2e-themes') : false
 const pluginsE2E = __E2E__ ? argvHas('--e2e-plugins') : false
 const codePluginsE2E = __E2E__ ? argvHas('--e2e-code-plugins') : false
 const agentsE2E = __E2E__ ? argvHas('--e2e-agents') : false
+const imeE2E = __E2E__ ? argvHas('--e2e-ime') : false
+const dropE2E = __E2E__ ? argvHas('--e2e-drop') : false
 const webglE2E = __E2E__ ? argvHas('--e2e-webgl') || argvHas('--e2e-webgl-fallback') : false
 const isolatedRun =
   argvHas('--smoke') ||
@@ -4161,6 +4372,8 @@ const isolatedRun =
   pluginsE2E ||
   codePluginsE2E ||
   agentsE2E ||
+  imeE2E ||
+  dropE2E ||
   webglE2E ||
   sessionE2E !== undefined ||
   keepE2E !== undefined
@@ -4549,6 +4762,8 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
           pluginsE2E ||
           codePluginsE2E ||
           agentsE2E ||
+          imeE2E ||
+          dropE2E ||
           webglE2E ||
           keepE2E) &&
         mainWindow
@@ -4581,6 +4796,8 @@ if (!isolatedRun && !app.requestSingleInstanceLock({ openDir: cliOpenDir ?? null
               else if (pluginsE2E) await runPluginsSequence(win)
               else if (codePluginsE2E) await runCodePluginsSequence(win)
               else if (agentsE2E) await runAgentsSequence(win)
+              else if (imeE2E) await runImeSequence(win)
+              else if (dropE2E) await runDropSequence(win)
               else if (webglE2E) await runWebglSequence(win)
               else if (keepE2E === 'seed') await runKeepSeedSequence(win)
               else if (keepE2E === 'open') await runKeepOpenSequence(win)

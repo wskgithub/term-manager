@@ -1,5 +1,6 @@
 import type { Terminal } from '@xterm/xterm'
 import { api, type Profile, type TabGroup, type TermInfo } from './api'
+import { quotePath, setDropPathOverride } from './dropPaths'
 
 interface E2EState {
   created: number
@@ -455,6 +456,37 @@ export function setupE2E(ctx: E2ECtx): void {
     return true
   }
 
+  /** 文件拖入终端回归（--e2e-drop）：向第 paneIdx 个 .term-pane 派发合成
+      dragover+drop，DataTransfer 携带与 paths 等量的合成 File。合成 File 无
+      真实拖拽元数据（webUtils 取不到路径），派发前按序预置解析结果
+      （setDropPathOverride），事件同步派发完即复位；textOnly=true 模拟
+      非文件拖拽（仅 text/plain，无 Files）断言被安全忽略 */
+  w.__e2eDropFiles = (paneIdx: number, paths: string[], textOnly = false) => {
+    const pane = document.querySelectorAll<HTMLElement>('.term-pane')[paneIdx]
+    if (!pane) return false
+    const dt = new DataTransfer()
+    if (textOnly) {
+      dt.setData('text/plain', paths[0] ?? 'plain-text-drag')
+    } else {
+      for (const p of paths) {
+        dt.items.add(new File([new Uint8Array([0])], p.split('/').pop() ?? 'f'))
+      }
+      setDropPathOverride(paths)
+    }
+    try {
+      pane.dispatchEvent(
+        new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt })
+      )
+      pane.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }))
+    } finally {
+      setDropPathOverride(null)
+    }
+    return true
+  }
+
+  // 单引号引用纯函数直断（--e2e-drop 的转义基准）
+  w.__e2eQuotePath = (p: string) => quotePath(p)
+
 
   // ── 真实输入回归探针（--e2e-input，主进程用 sendInputEvent 派可信事件驱动）──
 
@@ -530,6 +562,18 @@ export function setupE2E(ctx: E2ECtx): void {
       if ((b.getLine(i)?.translateToString(true) ?? '').includes(sub)) return true
     }
     return false
+  }
+
+  /** 第 idx 个终端的 buffer 尾部若干行（e2e 失败时的实况诊断） */
+  w.__e2ePaneTail = (idx: number, lines = 6) => {
+    const t = termsInOrder()[idx]
+    if (!t) return ''
+    const b = t.buffer.active
+    const out: string[] = []
+    for (let i = Math.max(0, b.length - lines); i < b.length; i++) {
+      out.push(b.getLine(i)?.translateToString(true) ?? '')
+    }
+    return out.join('\n')
   }
 
   /** 链接回归：定位 sub 在活跃终端 buffer 里的行/列并换算成窗口点击坐标。

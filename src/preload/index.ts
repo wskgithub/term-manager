@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AgentEntry,
   AppSettings,
@@ -83,6 +83,10 @@ const api = {
   },
   writeClipboard: (text: string): void => ipcRenderer.send('clipboard:write', text),
   readClipboard: (): Promise<string> => ipcRenderer.invoke('clipboard:read'),
+  // 文件拖入终端取绝对路径：Electron 32 起 File.path 已移除，渲染层唯一合法
+  // 通道是 webUtils.getPathForFile（须在 preload 调用，File 对象可跨桥传入）。
+  // 拖拽元数据缺失的合成 File 返回空串（由调用方过滤）
+  pathForFiles: (files: File[]): string[] => files.map((f) => webUtils.getPathForFile(f)),
   // 终端里点击的链接交给系统浏览器（主进程 http/https 白名单，file:// 等拒绝）
   openExternal: (url: string): void => ipcRenderer.send('shell:openExternal', url),
   onData: (cb: (id: string, data: string) => void): (() => void) => {

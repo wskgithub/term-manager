@@ -7,6 +7,22 @@ All notable changes to Term Manager are documented in this file.
 
 ### English
 
+- **UI polish pass**: three related refinements. (1) The command palette
+  (Ctrl+Shift+P) no longer appears to slide in from the right: its centering used
+  `left:50% + translateX(-50%)`, but the pop-in keyframes take over `transform`
+  entirely, so the centering offset was dropped during the animation and the panel
+  jumped back to center afterwards — it now centers via `margin-inline:auto` on a
+  fixed-width box, leaving `transform` free for the animation. (2) The Settings
+  page is restyled: grouped cards with accent-marked section titles, a two-column
+  row grid (setting name + description on the left, control on the right, notes
+  aligned under the control column), an iconed navigation rail, and modern
+  controls — custom select chevrons, slide switches, a unified stepper. (3) Shared
+  UI language across surfaces: one radius scale (floating panels/cards 10px,
+  controls 8px, compact bar widgets 6px), an accent-derived focus ring for all
+  inputs and buttons, and a single neutral/primary/danger button style shared by
+  the AI-Agent, plugins, and permission-prompt areas. Switches keep the native
+  checkbox underneath (`data-setting` unchanged), so keyboard behavior and e2e
+  contracts are untouched.
 - **Smart session keep on exit**: closing the window no longer parks every terminal
   on tmux forever. Each tab is checked at exit for a running program or command —
   tabs whose foreground is just an idle shell prompt (no background jobs, no
@@ -52,9 +68,45 @@ All notable changes to Term Manager are documented in this file.
   local clipboard, no X forwarding). Works with zero tmux configuration; payloads are
   decode-capped at 1 MB per write, the read direction (`?` query) is never answered,
   and a settings toggle (Terminal page, on by default) disables the pathway.
+- **Fix: CJK punctuation from the input method** (，。、 etc.) was mangled or dropped —
+  on Linux/fcitx it arrived in the terminal as its raw ASCII key (`.` `,` `\`).
+  Root cause: xterm.js 5.5 sends printable characters straight from `keydown` and
+  calls `preventDefault`, but an IME's committed character travels in the events
+  *after* keydown (keypress with the converted charCode for single punctuation,
+  keydown(Process/229)+input(insertText) for whole-word commits), so the early send
+  emitted the raw key and cut off both delivery paths. The renderer now yields
+  unmodified printable keydowns to xterm's later keypress / 229-diff channels;
+  English typing, word commits, Ctrl/Alt combos, and named keys are unaffected, and
+  a long-standing duplicate-send on synthesized keyDown+char input was fixed by the
+  same change. Regression coverage lives in the new `--e2e-ime` suite (7 assertions:
+  punctuation round-trip, no raw-key leak, insertText commit, single-send English,
+  Ctrl combo passthrough).
+- **Drag-and-drop file paths**: dropping files from the file manager onto a terminal
+  inserts their absolute paths at the cursor as quoted arguments (GNOME Terminal
+  behavior): each path is single-quoted POSIX-style with embedded quotes escaped
+  (`'\''`), multiple files joined with spaces. The insert rides the terminal's paste
+  path, so under bracketed paste it lands on the command line without executing and
+  broadcast groups receive it like typed input; only file drops are claimed, the
+  tab/sidebar drag reorder is untouched. Paths resolve via `webUtils.getPathForFile`
+  in the preload (the only legal channel since Electron 32 removed `File.path`).
+  Covered by the new `--e2e-drop` suite (7 assertions) — real OS drags cannot be
+  synthesized (XTest stops at dragover, CDP has no drop gesture), so the suite
+  dispatches DragEvents carrying synthetic Files with the File→path bridge
+  pre-seeded, while drop handling, quoting, paste delivery and focus are the real
+  chain.
 
 ### 中文
 
+- **UI 打磨**：三处关联优化。其一，命令面板（Ctrl+Shift+P）不再「从右侧飞到
+  中间」：此前居中用 `left:50% + translateX(-50%)`，而 pop-in 动画的 keyframes
+  会整体接管 `transform`，动画期间居中位移被丢弃、动画结束才跳回中间；改为
+  定宽盒 `margin-inline:auto` 居中，transform 让给动画，弹出即在中位。其二，
+  设置页重排：分组卡片 + 标题左侧 accent 短竖条、两栏行栅格（左列名称/说明、
+  右列控件，补充说明与控件列对齐）、带图标的导航列，控件升级为自绘箭头下拉、
+  滑块开关、统一形态步进器。其三，全应用统一视觉语言：圆角三级刻度（浮层/卡片
+  10、控件 8、紧凑件 6）、随 accent 派生的输入/按钮焦点环、AI-Agent/插件/权限
+  弹窗共用一套中性/primary/danger 按钮语言。开关底层仍是原生 checkbox
+  （`data-setting` 不变），键盘行为与 e2e 契约不受影响。
 - **退出智能保留会话**：关闭窗口不再把所有终端永久挂在 tmux 上。退出时逐标签
   检查是否有程序或命令在执行——前台只是空闲 shell 提示符（无后台任务、无挂起
   作业）的标签立即 kill 并彻底回收（PTY、shell 及其子进程）；只有真正有程序
@@ -89,6 +141,26 @@ All notable changes to Term Manager are documented in this file.
   （远端 `vim` / `tmux copy-mode` 的复制直接落到本地剪贴板，无需 X 转发）。
   零 tmux 配置；单次写入解码上限 1MB，读方向（`?` 查询）一律不响应，设置页
   （终端页，默认开）可整体关闭。
+- **修复：输入法的中文标点**（，。、等）打不进去——Linux/fcitx 下打出来的是
+  原始英文键（`.` `,` `\`），或干脆丢失。根因：xterm.js 5.5 在 keydown 阶段
+  就把可打印字符发给 PTY 并 `preventDefault`，而 IME 提交的字符走在 keydown
+  之后的通路里（单字符标点=keypress 携带转换后的 charCode；整词提交=
+  keydown(Process/229)+input(insertText)），抢发不但把原键发进 shell，还把
+  这两条通路整个掐断。修复：渲染层让无修饰可打印键离开 keydown 通道，字符
+  统一经 xterm 的 keypress / 229 差量通路发送；英文输入、词组提交、Ctrl/Alt
+  组合、命名键（Enter/Tab/方向）不受影响，同一改动还顺带修掉了合成输入
+  （keyDown+char）双份发送的老问题。回归落在新增 `--e2e-ime` 套件
+  （7 断言：标点原样到达、原键不泄漏、insertText 提交、英文单份、Ctrl 组合
+  透传）。
+- **拖拽文件填路径**：从文件管理器把文件拖进终端，绝对路径以带引用的参数
+  插入光标处（GNOME Terminal 同款行为）：每个路径按 POSIX 风格单引号包裹、
+  内嵌单引号转义（`'\''`），多文件空格连接。插入走终端粘贴通路，bracketed
+  paste 下落到命令行不执行、广播组像普通输入一样送达；仅认领文件拖放，标签/
+  侧栏的拖拽重排不受影响。路径解析经 preload 的 `webUtils.getPathForFile`
+  （Electron 32 移除 `File.path` 后的唯一合法通道）。回归落在新增
+  `--e2e-drop` 套件（7 断言）——真实 OS 拖拽无法合成（XTest 只到 dragover、
+  CDP 无 drop 手势），套件派发携带合成 File 的 DragEvent 并按序预置
+  File→路径桥接结果，drop 处理、转义、粘贴送达与焦点全走真实链路。
 
 ## 0.3.0 — 2026-09-17
 

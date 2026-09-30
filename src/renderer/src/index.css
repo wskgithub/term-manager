@@ -24,6 +24,18 @@
   color-scheme: dark;
 }
 
+/* ── 设计令牌：全应用统一刻度，避免各处自定一套视觉语言。
+   圆角三级：lg=浮层/卡片，md=按钮/输入等控件，sm=紧凑小件（标签栏行内件）；
+   ring=键盘焦点环（随 accent 派生，深浅各自解析）；chevron=下拉自绘箭头，
+   颜色取各主题正文的中性灰阶，两个主题各给一档 ── */
+:root {
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --ring: color-mix(in srgb, var(--accent) 40%, transparent);
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23a1a5c0' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+
 :root[data-theme='light'] {
   --bg: #eff1f5;
   --bg-deep: #e6e9ef;
@@ -45,6 +57,7 @@
   --shadow-lg:
     0 16px 40px rgba(76, 79, 105, 0.28),
     0 4px 12px rgba(76, 79, 105, 0.16);
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%235b5f77' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   color-scheme: light;
 }
 
@@ -365,7 +378,7 @@ body,
   z-index: 10;
   background: var(--menu-bg);
   border: 1px solid var(--hairline);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 5px;
   box-shadow: var(--shadow-lg);
   backdrop-filter: blur(18px);
@@ -688,7 +701,7 @@ body,
   padding: 5px;
   background: var(--menu-bg);
   border: 1px solid var(--hairline);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   backdrop-filter: blur(18px);
   animation: pop-in 0.14s cubic-bezier(0.16, 1, 0.3, 1);
@@ -995,7 +1008,7 @@ body,
   bottom: 10px;
   z-index: 30;
   padding: 6px 12px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--menu-bg);
   border: 1px solid var(--hairline);
   color: #f38ba8; /* 红：Mocha/Latte 下均可用作的错误色 */
@@ -1008,7 +1021,9 @@ body,
   white-space: nowrap;
 }
 
-/* 设置页：覆盖内容区（标签栏仍可用），左侧导航为后续分类预留 */
+/* ── 设置页：覆盖内容区（标签栏仍可用）；左导航 + 右内容，内容按「分组卡片」
+   组织，每行 = 左列名称/说明 + 右列控件的两栏栅格（列宽用固定值钉死，
+   行与补充说明行的两栏严格对齐） ── */
 .settings {
   z-index: 20;
   display: flex;
@@ -1022,12 +1037,15 @@ body,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 14px;
+  padding: 10px 16px;
   background: var(--bg-deep);
+  border-bottom: 1px solid var(--hairline);
 }
 
 .settings-title {
   font-weight: 600;
+  font-size: 14px;
+  color: var(--text-bright);
 }
 
 .settings-close {
@@ -1039,7 +1057,7 @@ body,
   font-size: 18px;
   line-height: 1;
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .settings-close:hover {
@@ -1055,111 +1073,287 @@ body,
 
 .settings-nav {
   flex: none;
-  width: 180px;
-  padding: 10px 8px;
+  width: 192px;
+  padding: 12px 10px;
   background: var(--bg-deep);
+  border-right: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .settings-nav-item {
-  padding: 8px 12px;
-  border-radius: 6px;
-  opacity: 0.75;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  opacity: 0.72;
   cursor: pointer;
+  color: var(--text);
+  transition:
+    background 0.1s ease,
+    opacity 0.1s ease;
 }
 
 .settings-nav-item:hover {
   opacity: 1;
+  background: var(--hover-wash);
 }
 
+/* 选中态与命令面板选中项同一强调语言：surface 底 + accent 左边条 */
 .settings-nav-item.active {
   background: var(--surface);
   color: var(--text-bright);
   opacity: 1;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.nav-icon {
+  display: flex;
+  opacity: 0.8;
+}
+
+.settings-nav-item.active .nav-icon {
+  opacity: 1;
+  color: var(--accent);
 }
 
 .settings-panel {
   flex: 1;
   min-width: 0;
-  padding: 14px 20px;
+  padding: 22px 26px 30px;
   overflow: auto;
 }
 
-.settings-section {
+.settings-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+.settings-panel::-webkit-scrollbar-thumb {
+  background: var(--thumb);
+  border-radius: 4px;
+}
+
+.settings-panel::-webkit-scrollbar-thumb:hover {
+  background: var(--thumb-hover);
+}
+
+.settings-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 内容限宽：超宽窗口下两栏栅格仍保持可读的行文长度 */
+.settings-content {
+  max-width: 780px;
+}
+
+/* 分组卡片：每节一个面板级卡片，标题带 accent 短竖条（与导航/面板的强调语言同源） */
+.settings-group {
+  padding: 4px 18px 12px;
+  margin-bottom: 18px;
+  background: color-mix(in srgb, var(--bg-deep) 55%, var(--bg));
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+}
+
+.settings-group-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px 0 6px;
   font-weight: 600;
-  color: var(--accent);
-  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--text-bright);
+}
+
+.settings-group-title::before {
+  content: '';
+  width: 3px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--accent);
 }
 
 .settings-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  column-gap: 28px;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
+  padding: 10px 0;
 }
 
-.settings-label {
-  flex: none;
-  width: 56px;
-  opacity: 0.8;
-}
-
-.settings-select {
-  min-width: 320px;
-  max-width: 100%;
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--surface-hover);
-  border-radius: 6px;
-  padding: 6px 8px;
+.settings-name {
   font-size: 13px;
+  color: var(--text);
 }
 
-.settings-select:focus,
-.stepper input:focus {
-  outline: 1px solid var(--accent);
+.settings-desc {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  opacity: 0.55;
 }
 
-/* 会话/行为开关：复选框 + 内联说明文字（说明较长，垂直居中对齐首行） */
-.settings-checkbox {
+.settings-ctrl {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* 补充说明：与控件列对齐（同栅格、内容落在第二列） */
+.settings-note {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  column-gap: 28px;
+  padding: 0 0 10px;
+}
+
+.settings-note > span {
+  grid-column: 2;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  opacity: 0.5;
+}
+
+/* ── 通用控件语言（设置页全境统一）── */
+
+/* 下拉：自绘箭头（appearance:none + --chevron 主题令牌），输入面统一 bg-inset */
+.settings-select {
+  box-sizing: border-box;
+  width: min(100%, 380px);
+  appearance: none;
+  background: var(--bg-inset) var(--chevron) no-repeat right 10px center;
+  color: var(--text);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  padding: 7px 30px 7px 10px;
+  font: inherit;
+  font-size: 13px;
   cursor: pointer;
-  opacity: 0.85;
+  transition: border-color 0.12s ease;
+}
+
+.settings-select:hover {
+  border-color: var(--thumb-hover);
+}
+
+/* 输入/下拉统一焦点态：accent 描边 + 焦点环（ring 随主题派生） */
+.settings-select:focus,
+.agent-custom-row input:focus,
+.term-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+/* 开关（switch）：原生 checkbox 承载语义/键盘/e2e 契约（data-setting、click、
+   focus 均落在 input 上），视觉换成滑块——零尺寸但不 display:none，
+   保证可聚焦与程序化点击 */
+.settings-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  position: relative;
 }
 
 .settings-checkbox input {
-  accent-color: var(--accent);
-  width: 15px;
-  height: 15px;
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  margin: 0;
   cursor: pointer;
 }
 
+.switch {
+  flex: none;
+  position: relative;
+  width: 34px;
+  height: 19px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  border: 1px solid var(--hairline);
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.switch::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--text);
+  opacity: 0.7;
+  transition:
+    transform 0.15s ease,
+    opacity 0.15s ease,
+    background 0.15s ease;
+}
+
+.settings-checkbox input:checked + .switch {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.settings-checkbox input:checked + .switch::before {
+  transform: translateX(15px);
+  background: var(--bg);
+  opacity: 1;
+}
+
+.settings-checkbox input:focus-visible + .switch {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.settings-checkbox input:disabled + .switch {
+  opacity: 0.45;
+}
+
+/* 步进器：按钮走统一中性按钮语言，中间数值是输入面（bg-inset） */
 .stepper {
   display: flex;
   align-items: stretch;
+  height: 32px;
 }
 
 .stepper button {
-  width: 30px;
+  width: 32px;
   background: var(--surface);
   color: var(--text);
-  border: 1px solid var(--surface-hover);
+  border: 1px solid var(--hairline);
   font-size: 15px;
   line-height: 1;
   cursor: pointer;
+  transition: background 0.12s ease;
 }
 
 .stepper button:first-child {
-  border-radius: 6px 0 0 6px;
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
 }
 
 .stepper button:last-child {
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
 }
 
 .stepper button:hover:not(:disabled) {
   background: var(--surface-hover);
+  color: var(--text-bright);
+}
+
+.stepper button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ring);
+  z-index: 1;
 }
 
 .stepper button:disabled {
@@ -1168,19 +1362,20 @@ body,
 }
 
 .stepper input {
-  width: 58px;
+  width: 60px;
   text-align: center;
   background: var(--bg-inset);
   color: var(--text-bright);
-  border: 1px solid var(--surface-hover);
+  border: 1px solid var(--hairline);
   border-left: none;
   border-right: none;
   font-size: 13px;
+  outline: none;
 }
 
-.settings-hint {
-  opacity: 0.5;
-  font-size: 12px;
+.stepper input:focus {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 /* ── 设置页 · AI Agent ── */
@@ -1194,7 +1389,7 @@ body,
   white-space: nowrap;
 }
 
-/* 自定义 agent 编辑行：名称 + 命令（含参数） + 删除 */
+/* 自定义 agent 编辑行：名称 + 命令（含参数） + 删除；输入走统一控件语言 */
 .agent-custom-row {
   display: flex;
   align-items: center;
@@ -1205,14 +1400,18 @@ body,
 .agent-custom-row input {
   background: var(--bg-inset);
   color: var(--text-bright);
-  border: 1px solid var(--surface-hover);
-  border-radius: 6px;
-  padding: 5px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  font: inherit;
   font-size: 13px;
+  outline: none;
+  transition: border-color 0.12s ease;
 }
 
-.agent-custom-row input:focus {
-  outline: 1px solid var(--accent);
+.agent-custom-row input::placeholder {
+  color: var(--text);
+  opacity: 0.45;
 }
 
 .agent-name-input {
@@ -1225,61 +1424,59 @@ body,
   min-width: 200px;
 }
 
-.agent-btn {
-  flex: none;
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--surface-hover);
-  border-radius: 6px;
-  padding: 5px 10px;
-  font-size: 12px;
-  cursor: pointer;
+/* 添加按钮行：与设置行同两栏栅格（按钮落在控件列，与上方自定义行对齐） */
+.agent-add-row {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  column-gap: 28px;
+  padding: 0 0 10px;
 }
 
-.agent-btn:hover {
-  background: var(--surface-hover);
-}
-
-.agent-btn.danger:hover {
-  color: var(--warn);
-  border-color: var(--warn);
+.agent-add-row > * {
+  grid-column: 2;
 }
 
 .preview-row {
-  align-items: flex-start;
+  align-items: start;
 }
 
-.preview-row .settings-label {
+.preview-row .settings-name {
   padding-top: 8px;
 }
 
+/* 字体预览：输入面语言的展示态（bg-inset + hairline），等宽字形由 inline 样式给 */
 .preview {
-  flex: 1;
-  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
   background: var(--bg-inset);
-  border: 1px solid var(--surface);
-  border-radius: 6px;
-  padding: 10px 12px;
-  line-height: 1.4;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  line-height: 1.5;
   white-space: pre;
   overflow: hidden;
   max-height: 200px;
+  color: var(--text-bright);
 }
 
 /* ── 命令面板（Ctrl+Shift+P）：VS Code 风格顶部居中浮层，portal 到 body，
    盖过设置页(z20)与右键菜单(z100)；视觉语言与 .ctx-menu 同源
-   （menu-bg 毛玻璃 + hairline + shadow + pop-in） ── */
+   （menu-bg 毛玻璃 + hairline + shadow + pop-in）。
+   居中刻意不走 left:50% + translateX(-50%)：pop-in 的 keyframes 会整体接管
+   transform，动画期间居中位移被丢弃、元素甩到右侧，动画结束才跳回中间——
+   改用 left/right:0 + margin-inline:auto 定宽自动居中，transform 让给动画 ── */
 .palette {
   position: fixed;
   top: 64px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  margin-inline: auto;
   width: min(560px, calc(100vw - 32px));
   z-index: 110;
   background: var(--menu-bg);
   backdrop-filter: blur(18px);
   border: 1px solid var(--hairline);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
   animation: pop-in 0.12s ease-out;
@@ -1463,7 +1660,7 @@ body,
   padding: 18px 20px;
   background: var(--menu-bg);
   border: 1px solid var(--hairline);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   animation: pop-in 0.14s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -1485,7 +1682,7 @@ body,
   padding: 8px 12px 8px 28px;
   background: var(--bg-inset);
   border: 1px solid var(--hairline);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   max-height: 140px;
   overflow: auto;
 }
@@ -1501,18 +1698,56 @@ body,
   gap: 10px;
 }
 
+/* ── 通用按钮语言：设置页各分区与权限弹窗共用一套中性按钮
+   （surface 底 + hairline 描边 + md 圆角），变体只有 primary（accent 实底）
+   与 danger（警示描边）——此前 agent-btn/plugin-btn/perm-btn 各自为政 ── */
+.agent-btn,
+.plugin-btn,
+.perm-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: none;
+  padding: 6px 14px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.agent-btn:hover,
+.plugin-btn:hover,
+.perm-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text-bright);
+}
+
+.agent-btn:focus-visible,
+.plugin-btn:focus-visible,
+.perm-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.agent-btn.danger:hover,
+.plugin-btn.danger:hover {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+}
+
 .perm-btn {
   min-width: 88px;
   padding: 7px 14px;
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-  cursor: pointer;
-}
-
-.perm-btn:hover {
-  background: var(--surface-hover);
 }
 
 .perm-btn.primary {
@@ -1523,15 +1758,16 @@ body,
 
 .perm-btn.primary:hover {
   background: color-mix(in srgb, var(--accent) 85%, white);
+  color: var(--bg);
 }
 
-/* ── 设置页「插件」节：管理卡片 ── */
+/* ── 设置页「插件」节：分组卡片内的插件条目卡（bg-inset 与分组卡形成层次） ── */
 
 .plugin-card {
   margin-bottom: 12px;
-  padding: 10px 14px;
+  padding: 12px 14px;
   border: 1px solid var(--hairline);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--bg-inset);
 }
 
@@ -1588,7 +1824,7 @@ body,
 
 .plugin-perm-list {
   border: 1px solid var(--hairline);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg);
   padding: 4px 10px;
 }
@@ -1630,18 +1866,14 @@ body,
   margin-top: 8px;
 }
 
-.plugin-btn {
-  padding: 5px 12px;
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-  cursor: pointer;
-  white-space: nowrap;
+/* 插件卡内的行内说明（设置页通用说明行 .settings-note 的卡内变体） */
+.settings-hint {
+  opacity: 0.5;
+  font-size: 12px;
 }
 
-.plugin-btn:hover {
-  background: var(--surface-hover);
+.plugin-btn {
+  padding: 5px 12px;
 }
 
 .plugin-dir-path {
@@ -1670,7 +1902,7 @@ body,
   background: var(--menu-bg);
   backdrop-filter: blur(18px);
   border: 1px solid var(--hairline);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   animation: pop-in 0.12s ease-out;
 }
@@ -1686,10 +1918,6 @@ body,
   color: var(--text-bright);
   font: inherit;
   font-size: 12px;
-}
-
-.term-search-input:focus {
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 .term-search-input::placeholder {

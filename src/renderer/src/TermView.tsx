@@ -6,6 +6,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { api, type ThemeDef } from './api'
+import { quotePaths, resolveDropPaths } from './dropPaths'
 import { resolveFontStack } from './fonts'
 
 interface Props {
@@ -248,6 +249,27 @@ export function TermView({ termId, fontFamily, fontSize, scheme, gpu, osc52, onT
         zoomToggleRef.current()
         return false
       }
+      // 无修饰可打印字符让出 keydown 通道（xterm 键位评估照常，只是不在此刻
+      // 发送/取消）：xterm 5.5 在 keydown 即把 ev.key 发给 PTY 并 cancel，
+      // 这对 IME 提交是双重破坏——fcitx 中文标点（无预编辑直接提交，实测
+      // GTK 异步路径）的 keydown 只带原键（key='.'），真正的提交字符 '。'
+      // 由其后的 keypress(charCode=12290) 或 keydown(Process/229)+input 的
+      // CompositionHelper value 差量携带，keyDown 抢发 ASCII 还 preventDefault
+      // 把这两条通路全掐断。让出后：英文与中文标点由 xterm keypress 路径发送，
+      // 词组/汉字等多字符提交由 229 通路差量发送，行为归一到 xterm 原生分发。
+      // Ctrl/Alt/Meta 组合键仍走原路径（键位表语义，如 ^C=SIGINT）；
+      // composition 进行中（isComposing）的键交给 CompositionHelper；命名键
+      //（Enter/Tab/Backspace/方向键，key 非单字符）与控制字符（<32）不让位
+      if (
+        !ev.ctrlKey &&
+        !ev.altKey &&
+        !ev.metaKey &&
+        !ev.isComposing &&
+        ev.key.length === 1 &&
+        ev.key.charCodeAt(0) >= 32
+      ) {
+        return false
+      }
       if (!ev.ctrlKey && !ev.shiftKey) return true
       const copy =
         (ev.ctrlKey && ev.shiftKey && !ev.altKey && ev.code === 'KeyC') ||
@@ -380,6 +402,29 @@ export function TermView({ termId, fontFamily, fontSize, scheme, gpu, osc52, onT
       onContextMenu={(e) => {
         e.preventDefault()
         onContextMenu(e.clientX, e.clientY)
+      }}
+      // 文件管理器拖文件进终端 → 单引号引用的绝对路径插入命令行（GNOME
+      // Terminal 同款）。dragover 只对 Files 拖拽 preventDefault（HTML5 语义
+      // 里这是「本元素可作落点」的声明，标签重排拖拽 types 不含 Files 不受
+      // 影响）；drop 无条件 preventDefault——dragover 放行后 Chromium 对文件
+      // drop 的默认动作是把整个窗口导航到 file:// 预览，必须拦下
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes('Files')) {
+          e.preventDefault()
+          e.dataTransfer.dropEffect = 'copy'
+        }
+      }}
+      onDrop={(e) => {
+        e.preventDefault()
+        const files = e.dataTransfer?.files
+        if (!files || files.length === 0) return
+        const text = quotePaths(resolveDropPaths([...files]))
+        if (!text) return
+        // 与 Ctrl+Shift+V 粘贴同通路（paste → onData → App 广播路由）：
+        // bracketed paste 下 shell 把它当粘贴原样进命令行不执行；注入后
+        // 焦点归位目标终端
+        termRef.current?.paste(text)
+        termRef.current?.focus()
       }}
     >
       <div className="term-mount" ref={ref} />

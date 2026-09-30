@@ -110,6 +110,9 @@ export interface Api {
   onPanes(cb: (tabId: string, panes: PaneGeom[]) => void): () => void
   writeClipboard(text: string): void
   readClipboard(): Promise<string>
+  // 文件拖入终端：File[] → 绝对路径数组（preload webUtils 通道，无拖拽
+  // 元数据的合成 File 得空串）
+  pathForFiles(files: File[]): string[]
   // 终端里点击的链接交给系统浏览器（主进程 http/https 白名单）
   openExternal(url: string): void
   onData(cb: (id: string, data: string) => void): () => void
