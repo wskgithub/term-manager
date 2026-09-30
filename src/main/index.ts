@@ -3,7 +3,7 @@ import { execFile } from 'child_process'
 import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
 import { createServer, type Server } from 'http'
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { extname, join, resolve, sep } from 'path'
 import { ProfileRegistry, type Profile } from './profiles'
@@ -3410,6 +3410,20 @@ async function runCodePluginsSequence(win: BrowserWindow): Promise<void> {
   )
   check('perm-prompt-deny', denyShown)
   await js("document.querySelector('[data-key=perm-deny]')?.click()")
+  // 5b) 队列还有第三个成员：内置 files 插件（全新 CODE_UD 下 fs 权限未决策，
+  //     排在用户目录插件之后入队）。显式拒绝，队列清空——此前弹窗全局截获
+  //     Escape，步骤 11 关菜单的那次 Esc 曾把它顺带拒掉；弹窗不再截键后必须
+  //     在此显式决策，否则它会一直压在队首，后续 deny 会点错对象
+  const filesPromptShown = await waitUntil(
+    async () =>
+      (await js<boolean>(
+        "(document.querySelector('.perm-card strong')?.textContent ?? '').includes('文件面板')"
+      )) === true,
+    5000,
+    200
+  )
+  check('perm-prompt-files-denied', filesPromptShown)
+  await js("document.querySelector('[data-key=perm-deny]')?.click()")
   const codenetFrame = await waitUntil(async () => frameFor('e2e-codenet') !== undefined, 5000, 200)
   const codenet2Frame = await waitUntil(async () => frameFor('e2e-codenet2') !== undefined, 5000, 200)
   check('perm-frames-mounted', codenetFrame && codenet2Frame)
@@ -4229,11 +4243,18 @@ async function runSessionPhase2(win: BrowserWindow): Promise<void> {
   )
   check('rename-restored', st.renamed === 1, `renamed=${st.renamed}`)
 
-  // 屏幕回放：恢复后的第一个标签应含有 phase1 的标记串（capture-pane 快照写入 xterm）
+  // 屏幕回放：恢复后的第一个标签应含有 phase1 的标记串（capture-pane 快照写入
+  // xterm）。回放是异步链路（TermView 挂载 → replayTerm IPC → capture-pane →
+  // t.write），标签状态就绪不等于回放落笔——轮询等待而非单次采样，消除启动
+  // 时序竞态（断言本身不变：超时未出现即 FAIL）
   const marker = argvFlag('--e2e-sess-marker') ?? '__no_marker__'
   check(
     'replay-marker',
-    await json<boolean>(`window.__e2ePaneHas(0, ${JSON.stringify(marker)})`)
+    await waitUntil(
+      async () => await json<boolean>(`window.__e2ePaneHas(0, ${JSON.stringify(marker)})`),
+      4000,
+      200
+    )
   )
 
   // 恢复的会话可继续交互：向第一个标签注入新回显
@@ -4674,7 +4695,11 @@ if (__E2E__ && argvHas('--e2e-webgl-fallback')) {
   app.commandLine.appendSwitch('disable-software-rasterizer')
 }
 
-// --e2e-session / --e2e-keep 用独立 userData 跑多段，避免污染真实 profiles/settings/sessions
+// --e2e-session / --e2e-keep 用独立 userData 跑多段，避免污染真实 profiles/settings/sessions。
+// 全新 userData 会让内置插件以「未决策」状态启动——权限弹窗遮住 UI、抢走键盘
+// 焦点，非插件语义的会话回归被耦合进插件批准流程（历史上 Ctrl+Shift+Enter 被
+// 弹窗全局截获，zoom 断言必挂）。预写 plugin-state.json 禁用全部内置插件：
+// 这两组件只测裸终端应用的会话行为，插件批准路径由 --e2e-plugins 系列覆盖
 if (sessionE2E || keepE2E) {
   const dir = argvFlag('--e2e-user-data')
   if (!dir) {
@@ -4682,6 +4707,22 @@ if (sessionE2E || keepE2E) {
     process.exit(1)
   }
   app.setPath('userData', resolve(dir))
+  const builtinRoot = app.isPackaged
+    ? join(process.resourcesPath, 'plugins')
+    : join(__dirname, '..', '..', 'plugins-builtin')
+  try {
+    const disabled = readdirSync(builtinRoot, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+    if (disabled.length) {
+      writeFileSync(
+        join(resolve(dir), 'plugin-state.json'),
+        JSON.stringify({ version: 1, disabled }, null, 2)
+      )
+    }
+  } catch {
+    // 内置目录不存在（无内置插件的构建）：无需预写
+  }
 }
 
 // --e2e-profile-refresh 的自备环境，须在 whenReady 的 registry.load() 之前就绪：

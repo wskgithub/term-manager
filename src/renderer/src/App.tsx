@@ -112,6 +112,10 @@ export default function App() {
       permissionDecided(p.id)
       setPermPrompts((q) => q.slice(1))
       refreshProfiles()
+      // 点击按钮决策后焦点留在已卸载的按钮上（落回 body）：归还活跃终端，
+      // 用户决策前的输入节奏不被打断；队列还有下一个弹窗时同样无害——
+      // 弹窗不夺焦点（见 PluginPermissionModal），焦点本就该在终端
+      focusActiveTerm()
     })
   }
   // 标签分组：UI 态由渲染层维护，经 session:sync 上报主进程随会话持久化（跨重启恢复）
