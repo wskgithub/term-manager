@@ -4847,7 +4847,7 @@ const dropE2E = __E2E__ ? argvHas('--e2e-drop') : false
 const filesE2E = __E2E__ ? argvHas('--e2e-files') : false
 const webglE2E = __E2E__ ? argvHas('--e2e-webgl') || argvHas('--e2e-webgl-fallback') : false
 const isolatedRun =
-  argvHas('--smoke') ||
+  (__E2E__ && argvHas('--smoke')) ||
   argvFlag('--e2e-tabs') !== undefined ||
   argvHas('--e2e-input') ||
   sidebarE2E ||

@@ -48,6 +48,20 @@ function validSession(raw: unknown): raw is PersistedSession {
   return r.tabs.every(validTab) && r.groups.every(validGroup)
 }
 
+/** clear() 落盘的空态墓碑（{version, tabs:[]}）：合法的「无保留会话」而非坏
+ *  文件——load 静默接受，否则每次启动都刷一条 bad sessions.json 错误日志 */
+function isClearedTombstone(raw: unknown): boolean {
+  if (typeof raw !== 'object' || raw === null) return false
+  const r = raw as Record<string, unknown>
+  return (
+    r.version === SESSION_VERSION &&
+    Array.isArray(r.tabs) &&
+    r.tabs.length === 0 &&
+    r.socketName === undefined &&
+    r.sessionName === undefined
+  )
+}
+
 function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
@@ -72,6 +86,7 @@ export class SessionStore {
     if (!existsSync(this.file)) return
     try {
       const raw = JSON.parse(readFileSync(this.file, 'utf-8')) as unknown
+      if (isClearedTombstone(raw)) return
       if (!validSession(raw)) throw new Error('unexpected sessions.json structure')
       this.session = raw
     } catch (e) {
