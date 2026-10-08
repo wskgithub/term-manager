@@ -129,6 +129,10 @@ body {
   font-style: italic;
 }
 
+.row:hover {
+  background: var(--hover-wash, rgba(255, 255, 255, 0.06));
+}
+
 .row.sel {
   background: var(--surface, #313244);
 }
@@ -174,11 +178,21 @@ body {
   align-items: center;
   justify-content: center;
   opacity: 0.4;
+  pointer-events: none;
 }
 
-/* ── 预览区 ── */
+/* hidden 属性的 UA 样式（display:none）会被上面的 #empty{display:flex} 压过，
+   必须显式兜底，否则「空目录」遮罩永远可见（真实使用反馈的误显缺陷） */
+#empty[hidden] {
+  display: none;
+}
+
+/* ── 预览区 ──
+   定高窗格（随面板高度伸缩、上限封顶）而不是内容自适应：行导航时预览内容
+   变了高度不变，列表不抖。没有条目时（:empty）整块隐藏把空间还给列表 */
 #preview {
-  flex: 1;
+  flex: none;
+  height: clamp(96px, 24%, 200px);
   min-height: 0;
   overflow: auto;
   border-top: 1px solid var(--hairline, rgba(255, 255, 255, 0.08));
@@ -189,13 +203,54 @@ body {
   line-height: 1.5;
 }
 
+#preview:empty {
+  display: none;
+}
+
+/* 折叠态：只留标题行，高度收到内容（标题）高 */
+#preview.folded {
+  height: auto;
+}
+
+#preview.folded > :not(.pv-title) {
+  display: none;
+}
+
 #preview .pv-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-family: system-ui, 'Noto Sans CJK SC', sans-serif;
   font-weight: 600;
   color: var(--text-bright, #fff);
   margin-bottom: 6px;
-  word-break: break-all;
+  cursor: pointer;
   user-select: none;
+}
+
+#preview .pv-fold {
+  flex: none;
+  font-size: 10px;
+  opacity: 0.55;
+}
+
+#preview .pv-tag {
+  flex: none;
+  font-size: 10px;
+  font-weight: 500;
+  opacity: 0.6;
+  border: 1px solid var(--hairline, rgba(255, 255, 255, 0.14));
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 14px;
+}
+
+#preview .pv-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 #preview .pv-meta {
@@ -264,27 +319,36 @@ body {
   caret-color: var(--accent, #89b4fa);
 }
 
-/* ── 状态/确认条 ── */
+/* ── 状态/确认条 ──
+   可换行：固定单行 + nowrap 在窄面板必截断（真实使用反馈），放行折行、
+   高度自适应；msg 为空时不占行 */
 #status {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 1px 8px;
   flex: none;
-  height: 24px;
-  padding: 0 10px;
+  min-height: 24px;
+  padding: 2px 10px;
   border-top: 1px solid var(--hairline, rgba(255, 255, 255, 0.08));
   font-size: 11px;
+  line-height: 17px;
   opacity: 0.65;
-  white-space: nowrap;
-  overflow: hidden;
   user-select: none;
 }
 
 #status .msg {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+}
+
+#status .msg:empty {
+  display: none;
+}
+
+#status .hint {
+  flex: 1 1 auto;
 }
 
 #status.confirm {

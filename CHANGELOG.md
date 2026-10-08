@@ -28,12 +28,20 @@ All notable changes to Term Manager are documented in this file.
   grants, absolute-path/size/concurrency defenses, deletion goes to the system trash
   only — `copy`/`move` refuse to overwrite unless asked, `move` only unlinks its source
   inside its own cross-device fallback, `find` is depth/count-capped), and
-  `terminals.cwd` + `ui.colors` APIs. Covered by the new `--e2e-files` suite (23
+  `terminals.cwd` + `ui.colors` APIs. Covered by the new `--e2e-files` suite (24
   assertions: builtin loading, permission dialog + persistence, panel toggling,
   frame-internal navigation/filter/preview via WebFrameMain, real-pane yank/cd/new-tab,
   create/rename/trash verified on disk, bulk select/visual/ctrl-A, copy/paste and
   cut/move verified on disk, goto, sort toggles, bookmarks + history, recursive find,
-  gate denial/guard/new-op defenses/disabled paths).
+  gate denial/guard/new-op defenses/disabled paths, and a layout-geometry check that
+  keeps list rows truly spread). First real-usage feedback fixes folded in: list rows
+  are actually positioned (they previously all stacked at the top of the viewport —
+  invisible to state-snapshot assertions), the empty-directory overlay no longer shows
+  unconditionally (`display:flex` was overriding the `hidden` attribute; filter
+  misses now say 无匹配), the preview pane carries a visible 「预览」 label, caps its
+  height, hides entirely when there is nothing to preview, and folds to a single
+  title row on click (persisted), and the keybinding hint bar wraps instead of
+  clipping on narrow panels.
 
 - **UI polish pass**: three related refinements. (1) The command palette
   (Ctrl+Shift+P) no longer appears to slide in from the right: its centering used
@@ -140,10 +148,15 @@ All notable changes to Term Manager are documented in this file.
   （list/stat/readText/readBase64/write/mkdir/rename/trash/copy/move/find；按档位
   授权、绝对路径/大小/并发防御、删除只走系统回收站——copy/move 默认拒绝覆盖、
   move 仅在自身跨盘回退内部删源、find 有深度与数量上限）、`terminals.cwd` 与
-  `ui.colors` API。新增 `--e2e-files` 套件 23 断言（内置加载、权限弹窗与落盘、面板
+  `ui.colors` API。新增 `--e2e-files` 套件 24 断言（内置加载、权限弹窗与落盘、面板
   开合、经 WebFrameMain 的帧内导航/过滤/预览、真实 pane 的贴路径/cd/新标签、新建/
   改名/删除落盘核验、批量选择/可视/全选、复制粘贴与剪切移动落盘核验、直达路径、
-  排序切换、书签与历史、递归查找、gate 未授权/防御/新原语防御/禁用路径）。
+  排序切换、书签与历史、递归查找、gate 未授权/防御/新原语防御/禁用路径、行布局
+  几何）。并入首批真实使用反馈修复：列表行此前从未写入定位（绝对定位无 top，全部
+  叠在视口顶端——状态快照断言照不见的纯视觉缺陷）；「空目录」遮罩因
+  `display:flex` 压过 `hidden` 属性而常显（过滤零命中现显示「无匹配」）；预览区
+  增加可见的「预览」标签、限高、无内容时整块隐藏、点标题折叠（持久化）；底部
+  键位提示栏窄面板改为换行不再截断。
 
 - **UI 打磨**：三处关联优化。其一，命令面板（Ctrl+Shift+P）不再「从右侧飞到
   中间」：此前居中用 `left:50% + translateX(-50%)`，而 pop-in 动画的 keyframes

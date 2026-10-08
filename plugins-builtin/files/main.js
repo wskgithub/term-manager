@@ -45,6 +45,7 @@ const S = {
   listSeq: 0, // 目录加载竞态取消
   previewSeq: 0, // 预览竞态取消
   preview: { kind: 'none' }, // none|loading|text|image|dir|binary|meta|error
+  pvFold: localStorage.getItem('files.pvFold') === '1', // 预览区折叠（点标题切换）
   // ── 批量选择 ──
   selected: new Set(), // 勾选/可视提交的绝对路径集合（跨目录存活）
   visual: null, // 可视模式锚点下标（null=关闭；非空时 [锚点,当前] 区间实时高亮）
@@ -224,7 +225,11 @@ function applyFilter() {
 
 function renderList() {
   const n = S.filtered.length
-  elEmpty.hidden = n !== 0 || !!S.filter
+  // 空态遮罩：目录真空或有过滤词但零命中。文案区分两种情形——注意 CSS 必须
+  // 有 #empty[hidden]{display:none} 兜底，否则 #empty 的 display:flex 会压过
+  // hidden 属性的 UA 样式，遮罩永远显示（首个真实使用反馈的堆叠/误显缺陷之一）
+  elEmpty.hidden = n !== 0
+  elEmpty.textContent = S.filter ? '无匹配' : '空目录'
   elSpacer.style.height = (n * ROW_H) + 'px'
   renderVisible()
 }
@@ -285,6 +290,9 @@ function updateRow(row, i) {
     return
   }
   row.dataset.i = i
+  // 虚拟滚动的行是绝对定位元素：top 必须显式按行号落，否则全部叠在静态
+  // 位置顶端（首个真实使用反馈的文字堆叠缺陷——状态快照断言照不见）
+  row.style.top = (i * ROW_H) + 'px'
   // 勾选标记（含可视模式实时区间）；剪切项整行淡显 + 删除线
   const abs = absOf(e)
   const marked = S.selected.has(abs) || inVisualRange(i)
@@ -396,14 +404,30 @@ async function runPreview() {
 function renderPreview() {
   const p = S.preview
   elPreview.scrollTop = 0
+  elPreview.classList.toggle('folded', S.pvFold)
   if (p.kind === 'none') {
     elPreview.innerHTML = ''
     return
   }
+  // 标题行 = 折叠箭头 + 「预览」标签 + 条目名；整行可点折叠/展开。
+  // 没有这行标注时，用户无从知道下方块是选中条目的预览（真实反馈：
+  // 「下半部分的迅雷下载是什么东西」）
+  elPreview.innerHTML = ''
   const title = document.createElement('div')
   title.className = 'pv-title'
-  title.textContent = p.name
-  elPreview.innerHTML = ''
+  title.title = S.pvFold ? '展开预览' : '折叠预览'
+  const fold = document.createElement('span')
+  fold.className = 'pv-fold'
+  fold.textContent = S.pvFold ? '▸' : '▾'
+  const tag = document.createElement('span')
+  tag.className = 'pv-tag'
+  tag.textContent = '预览'
+  const nm = document.createElement('span')
+  nm.className = 'pv-name'
+  nm.textContent = p.name
+  title.appendChild(fold)
+  title.appendChild(tag)
+  title.appendChild(nm)
   elPreview.appendChild(title)
   if (p.kind === 'loading') {
     const d = document.createElement('div')
@@ -413,7 +437,7 @@ function renderPreview() {
   } else if (p.kind === 'dir') {
     const meta = document.createElement('div')
     meta.className = 'pv-meta'
-    meta.textContent = p.count + ' 项' + (p.truncated ? '（超出单目录上限，已截断）' : '')
+    meta.textContent = '目录 · ' + p.count + ' 项' + (p.truncated ? '（超出单目录上限，已截断）' : '')
     elPreview.appendChild(meta)
     for (const nm of p.names) {
       const d = document.createElement('div')
@@ -460,6 +484,16 @@ function renderPreview() {
     elPreview.appendChild(d)
   }
 }
+
+// 预览标题行点击 → 折叠/展开（委托：标题每次渲染重建，监听只挂一次）。
+// 折叠态持久化，窄面板把空间还给列表
+elPreview.addEventListener('click', (ev) => {
+  if (ev.target instanceof Element && ev.target.closest('.pv-title')) {
+    S.pvFold = !S.pvFold
+    localStorage.setItem('files.pvFold', S.pvFold ? '1' : '0')
+    renderPreview()
+  }
+})
 
 // ── 目录加载 ──
 async function loadDir(path, opts) {
@@ -1166,7 +1200,14 @@ if (window.__TMPLUG_E2E__) {
     histAt: S.histAt,
     view: S.findResults ? 'find' : 'dir',
     findQ: S.findResults ? S.findResults.q : null,
-    names: S.filtered.slice(0, 10).map((e) => e.name)
+    names: S.filtered.slice(0, 10).map((e) => e.name),
+    // 布局几何：前三个渲染行的视口 top（严格递增才算行真正铺开）、空态遮罩
+    // 可见性、预览折叠态——纯视觉缺陷状态快照照不见，用几何量守
+    rowTops: [...document.querySelectorAll('#list .row')]
+      .slice(0, 3)
+      .map((r) => Math.round(r.getBoundingClientRect().top)),
+    emptyShown: !elEmpty.hidden,
+    pvFold: S.pvFold
   })
 }
 

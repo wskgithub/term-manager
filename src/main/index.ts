@@ -3824,6 +3824,19 @@ async function runFilesSequence(win: BrowserWindow): Promise<void> {
   await waitUntil(async () => (await snapOf())?.cwd === FIX, 8000, 200)
   const s0 = await snapOf()
   check('initial-cwd', s0?.cwd === FIX && Number(s0?.count) === 6, JSON.stringify(s0))
+  // 6b) 布局几何：渲染行的视口 top 必须严格递增（行曾因绝对定位未写 top 全部
+  //     叠在顶端——状态快照照不见的纯视觉缺陷，用几何量守）；空态遮罩不误显；
+  //     预览默认展开
+  const geo = (await snapOf()) as { rowTops?: number[]; emptyShown?: boolean; pvFold?: boolean } | null
+  const tops = Array.isArray(geo?.rowTops) ? (geo.rowTops as number[]) : []
+  check(
+    'dom-geometry',
+    tops.length >= 2 &&
+      tops.every((t, i, a) => i === 0 || t > a[i - 1]) &&
+      geo?.emptyShown === false &&
+      geo?.pvFold === false,
+    JSON.stringify({ rowTops: tops, emptyShown: geo?.emptyShown, pvFold: geo?.pvFold })
+  )
   // 目录优先字母序：a-dir, z-dir, a.txt, b.txt, bin.dat, img.png（.hidden 默认隐藏）
   const sel0 = String(s0?.sel)
   await key('j')
