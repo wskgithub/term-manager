@@ -14,7 +14,8 @@
 //   排序：,n 名称 · ,m 时间 · ,s 大小 · ,d 目录优先开关
 //   书签：m+字符 设置 · '+字符 跳转 · 历史：H 后退 · L 前进
 //   s 递归查找（Esc 退出结果视图）· : 直达路径
-//   终端联动：y 贴路径（有选中时贴全部）· c cd 到此 · t 在此开新标签
+//   终端联动：c 把终端 cd 过来（选中目录则进该目录，否则当前目录）
+//   · t 在此开新标签 · y 贴路径（有选中时贴全部）
 
 /* global termManager */
 
@@ -95,7 +96,7 @@ document.body.innerHTML = `
   <div id="inputline">
     <span class="il-label"></span><input spellcheck="false" autocomplete="off" />
   </div>
-  <div id="status"><span class="msg"></span><span class="hint">/ 过滤 · Space 选中 · Y/X 复制/剪切 · p 粘贴 · , 排序 · s 查找 · : 路径 · a 新建 · F2 改名 · x 删除</span></div>
+  <div id="status"><span class="msg"></span><span class="hint">c cd 终端 · t 新标签 · y 贴路径 · / 过滤 · Space 选中 · Y/X 复制/剪切 · p 粘贴 · , 排序 · s 查找 · : 路径 · a 新建 · F2 改名 · x 删除</span></div>
 `
 
 const $ = (id) => document.getElementById(id)
@@ -700,17 +701,16 @@ async function yankPath() {
 
 async function cdHere() {
   const e = S.filtered[S.sel]
-  if (!e || e.kind !== 'dir') {
-    setMsg('c 仅对目录生效', true)
-    return
-  }
+  // 选中目录 → cd 进该目录；光标在文件或目录为空 → cd 到当前浏览位置。
+  // 「进入某目录后把终端带过来」是 c 最常见的用法，不应要求先 h 退出去选中
+  const dir = e && e.kind === 'dir' ? joinPath(S.cwd, e.name) : S.cwd
   const id = await activeTerm()
   if (!id) {
     setMsg('没有活动标签', true)
     return
   }
-  tm.terminals.write(id, 'cd ' + quotePath(joinPath(S.cwd, e.name)) + '\r')
-  setMsg('已发送 cd ' + e.name)
+  tm.terminals.write(id, 'cd ' + quotePath(dir) + '\r')
+  setMsg('已发送 cd ' + baseName(dir))
 }
 
 async function newTabHere() {

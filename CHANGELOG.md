@@ -28,13 +28,14 @@ All notable changes to Term Manager are documented in this file.
   grants, absolute-path/size/concurrency defenses, deletion goes to the system trash
   only — `copy`/`move` refuse to overwrite unless asked, `move` only unlinks its source
   inside its own cross-device fallback, `find` is depth/count-capped), and
-  `terminals.cwd` + `ui.colors` APIs. Covered by the new `--e2e-files` suite (24
+  `terminals.cwd` + `ui.colors` APIs. Covered by the new `--e2e-files` suite (25
   assertions: builtin loading, permission dialog + persistence, panel toggling,
-  frame-internal navigation/filter/preview via WebFrameMain, real-pane yank/cd/new-tab,
-  create/rename/trash verified on disk, bulk select/visual/ctrl-A, copy/paste and
-  cut/move verified on disk, goto, sort toggles, bookmarks + history, recursive find,
-  gate denial/guard/new-op defenses/disabled paths, and a layout-geometry check that
-  keeps list rows truly spread). First real-usage feedback fixes folded in: list rows
+  frame-internal navigation/filter/preview via WebFrameMain, real-pane yank/cd/new-tab
+  including `c` falling back to the browsed directory when the cursor sits on a file
+  or an empty directory, create/rename/trash verified on disk, bulk select/visual/ctrl-A,
+  copy/paste and cut/move verified on disk, goto, sort toggles, bookmarks + history,
+  recursive find, gate denial/guard/new-op defenses/disabled paths, and a
+  layout-geometry check that keeps list rows truly spread). First real-usage feedback fixes folded in: list rows
   are actually positioned (they previously all stacked at the top of the viewport —
   invisible to state-snapshot assertions), the empty-directory overlay no longer shows
   unconditionally (`display:flex` was overriding the `hidden` attribute; filter
@@ -148,11 +149,11 @@ All notable changes to Term Manager are documented in this file.
   （list/stat/readText/readBase64/write/mkdir/rename/trash/copy/move/find；按档位
   授权、绝对路径/大小/并发防御、删除只走系统回收站——copy/move 默认拒绝覆盖、
   move 仅在自身跨盘回退内部删源、find 有深度与数量上限）、`terminals.cwd` 与
-  `ui.colors` API。新增 `--e2e-files` 套件 24 断言（内置加载、权限弹窗与落盘、面板
-  开合、经 WebFrameMain 的帧内导航/过滤/预览、真实 pane 的贴路径/cd/新标签、新建/
-  改名/删除落盘核验、批量选择/可视/全选、复制粘贴与剪切移动落盘核验、直达路径、
-  排序切换、书签与历史、递归查找、gate 未授权/防御/新原语防御/禁用路径、行布局
-  几何）。并入首批真实使用反馈修复：列表行此前从未写入定位（绝对定位无 top，全部
+  `ui.colors` API。新增 `--e2e-files` 套件 25 断言（内置加载、权限弹窗与落盘、面板
+  开合、经 WebFrameMain 的帧内导航/过滤/预览、真实 pane 的贴路径/cd/新标签（含
+  光标在文件或空目录上时 c 兜底 cd 到当前浏览目录）、新建/改名/删除落盘核验、批量
+  选择/可视/全选、复制粘贴与剪切移动落盘核验、直达路径、排序切换、书签与历史、
+  递归查找、gate 未授权/防御/新原语防御/禁用路径、行布局几何）。并入首批真实使用反馈修复：列表行此前从未写入定位（绝对定位无 top，全部
   叠在视口顶端——状态快照断言照不见的纯视觉缺陷）；「空目录」遮罩因
   `display:flex` 压过 `hidden` 属性而常显（过滤零命中现显示「无匹配」）；预览区
   增加可见的「预览」标签、限高、无内容时整块隐藏、点标题折叠（持久化）；底部

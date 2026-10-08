@@ -3891,6 +3891,17 @@ async function runFilesSequence(win: BrowserWindow): Promise<void> {
     200
   )
   await pv(2) // 选中 a.txt
+  // c 兜底语义：光标在文件上 → cd 到当前浏览目录（「进入目录后把终端带过来」
+  // 的主路径，不再要求先 h 退出去选中目录）。必须在 y 之前发：y 把路径文本留
+  // 在终端输入行上，随后的 c 会拼接成非法命令（回显折行拆散子串也匹配不到）
+  // ——面板写入是盲写语义，不清理输入行。断言带闭合引号，与先前
+  // cd '…/a-dir' 的回显可区分
+  await key('c')
+  const cwdEcho = await waitUntil(
+    async () => await js<boolean>(`window.__e2ePaneHas(0, ${JSON.stringify(`cd '${FIX}'`)})`),
+    5000,
+    200
+  )
   await key('y')
   const yankEcho = await waitUntil(
     async () => await js<boolean>('window.__e2ePaneHas(0, "e2e-files-fixture") && window.__e2ePaneHas(0, "a.txt")'),
@@ -3900,6 +3911,7 @@ async function runFilesSequence(win: BrowserWindow): Promise<void> {
   await key('t')
   const tabOpened = await waitUntil(async () => (await js<string[]>('window.__e2eIds()')).length === ids0.length + 1, 8000, 300)
   check('terminal-actions', yankEcho && cdEcho && tabOpened, JSON.stringify({ yankEcho, cdEcho, tabOpened, ids0: ids0.length }))
+  check('cd-cwd-fallback', cwdEcho, JSON.stringify({ cwdEcho }))
 
   // 10) 文件操作：新建（a + 输入 + Enter）→ 改名（F2）→ 删除（x + y 确认），
   //     全部主进程侧核盘（写路径真实落盘、删除走回收站）。
