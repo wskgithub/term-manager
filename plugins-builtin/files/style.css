@@ -85,6 +85,29 @@ body {
   outline: none;
 }
 
+/* 滚动条与主窗口同款（side-tree/settings 一致）：8px 细条 + 主题色圆角
+  滑块 + 透明轨道。thumb 变量经 ui.colors 注入帧内，深浅主题自动联动 */
+#list::-webkit-scrollbar,
+#preview::-webkit-scrollbar {
+  width: 8px;
+}
+
+#list::-webkit-scrollbar-thumb,
+#preview::-webkit-scrollbar-thumb {
+  background: var(--thumb, rgba(255, 255, 255, 0.18));
+  border-radius: 4px;
+}
+
+#list::-webkit-scrollbar-thumb:hover,
+#preview::-webkit-scrollbar-thumb:hover {
+  background: var(--thumb-hover, rgba(255, 255, 255, 0.3));
+}
+
+#list::-webkit-scrollbar-track,
+#preview::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 #spacer {
   position: absolute;
   left: 0;
